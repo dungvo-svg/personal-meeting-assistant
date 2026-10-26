@@ -1,8 +1,8 @@
-# Baseline sản phẩm v0.1.0
+# Baseline sản phẩm v0.2.0
 
 Ngày: 26/10/2026. Chủ thể làm việc là **trợ lý AI của người dùng**. Sản phẩm ta xây là bộ công cụ để agent thực hiện nhiệm vụ hỗ trợ cuộc họp. Claude Desktop là môi trường dùng đầu tiên, không phải tên cố định của toàn bộ sản phẩm.
 
-Đây là bản khóa yêu cầu và thiết kế ban đầu; chưa có runtime hoặc nghiệm thu. `OWNER_LOCKED` là quyết định người dùng đã chốt; `ENGINEERING_BASELINE` là thiết kế thực hiện do agent lập; `OPEN` là khả năng chưa chứng minh. Sổ nguồn ở [DECISION_LOG.md](DECISION_LOG.md).
+Đây là bản khóa yêu cầu và thiết kế; runtime pilot tiếng Việt đã được dựng, chưa có nghiệm thu actual Claude/device/Human UAT. `OWNER_LOCKED` là quyết định người dùng đã chốt; `ENGINEERING_BASELINE` là thiết kế thực hiện do agent lập; `OPEN` là khả năng chưa chứng minh. Sổ nguồn ở [DECISION_LOG.md](DECISION_LOG.md).
 
 ## Những điều đã khóa với người dùng
 
@@ -15,6 +15,9 @@ Ngày: 26/10/2026. Chủ thể làm việc là **trợ lý AI của người dù
 | OWN-005 | Tự lưu lịch sử text trên máy; audio chỉ tạm thời | OWNER_LOCKED |
 | OWN-006 | Xây tools quanh agent để agent chủ động kích hoạt và hỗ trợ họp | OWNER_LOCKED |
 | OWN-007 | V1 hỗ trợ cuộc họp đã mở: agent tự bật tai, lấy ngữ cảnh và hiển thị dịch | OWNER_LOCKED |
+| OWN-008 | Pilot chiều 26/10 chỉ tiếng Việt, không phiên dịch; dựng runtime vừa đủ để Claude hỗ trợ phiên | OWNER_LOCKED / CURRENT_PILOT |
+
+Pilot hiện tại ưu tiên transcript cục bộ và context/tools cho Claude. Bảng dịch Việt–Lào và các yêu cầu phiên dịch bên dưới vẫn là mục tiêu V1 sau; không dùng pilot tiếng Việt để nhận PASS cho chúng. Xem [runtime hôm nay](PILOT_RUNTIME_20261026.md).
 
 ## Lời hứa của V1
 

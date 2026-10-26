@@ -1,6 +1,6 @@
-# Baseline kỹ thuật v0.1.0
+# Baseline kỹ thuật v0.2.0
 
-Trạng thái: ENGINEERING_BASELINE. Được lập để thực hiện các quyết định OWN-001…OWN-007; chưa có code runtime. Mọi capability của host chưa thử vẫn là OPEN trong [sổ quyết định](DECISION_LOG.md).
+Trạng thái: ENGINEERING_BASELINE. Được lập để thực hiện OWN-001…OWN-008; runtime pilot tiếng Việt đã triển khai một phần. Xem [runbook](PILOT_RUNTIME_20261026.md) để biết capability/evidence hiện có. Mọi capability của host chưa thử vẫn là OPEN trong [sổ quyết định](DECISION_LOG.md).
 
 ## Kiến trúc agent và tools
 
@@ -25,9 +25,9 @@ Agent là bên quyết định dùng công cụ và tạo bản dịch. Tool ser
 
 ## Lựa chọn kỹ thuật ban đầu
 
-TypeScript/Node là stack đầu tiên cho local MCP tool server và logic panel (ENG-02). MCP dùng stdio giữa Claude Desktop và tool server (ENG-01). Panel dùng HTTP cục bộ + SSE nhận text/status; đường này là giao thức nội bộ của panel, không phải MCP SSE đời cũ. Phiên bản Node, SDK và dependency phải được kiểm tra/pin ở lần triển khai đầu; hiện chưa có package lock hay dependency đã cài.
+TypeScript/Node là stack đầu tiên cho local MCP tool server và logic panel (ENG-02). MCP dùng stdio giữa Claude Desktop và tool server (ENG-01). Panel dùng HTTP cục bộ + SSE nhận text/status; đường này là giao thức nội bộ của panel, không phải MCP SSE đời cũ. Pilot hiện có package-lock và requirements-audio.lock; đã dùng Node 24.14.0, SDK 1.32.2 và ASR local. Cấu hình đã cài khác với host đã xác minh.
 
-Tool server quản lý phiên, lưu text và phục vụ bảng. Capture chạy trong worker/process do server sở hữu, không chặn vòng xử lý tool. Wrapper/helper cho Windows audio còn OPEN-03. Mất host transport phải đi vào dừng nguồn/cleanup; không để recorder vô chủ chạy sau khi đóng ứng dụng. Chỉ khi có thiết kế vòng đời rõ ràng mới được tách service thường trú.
+Tool server quản lý phiên, lưu text và phục vụ bảng. Capture chạy trong worker/process do server sở hữu, không chặn vòng xử lý tool. Helper PyAudioWPatch WASAPI đã viết và enumerate thiết bị; actual capture vẫn OPEN-03. Mất host transport đi vào dừng nguồn/cleanup; worker có parent watchdog. Chưa có phép thử device thật. Chỉ khi có thiết kế vòng đời rõ ràng mới được tách service thường trú.
 
 Panel chỉ bind loopback, không mở LAN. Các thao tác điều khiển dùng session capability cục bộ, kiểm tra Host/Origin và không cho website khác gọi. Token/credential không nằm trong URL lịch sử hoặc log. Những biện pháp này là yêu cầu triển khai, chưa phải kiểm chứng an toàn.
 
@@ -71,7 +71,7 @@ Start chỉ thành công sau khi nguồn thực hoạt động. Pause ngăn nh�
 
 ## Lưu text và audio tạm
 
-Text store riêng theo session, dự kiến SQLite local (ENG-05), lưu source text nếu có, bản dịch/revisions, trạng thái gap, timestamp và metadata nguồn/host. SQLite binding/schema cụ thể chưa chọn. Không tạo DB trong repository. Dữ liệu thực nằm ngoài Git, theo thư mục riêng của ứng dụng; `.local/` chỉ là vị trí phát triển.
+Text store riêng theo session, SQLite local (ENG-05), lưu source text nếu có, ghi chú/revisions và metadata nguồn/host. Pilot dùng node:sqlite và schema riêng; mốc giây gắn capture ID để phân biệt pause/resume. DB không được track trong Git. Bản trên máy hiện tại lưu trong `.local/runtime/` bị Git bỏ qua; đóng gói phân phối cần chọn thư mục dữ liệu người dùng phù hợp.
 
 Audio tạm gồm buffer và file spool nếu cần. Trước capture thật phải pin cap bytes/duration, TTL, cleanup deadline và hành vi đầy đĩa. Khi chạm giới hạn: dừng nguồn có thông báo và ghi gap, không tự drop oldest âm thầm. Không kéo dài retention chỉ vì agent đang chờ.
 

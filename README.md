@@ -2,7 +2,9 @@
 
 Ta xây bộ công cụ trên máy cá nhân để **AI agent chủ động hỗ trợ cuộc họp đang mở**: bật bộ tai, lấy ngữ cảnh, dịch và cập nhật bảng text cho người dùng. Claude Desktop là host đầu tiên phải dùng được; AGY hoặc Codex có thể thay thế về sau.
 
-**Trạng thái: baseline tài liệu v0.1.0; chưa triển khai tool server, thu âm hoặc tích hợp Claude Desktop.** Các lựa chọn chủ sản phẩm đã chốt và các điểm kỹ thuật còn cần chứng minh được ghi riêng.
+**Runtime pilot v0.2.0 đã dựng cho phiên tiếng Việt, không phiên dịch.** Cần hoàn tất MCP config khi Claude đã thoát: app đang chạy đã ghi đè lần thêm entry đầu. Người dùng sẽ tự thoát/mở lại; dùng [Hoan-tat-cai-Claude.cmd](Hoan-tat-cai-Claude.cmd) ở giữa hai bước đó. Đã kiểm tra offline/protocol/UI và ASR trên file công khai; chưa xác nhận actual Claude tools hoặc thu âm G243FW.
+
+Đọc [hướng dẫn dùng chiều nay](docs/PILOT_RUNTIME_20261026.md) và [lời giao việc cho Claude](handoff/CLAUDE_MEETING_START.vi.txt) trước. Bảng cục bộ là `http://127.0.0.1:8796/` sau khi Claude nạp server.
 
 ## Ranh giới dự án
 
@@ -19,9 +21,9 @@ Ta xây bộ công cụ trên máy cá nhân để **AI agent chủ động hỗ
 2. Xem [cách dùng dự kiến](docs/USER_GUIDE.md), [kỹ thuật](docs/TECHNICAL_BASELINE.md) và [phép thử Claude Desktop](docs/CLAUDE_DESKTOP_FEASIBILITY.md).
 3. Đọc [AGENTS.md](AGENTS.md); Claude có điểm vào tại [CLAUDE.md](CLAUDE.md).
 4. Kiểm tra snapshot tài liệu bằng `python tools/verify_baseline.py`. Lệnh chỉ đọc file, không mở app hoặc gọi AI.
-5. Thực hiện [lộ trình](docs/ROADMAP.md) theo [tiêu chí nghiệm thu](docs/ACCEPTANCE.md). Chưa có lệnh chạy sản phẩm.
+5. Thực hiện [lộ trình](docs/ROADMAP.md) theo [tiêu chí nghiệm thu](docs/ACCEPTANCE.md). Runtime cần Node 24.14+, Python venv và model đã chuẩn bị; xem runbook pilot.
 
-`project.json` và `config/personal.example.json` là khai báo thiết kế, chưa có runtime đọc/chạy. [Quy tắc thay đổi baseline](docs/CHANGE_CONTROL.md) giải thích phần nào đã khóa theo ý người dùng và phần nào là quyết định kỹ thuật có thể điều chỉnh theo bằng chứng.
+`project.json` và `config/personal.example.json` là metadata/khai báo thiết kế, không được runtime dùng làm cấu hình vận hành. Cấu hình pilot thực tế và biến môi trường được mô tả trong runbook. [Quy tắc thay đổi baseline](docs/CHANGE_CONTROL.md) giải thích phần nào đã khóa theo ý người dùng và phần nào là quyết định kỹ thuật có thể điều chỉnh theo bằng chứng.
 
 ## Thư mục
 
@@ -29,8 +31,8 @@ Ta xây bộ công cụ trên máy cá nhân để **AI agent chủ động hỗ
 | --- | --- |
 | `docs/` | Phạm vi, thiết kế, kế hoạch và tiêu chí nghiệm thu riêng |
 | `config/` | Ví dụ cấu hình không chứa thông tin xác thực |
-| `src/` | Nơi triển khai mới; hiện chỉ có hướng dẫn |
+| `src/` | Local MCP server, runtime/session/text store |
 | `handoff/` | Metadata bàn giao khởi tạo dự án |
-| `.local/` | Dự kiến chứa dữ liệu cá nhân, bị Git bỏ qua |
+| `.local/` | Context, SQLite text, model và bằng chứng cục bộ; bị Git bỏ qua |
 
 Không nhập lại audio, transcript, output cũ hoặc credential của AIOS. Nghiệm thu của sản phẩm AIOS không đại diện cho dự án cá nhân này.

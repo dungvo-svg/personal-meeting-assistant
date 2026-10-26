@@ -1,10 +1,10 @@
 # Lộ trình triển khai
 
-Baseline v0.1.0; mỗi bước phải có sản phẩm và bằng chứng. Không bắt đầu bằng việc xây toàn bộ bộ tai/UI trước khi kiểm tra vòng agent.
+Baseline v0.2.0; mỗi bước phải có sản phẩm và bằng chứng. Phạm vi gốc ưu tiên kiểm tra vòng agent. Owner bổ sung pilot chiều nay chỉ tiếng Việt, không dịch: ASR và panel chạy cục bộ, Claude đọc theo lượt khi được giao. Runtime pilot đã dựng với bằng chứng riêng trong [runbook](PILOT_RUNTIME_20261026.md); chưa đánh dấu P2/P5 đạt cho V1 phiên dịch.
 
 | Bước | Sản phẩm công việc | Điều kiện đóng |
 | --- | --- | --- |
-| P0 — Khóa nền | Product/usage/technical/decision/acceptance + snapshot version | 7 owner locks được phản ánh, link/JSON/hash hợp lệ; không tuyên bố runtime |
+| P0 — Khóa nền | Product/usage/technical/decision/acceptance + snapshot version | 8 owner locks được phản ánh, link/JSON/hash hợp lệ; không coi snapshot là nghiệm thu runtime |
 | P1 — Lát cắt tool | TypeScript MCP local + nguồn text tổng hợp + publish lên panel + text store + STOP | Offline tool proof, sau đó FP-01 trong Claude Desktop thật |
 | P2 — Chứng minh agentic | Nguồn paced, context có giới hạn, trạng thái chờ, turn boundary và host disconnect | FP-02/03; nếu thiếu tự vận hành phải ghi giới hạn và xử lý lựa chọn host/workflow trước khi mở rộng |
 | P3 — Tai/context thật | Chọn source/ASR hoặc audio trực tiếp, capture worker, temp lifecycle và profile hữu hạn | FP-04/05; bằng chứng source/cleanup và phạm vi dữ liệu rõ |

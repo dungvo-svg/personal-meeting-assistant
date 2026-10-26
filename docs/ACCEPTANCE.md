@@ -1,6 +1,6 @@
 # Nghiệm thu V1
 
-Baseline v0.1.0. Chưa thực hiện các ca sản phẩm dưới đây. Kiểm tra tài liệu/Git không được ghi PASS cho tool, agent loop hoặc dịch thực tế.
+Baseline v0.2.0. Các ca dưới đây là nghiệm thu V1; pilot tiếng Việt hiện có bằng chứng component/protocol/UI/file-ASR ở [runbook](PILOT_RUNTIME_20261026.md), chưa là PASS cho các ca actual host/device/Human UAT. Kiểm tra tài liệu/Git không được ghi PASS cho agent loop hoặc dịch thực tế.
 
 | ID | Yêu cầu | Ca kiểm chứng và điều kiện đạt | Mức bằng chứng |
 | --- | --- | --- | --- |

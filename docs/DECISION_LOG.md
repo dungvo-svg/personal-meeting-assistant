@@ -1,6 +1,6 @@
 # Sổ quyết định
 
-Revision v0.1.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
+Revision v0.2.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
 
 ## Nguồn quyết định
 
@@ -13,6 +13,10 @@ Revision v0.1.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | U5 | Trả lời lưu dữ liệu: “Tự lưu lịch sử text trên máy; audio chỉ tạm thời” |
 | U6 | Điều chỉnh mô hình: xây tools quanh trợ lý để nó kích hoạt tham gia hỗ trợ họp; nghĩ theo AGENTIC AI |
 | U7 | Làm rõ tham gia họp: “Hỗ trợ cuộc họp đã mở: tự bật bộ tai, lấy ngữ cảnh và hiển thị dịch” |
+| U8 | Yêu cầu dựng runtime vừa đủ để Claude hỗ trợ phiên họp chiều nay; cung cấp ảnh agenda |
+| U9 | Làm rõ: “Chiêu nay chỉ có tiếng Việt không cần Phiên dịch” |
+| U10 | Chọn nguồn phát Zoom: G243FW — âm thanh qua màn hình NVIDIA |
+| U11 | Với đề nghị restart Claude/thu thử mẫu công khai, chọn “Tôi sẽ tự khởi động lại Claude sau” |
 
 Ảnh định hướng trong U1 và tài liệu b15f178 của repo AIOS chỉ cung cấp bối cảnh hai sản phẩm độc lập. Không nhập runtime, quyền phiên họp hoặc tiêu chí nghiệm thu của repo đó vào đây.
 
@@ -27,6 +31,9 @@ Revision v0.1.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | OWN-005 | U5 | Lưu text cục bộ mặc định; audio tạm |
 | OWN-006 | U6 | Agent chủ động dùng tools; không thiết kế thành app gọi hàm dịch |
 | OWN-007 | U7 | Hỗ trợ cuộc họp đã mở, không cần tự mở lời mời/Join trong V1 |
+| OWN-008 | U8/U9 | Pilot hiện tại nghe tiếng Việt, không phiên dịch; tools/context/transcript phục vụ phiên chiều nay |
+
+U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi máy. U11 là ranh giới vận hành lần này: không restart Claude hoặc thực hiện đề nghị thu thử thay người dùng. Claude đã ghi đè lần chỉnh config khi còn chạy; installer hiện yêu cầu app đóng trước khi apply. Host/device acceptance vẫn chờ. Hỏi đáp/ghi chú trong Claude khi người dùng yêu cầu là hỗ trợ theo scope pilot, không phải đã hoàn thành giao diện hỏi đáp hoặc V1 phiên dịch.
 
 ## Baseline kỹ thuật do agent lập
 
@@ -39,6 +46,10 @@ Revision v0.1.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | ENG-05 | Text lưu bền theo session; audio tạm có giới hạn và cleanup khi hết phiên/crash | Thực hiện OWN-005; dung lượng/TTL cụ thể cần phép đo trước khi bật capture |
 | ENG-06 | Phiên bản snapshot tài liệu + SHA-256 + lịch sử Git | Phát hiện tài liệu bị đổi ngoài revision; không phải khóa bất biến hoặc bằng chứng sản phẩm |
 | ENG-07 | Windows là máy kiểm chứng đầu tiên theo workspace hiện tại | Mở rộng OS sau; không suy từ Windows thành đã hỗ trợ mọi máy |
+| ENG-08 | Pilot VI dùng faster-whisper small CPU int8, PyAudioWPatch, audio RAM và SQLite text | Công cụ nhận dạng hỗ trợ agent; không có backend dịch; test file công khai chưa là device/Human UAT |
+| ENG-09 | Node 24.14.0 + SDK 1.32.2 + dependency/model locks; PyAV 16.0.1 | Pin PyAV sau lỗi decode API ở 19.0.2; không auto-download model trong cuộc họp |
+
+Các cap/timeout cụ thể cho pilot được ghi ở [runbook](PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 
 ## Điểm còn mở, ai giải quyết và bằng chứng cần có
 

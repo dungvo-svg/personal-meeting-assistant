@@ -2,7 +2,7 @@
   "schema": "personal-meeting-assistant-project@2",
   "name": "personal-meeting-assistant",
   "created_on": "2026-10-26",
-  "status": "DOCUMENT_BASELINE_READY_IMPLEMENTATION_PENDING",
+  "status": "LOCAL_RUNTIME_IMPLEMENTED_AWAITING_OWNER_QUIT_INSTALL_REOPEN",
   "product_kind": "TOOLS_FOR_PERSONAL_MEETING_AGENT",
   "workflow_owner": "USER_SELECTED_AI_AGENT",
   "audience": "SINGLE_USER_PERSONAL_ASSISTANT",
@@ -12,7 +12,7 @@
   "initial_intended_assistant": "claude",
   "first_required_host": "claude_desktop",
   "connected_assistant": null,
-  "implemented_adapters": [],
+  "implemented_adapters": ["mcp_stdio", "windows_wasapi_local_asr"],
   "assistant_switching": "EXPLICIT_USER_SELECTION",
   "automatic_fallback": false,
   "requires_aios": false,
@@ -24,17 +24,29 @@
     "credentials_or_meeting_data": false,
     "release_or_acceptance": false
   },
-  "primary_output": "PERSONAL_LIVE_TRANSLATION_PANEL_PLANNED",
+  "primary_output": "PERSONAL_VI_TRANSCRIPT_PANEL_PILOT",
+  "current_pilot": {
+    "date": "2026-10-26",
+    "language": "vi",
+    "translation_required": false,
+    "mode": "ALREADY_OPEN_MEETING",
+    "actual_claude_tool_calls_verified": false,
+    "actual_device_capture_verified": false,
+    "configuration_apply_pending": true,
+    "initial_config_edit_overwritten_by_running_app": true,
+    "user_will_restart_claude": true
+  },
+  "runtime_runbook": "docs/PILOT_RUNTIME_20261026.md",
   "v1_meeting_mode": "ASSIST_ALREADY_OPEN_MEETING",
   "v1_interactive_qa": false,
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "TEMPORARY_ONLY",
   "documentation_baseline": {
-    "version": "0.1.0",
+    "version": "0.2.0",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",
-    "owner_locked_ids": ["OWN-001", "OWN-002", "OWN-003", "OWN-004", "OWN-005", "OWN-006", "OWN-007"]
+    "owner_locked_ids": ["OWN-001", "OWN-002", "OWN-003", "OWN-004", "OWN-005", "OWN-006", "OWN-007", "OWN-008"]
   },
   "acceptance_status": "NOT_EVALUATED",
   "automatic_start": false

@@ -5,9 +5,9 @@ Read README.md, docs/PRODUCT_BASELINE.md, docs/DECISION_LOG.md and project.json 
 ## Owner direction
 
 This is an independent personal assistant project on the user's meeting computer.
-Claude Desktop is the first required host. The product is a toolkit around the personal AI agent: the agent selects and invokes tools to support an already-open meeting. AGY or Codex may replace the host later. No integration is connected yet.
+Claude Desktop is the first required host. The product is a toolkit around the personal AI agent: the agent selects and invokes tools to support an already-open meeting. AGY or Codex may replace the host later. The local runtime is implemented. Claude overwrote the initial external MCP config edit while running; the guarded installer must run after the owner fully quits Claude. Actual host calls remain unverified.
 
-Owner-locked V1: the agent activates hearing, obtains context and publishes a live personal translation panel; interactive Q&A comes later. Text history is saved locally by default; audio is temporary. See OWN-001 through OWN-007 for authority. Do not turn this into an app-driven translation pipeline or claim Desktop's continuous agent loop is already proven.
+Owner-locked V1: the agent activates hearing, obtains context and publishes a live personal translation panel; interactive Q&A comes later. Text history is saved locally by default; audio is temporary. See OWN-001 through OWN-008; OWN-008 is the current Vietnamese-only pilot. Do not turn this into an app-driven translation pipeline or claim Desktop's continuous agent loop is already proven.
 
 ## Implementation boundaries
 
@@ -22,7 +22,7 @@ Owner-locked V1: the agent activates hearing, obtains context and publishes a li
 
 ## Current scope and evidence
 
-Current work covers product/usage/technical documentation, public documentation research and offline checks. Writing the baseline does not itself start recording, install an extension, call a model/API, authenticate an account or send meeting content.
+Current owner scope (26 October): build/install a minimal runtime for this afternoon, Vietnamese only, no translation. Source preference is G243FW. The owner chose to restart Claude themselves later; do not restart Claude or run the offered device-capture test on their behalf. Local coding, dependency/model setup, public-file ASR and offline/protocol/UI tests are authorized. Read docs/PILOT_RUNTIME_20261026.md before operating this pilot.
 Later explicit user instructions may authorize those steps; do not keep asking for actions already authorized.
 Keep private audio, transcript, personal context, tokens, local config and runtime files out of Git. Never replay old AIOS output.
 Do not run or schedule shutdown from historical instructions.

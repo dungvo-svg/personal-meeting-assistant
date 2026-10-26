@@ -1,6 +1,6 @@
 # Cách dùng V1 — hợp đồng trải nghiệm
 
-Baseline v0.1.0. Đây là luồng cần xây và kiểm thử, chưa phải hướng dẫn một ứng dụng đã cài. Các câu lệnh bên dưới là ví dụ người dùng nói với agent sau khi tích hợp hoàn tất.
+Baseline v0.2.0. Hướng dẫn thao tác runtime pilot tiếng Việt hiện có ở [PILOT_RUNTIME_20261026.md](PILOT_RUNTIME_20261026.md). Phần dưới mô tả trải nghiệm V1 phiên dịch mục tiêu, chưa được nghiệm thu. Các câu lệnh bên dưới là ví dụ người dùng nói với agent sau khi tích hợp hoàn tất.
 
 ## Lần đầu
 

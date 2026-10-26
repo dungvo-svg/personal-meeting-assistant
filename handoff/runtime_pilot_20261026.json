@@ -1,0 +1,68 @@
+{
+  "schema": "personal-meeting-runtime-pilot@1",
+  "version": "0.2.0",
+  "date": "2026-10-26",
+  "status": "LOCAL_RUNTIME_READY_AWAITING_OWNER_QUIT_INSTALL_REOPEN",
+  "scope": "Vietnamese-only support for an already-open personal meeting; no translation",
+  "owner_will_restart_claude": true,
+  "normal_mcp_tools": 11,
+  "test_only_fixture_tool": 1,
+  "checks": {
+    "typescript_build": "PASS",
+    "node_contract_tests": {
+      "passed": 12,
+      "failed": 0
+    },
+    "audio_infrastructure_tests": {
+      "passed": 2,
+      "failed": 0,
+      "device_capture": false
+    },
+    "stdio_http_probe": "PASS_SDK_CLIENT_NOT_CLAUDE",
+    "browser_ui": "PASS_OPERATOR_TEXT_LITERAL_HTML_STOP_HISTORY_REOPEN",
+    "installer_running_app_refusal": "PASS_UNRELATED_CONFIG_UNCHANGED",
+    "public_file_asr": {
+      "dataset": "google/fleurs vi_vn test row 0",
+      "audio_seconds": 11.34,
+      "model_load_seconds": 1.3951869999982591,
+      "decode_and_asr_seconds": 3.7975557999998273,
+      "word_errors_observed": true,
+      "human_acceptance": false
+    },
+    "synthetic_silence_seconds": 5,
+    "synthetic_silence_segments": 0
+  },
+  "known_failures_retained": [
+    "Initial public-file decode failed with PyAV 19.0.2 metadata_errors API mismatch; pinned 16.0.1 and reran successfully",
+    "Initial external Claude config merge/readback succeeded but the running app subsequently overwrote it; final installer refuses while Desktop is running"
+  ],
+  "installation": {
+    "initial_config_edit_still_present": false,
+    "guarded_installer": "Hoan-tat-cai-Claude.cmd",
+    "requires_owner_quit_before_apply": true,
+    "actual_claude_tool_execution_verified": false
+  },
+  "live": {
+    "device_capture_performed": false,
+    "microphone_started": false,
+    "meeting_joined": false,
+    "external_messages_sent": false,
+    "actual_claude_model_calls": 0,
+    "continuous_agent_verified": false,
+    "human_uat": "NOT_PERFORMED"
+  },
+  "data": {
+    "meeting_audio": "RAM_ONLY_WHEN_USER_STARTS",
+    "text": "LOCAL_SQLITE",
+    "private_agenda_and_test_raw": "LOCAL_IGNORED_NOT_GIT",
+    "aios_dependency": false
+  },
+  "runbook": "docs/PILOT_RUNTIME_20261026.md",
+  "next_action": "Owner fully quits Claude, runs guarded installer, reopens Claude, verifies tools, then grants the chosen source and starts the session when intended.",
+  "cleanup": {
+    "ui_verification_server_stopped": true,
+    "owned_python_capture_processes_observed": 0,
+    "test_browser_tab_closed": true,
+    "claude_not_restarted_by_agent": true
+  }
+}
