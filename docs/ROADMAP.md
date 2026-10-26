@@ -1,25 +1,18 @@
-# Lộ trình riêng
+# Lộ trình triển khai
 
-## P0 — Khởi tạo
+Baseline v0.1.0; mỗi bước phải có sản phẩm và bằng chứng. Không bắt đầu bằng việc xây toàn bộ bộ tai/UI trước khi kiểm tra vòng agent.
 
-Thư mục riêng, lịch sử Git mới, tài liệu phạm vi và bản nháp cấu hình. Chỉ kiểm tra cấu trúc; chưa có ứng dụng chạy được.
+| Bước | Sản phẩm công việc | Điều kiện đóng |
+| --- | --- | --- |
+| P0 — Khóa nền | Product/usage/technical/decision/acceptance + snapshot version | 7 owner locks được phản ánh, link/JSON/hash hợp lệ; không tuyên bố runtime |
+| P1 — Lát cắt tool | TypeScript MCP local + nguồn text tổng hợp + publish lên panel + text store + STOP | Offline tool proof, sau đó FP-01 trong Claude Desktop thật |
+| P2 — Chứng minh agentic | Nguồn paced, context có giới hạn, trạng thái chờ, turn boundary và host disconnect | FP-02/03; nếu thiếu tự vận hành phải ghi giới hạn và xử lý lựa chọn host/workflow trước khi mở rộng |
+| P3 — Tai/context thật | Chọn source/ASR hoặc audio trực tiếp, capture worker, temp lifecycle và profile hữu hạn | FP-04/05; bằng chứng source/cleanup và phạm vi dữ liệu rõ |
+| P4 — Bảng dịch V1 | Luồng người dùng hoàn chỉnh, lịch sử/correction, lưu text, trạng thái lỗi và dừng | AT-01…AT-09 theo mức cần thiết; không để fixture thay human QA |
+| P5 — Dùng thực | Phiên cá nhân Việt/Lào, chất lượng, latency, backlog và thời lượng đã chốt | AT-10/Human UAT; ghi nhận giới hạn và lỗi còn lại |
 
-## P1 — Khảo sát trên máy cá nhân
+Sau V1: hỏi đáp/phân tích theo context, công cụ hỗ trợ bổ sung, host AGY/Codex và voice. Mỗi phần có phạm vi riêng; không tự thêm vào V1 vì mục tiêu dài hạn hỗ trợ tối đa.
 
-Xác định client trợ lý và nguồn âm thanh thực tế. Kiểm chứng các khả năng được hỗ trợ bằng tài liệu và phép thử phù hợp phạm vi người dùng cho phép. Chọn cách nối trợ lý, nguồn/ASR và giao diện text; ghi riêng chi phí/quota nếu có. Không kế thừa cơ chế AIOS.
+## Gói triển khai tiếp theo
 
-## P2 — Một lát cắt text cục bộ
-
-Triển khai hợp đồng nguồn/context và hiển thị bằng fixture tổng hợp, sau đó một adapter được chọn. Giữ lần phát ngôn lặp, số/phủ định, bản sửa và khoảng thiếu. Chạy được độc lập khi AIOS không khả dụng.
-
-## P3 — Tai/context độc lập
-
-Sau khi nguồn và quyền đã rõ, triển khai nghe liên tục, vùng lưu giới hạn, backlog, STOP và giữ nguồn. Kiểm tra lúc trợ lý đang xử lý hoặc người dùng đang hỏi phân tích. Không đánh đồng fixture với device capture thực tế.
-
-## P4 — Nghiệm thu cá nhân
-
-Người dùng thử Việt ↔ Lào trên máy của mình. Đo đủ lời, chất lượng, độ trễ tới màn hình, backlog, phiên dài, gián đoạn và STOP. Chốt tiêu chí định lượng theo nhu cầu thật; không lấy số đo hoặc SLA của AIOS.
-
-## P5 — Thay trợ lý và tính năng bổ sung
-
-Thêm adapter AGY/Codex/Claude còn thiếu khi cần; kiểm tra đổi trợ lý rõ ràng và cách chuyển context. Voice hoặc chia sẻ ra cuộc họp là phạm vi sau, có thiết kế và kiểm chứng riêng.
+P1 bắt đầu bằng schema tools và fixtures tổng hợp, không cần nguồn cuộc họp thật. Pin runtime/SDK sau khi đọc phiên bản hiện hành, triển khai tool server tối thiểu, panel cục bộ và phép thử source/read/publish/idempotency/stop. Các thay đổi cài vào host hoặc thử bằng tài khoản thật phải có phạm vi rõ trong nhiệm vụ tích hợp; tài liệu baseline hiện tại không chứng minh đã thực hiện những bước đó.

@@ -1,31 +1,11 @@
 # Phạm vi dự án cá nhân
 
-Ngày khởi tạo: 26/10/2026.
+Bản hiện hành: [PRODUCT_BASELINE.md](PRODUCT_BASELINE.md), v0.1.0 ngày 26/10/2026. File này là bản tóm tắt, không tạo thêm quyết định ngoài baseline.
 
-## Mục đích
+Xây bộ tools để trợ lý AI chủ động hỗ trợ cuộc họp đang mở trên máy người dùng: tự bật tai trong scope được giao, lấy context, dịch Việt ↔ Lào và cập nhật bảng riêng. Claude Desktop là host đầu tiên; AGY/Codex là các lựa chọn thay thế sau.
 
-Giúp một người đang họp nghe và đọc bản dịch Việt ↔ Lào trên máy của mình, giữ ngữ cảnh và hỏi trợ lý để hiểu hoặc phân tích thêm. Bản dịch giữ lời được nói, cả lặp lại và sửa lời; phần phân tích được trình bày riêng khi người dùng yêu cầu.
+V1 chỉ bảng dịch trực tiếp, chưa hỏi đáp. Text tự lưu cục bộ; audio tạm. Agent làm chủ workflow; tools thực hiện thao tác, giữ bằng chứng nguồn, quản lý tài nguyên và STOP. Repository/runtime/dữ liệu/credential/nghiệm thu độc lập AIOS.
 
-Claude là lựa chọn ban đầu về sản phẩm. AGY hoặc Codex có thể thay thế theo lựa chọn người dùng. Việc có tài khoản trợ lý không tự chứng minh khả năng nghe liên tục, đọc audio, dùng MCP hay đáp ứng thời gian thực; mỗi adapter cần khảo sát và kiểm tra thực tế.
+Đã khóa quyết định người dùng trong [DECISION_LOG.md](DECISION_LOG.md). Kiến trúc và hợp đồng tool ở [TECHNICAL_BASELINE.md](TECHNICAL_BASELINE.md). Local MCP là đường đầu tiên cần chứng minh; vòng agent liên tục, nguồn audio/ASR, profile giới hạn và chỉ tiêu latency còn cần phép thử.
 
-## Quyết định đã có
-
-- Dự án, thư mục và Git repository riêng bên cạnh dự án AIOS hiện hữu.
-- Trợ lý cá nhân hoạt động trên máy người họp, độc lập AIOS.
-- Bộ tai và context là công cụ phụ trợ trợ lý; không tái sử dụng engine dịch dùng chung.
-- Không chia sẻ lõi, runtime, queue, dữ liệu, credential hoặc release với AIOS.
-- Text hiển thị cá nhân trước; chức năng nói phát triển sau.
-- Nghiệm thu cá nhân riêng, chưa có kết quả tích hợp hoặc Human UAT.
-
-## Phạm vi lần khởi tạo
-
-Tạo cấu trúc tài liệu, bản nháp cấu hình, hướng dẫn agent và repository độc lập. Chưa chọn ngôn ngữ/framework triển khai, nguồn capture/ASR hoặc giao thức adapter. Không sao chép mã/runtime/dữ liệu phiên họp từ repo cũ.
-
-## Cần xác minh trước khi tích hợp
-
-1. Client trợ lý thực tế người dùng muốn dùng và đường kết nối được client đó hỗ trợ.
-2. Hệ điều hành, thiết bị/nguồn âm thanh cuộc họp và quyền thu nguồn đó.
-3. Trợ lý nhận audio trực tiếp hay cần ASR riêng; chất lượng Lào/Việt của đường được chọn.
-4. Vòng lặp nguồn, buffer, STOP, giới hạn quota/context và nhu cầu hiển thị text.
-
-Đây là công việc của bước khảo sát tiếp theo, không phải lý do trì hoãn việc tạo repository.
+Hiện có tài liệu và kiểm tra snapshot. Chưa có tool server, extension, capture, model integration hoặc Human UAT. Không dùng trạng thái tài liệu để suy ra trạng thái sản phẩm.

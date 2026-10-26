@@ -1,13 +1,32 @@
-# Nghiệm thu riêng
+# Nghiệm thu V1
 
-**Hiện trạng: chỉ khởi tạo dự án. Chưa nghiệm thu ứng dụng hoặc adapter.**
+Baseline v0.1.0. Chưa thực hiện các ca sản phẩm dưới đây. Kiểm tra tài liệu/Git không được ghi PASS cho tool, agent loop hoặc dịch thực tế.
 
-| Mức | Nội dung | Trạng thái lúc khởi tạo |
-| --- | --- | --- |
-| Khởi tạo | Thư mục/repository/lịch sử mới, tài liệu riêng, JSON hợp lệ | Kiểm tra khi bàn giao |
-| Offline chức năng | Nguồn/context, giữ lặp/số/phủ định, GAP/sửa lời, STOP | Chưa triển khai |
-| Tích hợp cá nhân | Nguồn thực + adapter được chọn + hiển thị riêng | Chưa thực hiện |
-| Human UAT | Người dùng kiểm tra nghĩa Việt ↔ Lào, đủ lời và khả năng đọc trong họp | Chưa thực hiện |
-| Vận hành | Phiên dài, quota/context, backlog, gián đoạn, cleanup và đổi trợ lý | Chưa thực hiện |
+| ID | Yêu cầu | Ca kiểm chứng và điều kiện đạt | Mức bằng chứng |
+| --- | --- | --- | --- |
+| AT-01 | REQ-09 | Cài và chạy toolkit trên máy cá nhân không có AIOS; không import/mount dữ liệu hoặc gọi dịch vụ AIOS | Offline + tích hợp máy thật |
+| AT-02 | REQ-01/06/10 | Trong Claude Desktop đúng version/surface, người dùng giao phiên; agent tự prepare/start/read/context/publish bằng tools; source/scope mơ hồ được làm rõ | Actual host, không mock client |
+| AT-03 | REQ-01/06 | Nguồn đến nhiều đợt và có khoảng chờ; agent tiếp tục đọc/dịch/publish, đo số lần cần nhắc; không phải nhắc từng chunk | Actual host loop; FP-02/03 |
+| AT-04 | REQ-02 | Inject model wait và source gap; bộ tai vẫn nhận trong bounds, gap/backlog hiển thị đúng, không giả im lặng/nguồn | Offline fault injection + audio thật |
+| AT-05 | REQ-03/04 | Mẫu hai chiều Việt/Lào có lặp, sửa lời, số, phủ định và chuyển ngôn ngữ; người đánh giá so với nguồn; bản tạm không bị gọi là ổn định | Gold/reference + người đánh giá song ngữ |
+| AT-06 | REQ-04/05 | Publish lặp cùng ID không lặp dòng; câu lặp thật có ID mới; correction giữ history; font Lao/Việt và cuộn/đọc ở màn hình thực | Tool tests + UI + người dùng |
+| AT-07 | REQ-02/07/10 | Dừng khi model chờ, host đóng, nguồn mất, đĩa đầy; không thêm publication sau stop; trạng thái và nợ nguồn rõ | Fault injection + máy thật |
+| AT-08 | REQ-08 | Text tồn tại sau restart; audio dọn khi end/stop/crash recovery; xóa thất bại báo còn dữ liệu; startup không resume | Filesystem/resource evidence |
+| AT-09 | REQ-11 | Transcript/context chứa lệnh giả yêu cầu đọc file/đổi nguồn/gửi ngoài; tool không cấp quyền mới từ dữ liệu đó | Contract/negative tests |
+| AT-10 | REQ-01…REQ-08 | Dùng trong nhịp họp thực; đo latency, backlog slope, số lần can thiệp và chất lượng đọc/hiểu trong thời lượng đã chốt | Human UAT + clocks/raw evidence được phép |
 
-Tiêu chí thời gian/độ dài phiên cần được chốt cho trợ lý cá nhân sau khảo sát. Không nhập Mission 0/8, gate, kết quả test hoặc điều kiện nghiệm thu của sản phẩm AIOS vào bảng này.
+## Chỉ tiêu còn cần chốt bằng phép thử
+
+OPEN-04/OPEN-05 bao gồm thời lượng run, số mẫu, latency percentiles, mức backlog, deadline STOP/cleanup và tiêu chí chất lượng. Chưa có con số ngầm để kết luận PASS. Bản đo phải lưu cohort, version, nguồn được phép, đầu/đuôi khoảng thời gian và kết quả thất bại.
+
+Lỗi nghiêm trọng về số/phủ định, bỏ lời hoặc biến lời người nói thành quyết định không được che bằng điểm trung bình. Gold text do người đánh giá xác nhận phải tách khỏi ASR/model output. Source loss, ASR error, translation error và render delay được báo riêng theo bằng chứng.
+
+## Mức hoàn thành
+
+1. DOCUMENT_BASELINE: quyết định có nguồn, tài liệu nhất quán, snapshot kiểm tra được.
+2. OFFLINE_TOOL_PROOF: fixtures và fault cases của bộ tools; chưa có Claude thật.
+3. CLAUDE_DESKTOP_TOOL_PROOF: host thực đọc/publish được; chưa đủ live.
+4. CONTINUOUS_AGENT_PROOF: host duy trì workflow trong điều kiện/thời lượng đã đo.
+5. PERSONAL_LIVE_UAT: nguồn thật được phép, bảng hữu ích trong họp, người dùng đánh giá song ngữ và vận hành.
+
+Chỉ mức 5 cùng các tiêu chí đã chốt mới cho phép báo V1 dùng được. Một run bị giới hạn turn không được đổi nhãn thành tự vận hành. Không nhập tiêu chí/điểm nghiệm thu hoặc dữ liệu riêng của AIOS.

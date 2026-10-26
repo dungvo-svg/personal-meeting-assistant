@@ -1,13 +1,16 @@
 {
-  "schema": "personal-meeting-assistant-project@1",
+  "schema": "personal-meeting-assistant-project@2",
   "name": "personal-meeting-assistant",
   "created_on": "2026-10-26",
-  "status": "PROJECT_INITIALIZED_IMPLEMENTATION_PENDING",
+  "status": "DOCUMENT_BASELINE_READY_IMPLEMENTATION_PENDING",
+  "product_kind": "TOOLS_FOR_PERSONAL_MEETING_AGENT",
+  "workflow_owner": "USER_SELECTED_AI_AGENT",
   "audience": "SINGLE_USER_PERSONAL_ASSISTANT",
   "host": "USER_MEETING_COMPUTER",
   "languages": ["vi", "lo"],
   "assistant_options": ["claude", "agy", "codex"],
   "initial_intended_assistant": "claude",
+  "first_required_host": "claude_desktop",
   "connected_assistant": null,
   "implemented_adapters": [],
   "assistant_switching": "EXPLICIT_USER_SELECTION",
@@ -21,7 +24,18 @@
     "credentials_or_meeting_data": false,
     "release_or_acceptance": false
   },
-  "primary_output": "PERSONAL_TEXT_DISPLAY_PLANNED",
+  "primary_output": "PERSONAL_LIVE_TRANSLATION_PANEL_PLANNED",
+  "v1_meeting_mode": "ASSIST_ALREADY_OPEN_MEETING",
+  "v1_interactive_qa": false,
+  "text_history": "AUTO_SAVE_LOCAL",
+  "audio_retention": "TEMPORARY_ONLY",
+  "documentation_baseline": {
+    "version": "0.1.0",
+    "entry": "docs/PRODUCT_BASELINE.md",
+    "decisions": "docs/DECISION_LOG.md",
+    "lock_file": "baseline.lock.json",
+    "owner_locked_ids": ["OWN-001", "OWN-002", "OWN-003", "OWN-004", "OWN-005", "OWN-006", "OWN-007"]
+  },
   "acceptance_status": "NOT_EVALUATED",
   "automatic_start": false
 }

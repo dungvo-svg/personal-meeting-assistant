@@ -1,0 +1,28 @@
+{
+  "schema": "personal-meeting-assistant-baseline-lock@1",
+  "version": "0.1.0",
+  "date": "2026-10-26",
+  "meaning": "Versioned document snapshot; owner decisions and engineering assumptions retain separate authority. Not runtime acceptance or an immutable lock.",
+  "files": {
+    ".gitattributes": "99775c81146a29365a75ed86f7be589e28ac952b780ead75d006727f551928f0",
+    ".gitignore": "90de1305c4297fd69f2ef91e599c340f8b370d86dd9820b2013d9a11d067f036",
+    "AGENTS.md": "02538a1784817de220366ba33756bf88ef7c4b45475fa4fad2619b33ed83cef9",
+    "CHANGELOG.md": "744bb26024b746271cd45a0972c073226d3268b24084118933b61b9f481dab51",
+    "CLAUDE.md": "71c7b055d332153c84ce11dae22d84636e9b0cccae32c8262ef667433edf6fb3",
+    "README.md": "84103e75b9f81a2e0e787f29325405da59f00bfdfb0c6ad024273ad75f1132de",
+    "config/personal.example.json": "c4ad0a0e97c0c86a438e9852ab48302e42bfc2e15779b54088d4a6a37ad6e787",
+    "docs/ACCEPTANCE.md": "1cec9ed71d5e887f9f3871ccba8d6e089a7701067d3fa4cc124483538b748ba6",
+    "docs/ARCHITECTURE.md": "a65d6c0034d1d2551dbd522d88004ba897e505dd61c0d8d9ba671d1718853a77",
+    "docs/CHANGE_CONTROL.md": "1aba903b0e3ef20d87a44aea6a771951cade29f8aa703d55a428c4c8ba89d151",
+    "docs/CLAUDE_DESKTOP_FEASIBILITY.md": "36c12ea28fa50a8fb71b3d7c4483157d50f9c2939a292a536d174c4597e9b0c7",
+    "docs/DECISION_LOG.md": "9e04bfecdc293e0eec4bc4b03e0e694d1fadb137f0acb6d83464ad800a0411d6",
+    "docs/PRODUCT_BASELINE.md": "56dc5adc42f3f9e64c7819883de2b34660c683d733086d2d35dacbab432209f3",
+    "docs/PROJECT_BRIEF.md": "d90de615a18ec2121390c2ef3d8a751babf1494134129daacbeba1ac18a87cd6",
+    "docs/ROADMAP.md": "0c72234ce7c9fe9edd9341d3961eb3f801d9003fbbffae27ed0661cc8ce0b194",
+    "docs/TECHNICAL_BASELINE.md": "78f2b8558511273120697f2e6d4ff8b427f1bbe157540708819120802853e0cb",
+    "docs/USER_GUIDE.md": "8a33618207ec5c457175a185c18e916090fa38d6084822ff2623b25ca0e33aab",
+    "project.json": "535beb7a1e39e2deb0fd24de6b42fbd0abcf23734e8ce029e2a3715a1718fe41",
+    "src/README.md": "65a37d10e3dcd7a60e0037de7243a5b9aaa19145fdd89fdb59f3685bd22d4a82",
+    "tools/verify_baseline.py": "a00790a960316530fd4d38ce121c854647bfa54db5cd05e89d5188416c8af0f5"
+  }
+}
