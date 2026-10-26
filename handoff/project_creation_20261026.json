@@ -1,0 +1,19 @@
+{
+  "schema": "personal-meeting-assistant-creation@1",
+  "date": "2026-10-26",
+  "owner_request": "Create a separate personal assistant project, folder and Git repository; Claude can be replaced by AGY or Codex.",
+  "local_root": "D:/WORK/Agent/Agent-first/personal-meeting-assistant",
+  "status": "SCAFFOLD_ONLY",
+  "reference_decision": {
+    "repository": "VOSYDUNG/nnc-meeting-interpreter",
+    "commit": "b15f1786a6e2c1bfe91d300abdb5320e7c637576",
+    "document": "docs/TEXT_FIRST_TWO_MODES_20261026.md",
+    "role": "Historical architecture context only; current user request authorizes creating this separate project."
+  },
+  "independent_git_history": true,
+  "aios_code_or_credentials_or_private_data_copied": false,
+  "aios_runtime_dependency": false,
+  "runtime_implemented": false,
+  "live_integrations_exercised": false,
+  "human_uat": "NOT_PERFORMED"
+}

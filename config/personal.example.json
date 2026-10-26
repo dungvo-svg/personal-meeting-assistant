@@ -1,0 +1,23 @@
+{
+  "schema": "personal-meeting-assistant-config-draft@1",
+  "executable_configuration": false,
+  "selected_assistant": "claude",
+  "assistant_options": ["claude", "agy", "codex"],
+  "adapter": null,
+  "model": null,
+  "connection": null,
+  "automatic_fallback": false,
+  "source_languages": ["vi", "lo"],
+  "output": "personal_text",
+  "local_data_directory": ".local",
+  "capabilities_enabled": {
+    "audio_capture": false,
+    "model_calls": false,
+    "external_sharing": false,
+    "voice": false,
+    "camera": false,
+    "screen_capture": false
+  },
+  "automatic_start": false,
+  "automatic_resume": false
+}

@@ -1,0 +1,27 @@
+{
+  "schema": "personal-meeting-assistant-project@1",
+  "name": "personal-meeting-assistant",
+  "created_on": "2026-10-26",
+  "status": "PROJECT_INITIALIZED_IMPLEMENTATION_PENDING",
+  "audience": "SINGLE_USER_PERSONAL_ASSISTANT",
+  "host": "USER_MEETING_COMPUTER",
+  "languages": ["vi", "lo"],
+  "assistant_options": ["claude", "agy", "codex"],
+  "initial_intended_assistant": "claude",
+  "connected_assistant": null,
+  "implemented_adapters": [],
+  "assistant_switching": "EXPLICIT_USER_SELECTION",
+  "automatic_fallback": false,
+  "requires_aios": false,
+  "shared_with_aios": {
+    "git_repository_or_history": false,
+    "translation_core": false,
+    "runtime_or_event_package": false,
+    "queue_outbox_database": false,
+    "credentials_or_meeting_data": false,
+    "release_or_acceptance": false
+  },
+  "primary_output": "PERSONAL_TEXT_DISPLAY_PLANNED",
+  "acceptance_status": "NOT_EVALUATED",
+  "automatic_start": false
+}
