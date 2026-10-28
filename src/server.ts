@@ -10,15 +10,14 @@ import { MeetingRuntime } from './runtime.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
-const runtime = new MeetingRuntime(root, dataDir, process.env.PMA_TEST_MODE === '1');
-// A diagnostic instance must never launch Zoom.
-if (runtime.testMode) runtime.opener = () => {};
+// Constructed only after this process owns the panel port: a second instance must not touch the
+// shared history (its start-up cleanup used to mark another instance's live meeting as ended).
+let runtime: MeetingRuntime;
 const port = Number(process.env.PMA_PORT || 8796);
 const origin = `http://127.0.0.1:${port}`;
 const cookie = randomBytes(32).toString('hex');
 const panel = readFileSync(join(root, 'web', 'index.html'));
 const events = new Set<import('node:http').ServerResponse>();
-runtime.on('change', () => { for (const response of events) response.write('event: update\ndata: {}\n\n'); });
 
 function json(response: import('node:http').ServerResponse, status: number, value: unknown) { response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(value)); }
 const http = createServer(async (request, response) => {
@@ -53,7 +52,12 @@ const http = createServer(async (request, response) => {
   } catch (error) { if (!response.headersSent) json(response, 400, { error: String(error) }); else response.end(); }
 });
 http.requestTimeout = 15000; http.headersTimeout = 10000;
-await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(port, '127.0.0.1', resolve); });
+try { await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(port, '127.0.0.1', resolve); }); }
+catch (error: any) { console.error(`Personal meeting runtime already running on ${origin} (${error?.code || error}); this instance exits without touching history.`); process.exit(1); }
+runtime = new MeetingRuntime(root, dataDir, process.env.PMA_TEST_MODE === '1');
+// A diagnostic instance must never launch Zoom.
+if (runtime.testMode) runtime.opener = () => {};
+runtime.on('change', () => { for (const response of events) response.write('event: update\ndata: {}\n\n'); });
 mkdirSync(dataDir, { recursive: true }); writeFileSync(join(dataDir, 'panel.json'), JSON.stringify({ url: origin, pid: process.pid, startedAt: new Date().toISOString() }));
 console.error(`Personal meeting panel: ${origin} (capture OFF)`);
 
