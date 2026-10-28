@@ -137,9 +137,20 @@ def transcribe_chunk(model, waveform16, languages):
     return segments, language, round(scores[language] / total, 3) if total else None
 
 
+def load_recording(path):
+    # Decode a recording to 16 kHz mono float32 in RAM; no audio file is written.
+    import av
+    import numpy as np
+    container = av.open(str(path))
+    resampler = av.AudioResampler(format='flt', layout='mono', rate=16000)
+    parts = [frame.to_ndarray().reshape(-1) for packet in container.decode(audio=0) for frame in resampler.resample(packet)]
+    parts += [frame.to_ndarray().reshape(-1) for frame in resampler.resample(None)]
+    container.close()
+    return np.concatenate(parts).astype(np.float32)
+
+
 def capture(args):
     import numpy as np
-    import pyaudiowpatch as pa
     import av
     from faster_whisper import WhisperModel
     threading.Thread(target=parent_watch, args=(args.parent,), daemon=True).start()
@@ -164,23 +175,47 @@ def capture(args):
     model = WhisperModel(str(model_path), device='cpu', compute_type='int8', cpu_threads=6, num_workers=1, local_files_only=True)
     if stop.is_set():
         return
-    audio = pa.PyAudio()
-    device = audio.get_device_info_by_index(args.device)
-    if device['name'] != args.device_name or device['maxInputChannels'] < 1:
-        raise RuntimeError('Selected audio device changed. Re-select on the panel.')
-    rate = int(device['defaultSampleRate'])
-    channels = int(device['maxInputChannels'])
-    if channels > 8 or rate > 192000:
-        raise RuntimeError('Unsupported source format')
-    keepalive = None
-    keepalive_note = 'NOT_LOOPBACK'
-    if device.get('isLoopbackDevice'):
-        try:
-            keepalive = render_keepalive(audio, pa, device)
-            keepalive_note = 'SILENT_RENDER_ACTIVE' if keepalive else 'RENDER_DEVICE_NOT_FOUND_FRAMES_STOP_WHEN_SILENT'
-        except Exception as exc:
-            keepalive_note = 'KEEPALIVE_FAILED_FRAMES_STOP_WHEN_SILENT: ' + str(exc)
-    stream = audio.open(format=pa.paFloat32, channels=channels, rate=rate, input=True, input_device_index=args.device, frames_per_buffer=2048)
+    audio = stream = keepalive = None
+    source_done = threading.Event()
+    if args.replay:
+        # Replay a recording through the same chunking and ASR, paced like a live source. No device is opened.
+        pcm = load_recording(args.replay)
+        rate, channels, source_name, keepalive_note = 16000, 1, Path(args.replay).name, 'REPLAY_FILE'
+        position = [0]
+
+        def read_block():
+            begin = position[0]
+            if begin >= len(pcm):
+                raise EOFError
+            block = pcm[begin:begin + 2048]
+            position[0] += len(block)
+            delay = capture_started + position[0] / rate / args.speed - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            return block.tobytes()
+    else:
+        import pyaudiowpatch as pa
+        audio = pa.PyAudio()
+        device = audio.get_device_info_by_index(args.device)
+        if device['name'] != args.device_name or device['maxInputChannels'] < 1:
+            raise RuntimeError('Selected audio device changed. Re-select the source.')
+        rate = int(device['defaultSampleRate'])
+        channels = int(device['maxInputChannels'])
+        if channels > 8 or rate > 192000:
+            raise RuntimeError('Unsupported source format')
+        source_name = device['name']
+        keepalive_note = 'NOT_LOOPBACK'
+        if device.get('isLoopbackDevice'):
+            try:
+                keepalive = render_keepalive(audio, pa, device)
+                keepalive_note = 'SILENT_RENDER_ACTIVE' if keepalive else 'RENDER_DEVICE_NOT_FOUND_FRAMES_STOP_WHEN_SILENT'
+            except Exception as exc:
+                keepalive_note = 'KEEPALIVE_FAILED_FRAMES_STOP_WHEN_SILENT: ' + str(exc)
+        stream = audio.open(format=pa.paFloat32, channels=channels, rate=rate, input=True, input_device_index=args.device, frames_per_buffer=2048)
+
+        def read_block():
+            # A short CPU stall must not end a long meeting; overflow is reported, not fatal.
+            return stream.read(2048, exception_on_overflow=False)
     capture_started = time.monotonic()
 
     def reader():
@@ -196,10 +231,16 @@ def capture(args):
             while not stop.is_set():
                 if time.monotonic() - capture_started > args.max_seconds:
                     raise RuntimeError('Authorized capture duration reached; source stopped.')
-                # A short CPU stall must not end a long meeting; overflow is reported, not fatal.
-                raw = stream.read(2048, exception_on_overflow=False)
+                try:
+                    raw = read_block()
+                except EOFError:
+                    if block_samples and block_peak_rms >= 0.006:
+                        chunks.put((np.concatenate(blocks), block_start / rate, samples / rate, 'END_OF_RECORDING'))
+                    block_samples = 0
+                    source_done.set()
+                    return
                 if not ready:
-                    emit({'type': 'ready', 'device': device['name'], 'sampleRate': rate, 'channels': channels, 'languages': languages, 'model': 'faster-whisper-small-int8-cpu', 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 4, 'maxChunkSeconds': 12, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
+                    emit({'type': 'ready', 'device': source_name, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'model': 'faster-whisper-small-int8-cpu', 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 4, 'maxChunkSeconds': 12, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
                     ready = True
                 mono = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels).mean(axis=1)
                 blocks.append(mono.copy())
@@ -218,7 +259,16 @@ def capture(args):
                     if block_peak_rms >= 0.006:
                         chunk = (np.concatenate(blocks), block_start / rate, samples / rate, 'MAX_WINDOW_POSSIBLE_WORD_CUT' if duration >= 12 else 'SILENCE_BOUNDARY_HEURISTIC')
                         try:
-                            chunks.put_nowait(chunk)
+                            if args.replay:
+                                # A recording can wait for ASR; nothing is lost by slowing the replay down.
+                                while not stop.is_set():
+                                    try:
+                                        chunks.put(chunk, timeout=0.5)
+                                        break
+                                    except queue.Full:
+                                        pass
+                            else:
+                                chunks.put_nowait(chunk)
                         except queue.Full:
                             # ASR is behind: keep growing this block (bounded) instead of stopping the meeting.
                             if duration < 30:
@@ -235,20 +285,24 @@ def capture(args):
             emit({'type': 'error', 'message': str(exc)})
             stop.set()
         finally:
-            stream.stop_stream()
-            stream.close()
+            if stream:
+                stream.stop_stream()
+                stream.close()
             if keepalive:
                 keepalive.stop_stream()
                 keepalive.close()
 
     reader_thread = threading.Thread(target=reader, daemon=True)
-    emit({'type': 'prepared', 'modelReady': True, 'device': device['name'], 'firstReadVerified': False})
+    emit({'type': 'prepared', 'modelReady': True, 'device': source_name, 'firstReadVerified': False})
     reader_thread.start()
     try:
         while not stop.is_set():
             try:
                 waveform, begin, end, boundary = chunks.get(timeout=0.2)
             except queue.Empty:
+                if source_done.is_set():
+                    emit({'type': 'status', 'replayEnded': True})
+                    break
                 continue
             frame = av.AudioFrame.from_ndarray(waveform.reshape(1, -1), format='flt', layout='mono')
             frame.sample_rate = rate
@@ -269,7 +323,8 @@ def capture(args):
     finally:
         stop.set()
         reader_thread.join(timeout=2)
-        audio.terminate()
+        if audio:
+            audio.terminate()
 
 
 if __name__ == '__main__':
@@ -283,6 +338,8 @@ if __name__ == '__main__':
     parser.add_argument('--parent', type=int)
     parser.add_argument('--max-seconds', type=int, default=7200)
     parser.add_argument('--languages', default='vi,lo')
+    parser.add_argument('--replay')
+    parser.add_argument('--speed', type=float, default=1.0)
     args = parser.parse_args()
     try:
         if args.list:

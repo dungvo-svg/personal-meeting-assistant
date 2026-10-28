@@ -30,7 +30,8 @@ secrets/
 *.pfx
 
 # Local assistant settings and caches
-.claude/
+.claude/*
+!.claude/skills/
 .codex/
 .agy/
 .venv/

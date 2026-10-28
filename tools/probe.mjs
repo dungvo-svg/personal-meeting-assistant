@@ -1,13 +1,14 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 
 const data = mkdtempSync(join(tmpdir(), 'personal-mcp-probe-'));
+async function shutdownRuntime() { try { const { url, token } = JSON.parse(readFileSync(join(data, 'daemon.json'), 'utf8')); await fetch(url + '/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify({ method: 'shutdown' }) }); await new Promise(r => setTimeout(r, 800)); } catch {} }
 const client = new Client({ name: 'personal-runtime-protocol-probe', version: '1.0.0' });
-const transport = new StdioClientTransport({ command: process.execPath, args: [resolve('dist/server.js')], env: { ...Object.fromEntries(Object.entries(process.env).filter(([,v]) => v !== undefined)), PMA_TEST_MODE: '1', PMA_PORT: '8797', PMA_DATA_DIR: data }, stderr: 'pipe' });
+const transport = new StdioClientTransport({ command: process.execPath, args: [resolve('dist/server.js')], env: { ...Object.fromEntries(Object.entries(process.env).filter(([,v]) => v !== undefined)), PMA_TEST_MODE: '1', PMA_PORT: '8797', PMA_DATA_DIR: data, PMA_IDLE_MINUTES: '2' }, stderr: 'pipe' });
 let stderr = ''; transport.stderr?.on('data', d => stderr = (stderr + d).slice(-4000));
 const call = async (name, args = {}) => { const result = await client.callTool({ name, arguments: args }); assert.notEqual(result.isError, true, JSON.stringify(result)); return JSON.parse(result.content[0].text); };
 try {
@@ -17,6 +18,8 @@ try {
   assert.ok(!tools.tools.some(t => /exec|shell|grant|authorize/.test(t.name)));
   const session = await call('session_prepare', { title: 'SYNTHETIC PROTOCOL CHECK — not a meeting', fixture: true });
   const id = session.session.id;
+  // The adapter holds no port; the panel belongs to the runtime it started.
+  session.panelUrl = JSON.parse(readFileSync(join(data, 'daemon.json'), 'utf8')).url;
   const first = await call('fixture_append', { text: 'Mẫu thử: có ba xe cần kiểm tra, chưa có quyết định sửa xe.' });
   const read = await call('source_next', { sessionId: id, after: 0, waitMs: 0 });
   assert.equal(read.items[0].id, first.id);
@@ -41,6 +44,6 @@ try {
   for (const kind of ['raw', 'summary', 'tasks']) { const report = await fetch(session.panelUrl + '/api/report?kind=' + kind + '&id=' + id, { headers: { Cookie: cookie } }); assert.equal(report.status, 200, kind); }
   assert.match(summary.path, /SUMMARY\.md$/); assert.match(tasks.path, /TASKS\.md$/);
   const rejected = await client.callTool({ name: 'note_publish', arguments: { sessionId: id, key: 'late', revision: 1, kind: 'action', text: 'Late', sourceIds: [first.id] } }); assert.equal(rejected.isError, true);
-  console.log(JSON.stringify({ status: 'PASS', evidence: 'SDK_CLIENT_PROTOCOL_ONLY_NOT_CLAUDE', toolCount: tools.tools.length, checks: ['stdio handshake', 'source cursor', 'agent-note publication', 'panel JSON', 'history and text export', 'cross-origin POST denied', 'missing cookie denied', 'STOP rejects late notes', 'meeting_open test-mode no launch', 'RAW on finish', 'summary/tasks after end', 'report download'], actualCapture: false, actualModel: false }));
+  console.log(JSON.stringify({ status: 'PASS', evidence: 'SDK_CLIENT_PROTOCOL_ONLY_NOT_CLAUDE', architecture: 'MCP_ADAPTER_TO_RUNTIME_DAEMON', toolCount: tools.tools.length, checks: ['stdio handshake', 'source cursor', 'agent-note publication', 'panel JSON', 'history and text export', 'cross-origin POST denied', 'missing cookie denied', 'STOP rejects late notes', 'meeting_open test-mode no launch', 'RAW on finish', 'summary/tasks after end', 'report download'], actualCapture: false, actualModel: false }));
 } catch (error) { console.error(stderr); throw error; }
-finally { await client.close(); assert.ok(resolve(data).startsWith(resolve(tmpdir()))); rmSync(data, { recursive: true, force: true }); }
+finally { await client.close(); await shutdownRuntime(); assert.ok(resolve(data).startsWith(resolve(tmpdir()))); rmSync(data, { recursive: true, force: true }); }

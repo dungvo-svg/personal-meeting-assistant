@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 —28/10/2026
+
+- Audit MCP (`docs/AUDIT_MCP_20261028.md`) theo yêu cầu owner: MCP không hợp làm lõi. Chuyển sang **dịch vụ nghe chạy nền một bản mỗi máy** (`src/daemon.ts`), **CLI `pma`** (`src/cli.ts`, `./pma`, `pma.cmd`), **skill `/hop`** (`.claude/skills/hop/SKILL.md`) và **Monitor trên `pma follow`**. MCP (`src/server.ts`) còn là lớp mỏng chuyển tiếp, không giữ trạng thái hay cổng.
+- Dịch vụ được tạo qua WMI trên Windows: không kế thừa đường ống/job của lệnh gọi, sống qua khởi động lại Claude; tự thoát sau 30 phút không có phiên. RPC loopback có token trong `daemon.json`; trình duyệt bị từ chối.
+- `pma follow` in text theo lô (mặc định 60 s) và gửi heartbeat; Stop hook cho phép kết thúc lượt khi có Monitor theo dõi, chặn khi không ai theo dõi; hook dùng `node:http` (fetch làm Node crash lúc thoát trên Windows, khiến quyết định chặn bị bỏ qua) và vẫn đọc được server cũ qua `panel.json`.
+- `pma replay`: phát lại file ghi hình qua đúng worker, cắt đoạn và ASR; thử trên clip FLEURS tiếng Việt: 2 đoạn `vi`, báo hết phát lại, RAW đúng.
+- Kiểm chứng: 25 test Node (runtime + dịch vụ/CLI/hook), 4 test Python, probe MCP qua lớp mỏng PASS. Chưa chạy trọn một cuộc họp thật với Monitor.
+
 ## 0.4.0 —28/10/2026
 
 - Owner (U16–U17): host Claude Code; chỉ Claude là AI, công cụ âm thanh/ASR/dịch mã nguồn mở chạy trên máy; theo dõi đến khi người dùng kết thúc; mọi thao tác qua Claude. Ghi OWN-013..016, ENG-14..16; backlog `docs/V0_4_BACKLOG.md`.

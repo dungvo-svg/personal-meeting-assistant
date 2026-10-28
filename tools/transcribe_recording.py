@@ -7,20 +7,9 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from audio_worker import collapse_repeats, segment_flags, transcribe_chunk  # noqa: E402  (same choices and filters as the live worker)
+from audio_worker import collapse_repeats, load_recording, segment_flags, transcribe_chunk  # noqa: E402  (same choices and filters as the live worker)
 
 LABELS = {'LAO_WRITTEN_IN_THAI_SCRIPT': 'chữ Thái, nội dung không đáng tin', 'LIKELY_HALLUCINATION': 'nghi câu ảo', 'REPETITION': 'lặp từ'}
-
-def load_audio(path):
-    import av
-    import numpy as np
-    container = av.open(str(path))
-    resampler = av.AudioResampler(format='flt', layout='mono', rate=16000)
-    parts = [frame.to_ndarray().reshape(-1) for packet in container.decode(audio=0) for frame in resampler.resample(packet)]
-    parts += [frame.to_ndarray().reshape(-1) for frame in resampler.resample(None)]
-    container.close()
-    return np.concatenate(parts).astype(np.float32)
-
 
 def speech_chunks(audio, max_seconds=20.0, join_gap=1.0):
     # Cut at pauses in speech (Silero VAD), merging short turns up to max_seconds.
@@ -58,7 +47,7 @@ def main():
     for path in args.files:
         match = re.search(r'(\d{4}-\d{2}-\d{2}) (\d{2})-(\d{2})-(\d{2})', path.name)
         base = datetime.strptime(' '.join(match.groups()), '%Y-%m-%d %H %M %S') if match else None
-        audio = load_audio(path)
+        audio = load_recording(path)
         stats['audioSeconds'] += len(audio) / 16000
         chunks = speech_chunks(audio)
         lines += ['', f'## {path.name}' + (f' — bắt đầu {base:%H:%M:%S}' if base else ''), '']

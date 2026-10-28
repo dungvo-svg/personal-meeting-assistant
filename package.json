@@ -1,6 +1,6 @@
 {
   "name": "personal-meeting-assistant",
-  "version": "0.2.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -9,8 +9,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/server.js",
-    "panel": "node dist/server.js --standalone",
-    "test": "npm run build && node --test tests/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "daemon": "node dist/daemon.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.32.2",
@@ -19,5 +19,8 @@
   "devDependencies": {
     "@types/node": "26.6.5",
     "typescript": "7.0.2"
+  },
+  "bin": {
+    "pma": "dist/cli.js"
   }
 }

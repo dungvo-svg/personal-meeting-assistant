@@ -20,8 +20,12 @@
   "first_required_host": "claude_code_in_claude_desktop",
   "connected_assistant": null,
   "implemented_adapters": [
-    "mcp_stdio",
-    "windows_wasapi_local_asr"
+    "runtime_daemon",
+    "pma_cli",
+    "claude_code_skill_hop",
+    "mcp_stdio_thin_adapter",
+    "windows_wasapi_local_asr",
+    "recording_replay"
   ],
   "assistant_switching": "EXPLICIT_USER_SELECTION",
   "automatic_fallback": false,
@@ -59,7 +63,7 @@
     "lao_asr_quality": "NOT_USABLE_THAI_SCRIPT_FLAGGED",
     "non_claude_hosts_verified": false,
     "primary_host": "claude_code_in_claude_desktop",
-    "continuity": "STOP_HOOK_IMPLEMENTED_NOT_YET_MEASURED_FULL_MEETING"
+    "continuity": "MONITOR_ON_PMA_FOLLOW_PLUS_STOP_HOOK_NOT_YET_MEASURED_FULL_MEETING"
   },
   "runtime_runbook": "docs/MEETING_RUNTIME.md",
   "v1_meeting_mode": "OPEN_USER_SENT_ZOOM_LINK_USER_CONFIRMS_JOIN",
@@ -67,7 +71,7 @@
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "TEMPORARY_ONLY",
   "documentation_baseline": {
-    "version": "0.4.0",
+    "version": "0.5.0",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",

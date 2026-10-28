@@ -22,6 +22,8 @@ Owner-locked V1: the agent activates hearing, obtains context and publishes a li
 
 ## Current scope and evidence
 
+Architecture from 0.5.0 (ENG-17, docs/AUDIT_MCP_20261028.md): one background runtime per machine (`src/daemon.ts`), driven by the `pma` CLI, the `hop` skill and Monitor on `pma follow`; `src/server.ts` is a thin MCP adapter. Never run heavy jobs (ASR batch, replay) while a live meeting is being captured.
+
 Current owner scope (28 October, OWN-009..012): the user sends a Zoom link + meeting content; the agent opens the link (user still clicks Join), hears mixed Vietnamese/Lao without translation, and after the meeting writes RAW + Summary + Task via tools. The toolkit must work for non-Claude MCP hosts. Read docs/MEETING_RUNTIME.md. Lao ASR from whisper small comes out in Thai script and is flagged as unreliable. The 26 October scope below is history.
 
 

@@ -2,7 +2,15 @@
 
 Version 0.3.0, ngày 28/10/2026. Thay cách dùng của [runbook 26/10](PILOT_RUNTIME_20261026.md). Nghe lẫn Việt–Lào, không phiên dịch. Các giới hạn nghe (một nguồn, grant 3 giờ, capture 2 giờ, chunk 3–12 giây, 4 chunk chờ) giữ nguyên.
 
-## Luồng dùng
+## Luồng dùng từ 0.5.0 (Claude Code)
+
+Người dùng gửi link Zoom + nội dung họp cho Claude trong tab Code. Skill **`/hop`** (`.claude/skills/hop/SKILL.md`) dẫn Claude chạy:
+
+`./pma start --title … --agenda … --link …` → người dùng bấm Join → `./pma sources` → người dùng đồng ý → `./pma select <index>` → `./pma listen` → Monitor `./pma follow --batch 60` → (người dùng nói kết thúc) → `./pma stop` → `./pma read` → `./pma summary` + `./pma tasks`.
+
+Dịch vụ nghe chạy nền, một bản mỗi máy, tự bật ở lệnh đầu tiên và sống qua khởi động lại Claude. Bảng `http://127.0.0.1:8796/` vẫn mở được để xem. Phát lại file ghi hình: `./pma replay "<file>"`. Cách dùng qua MCP bên dưới vẫn còn cho Claude Desktop Chat và host khác.
+
+## Luồng dùng qua MCP (0.3.0–0.4.0)
 
 Người dùng gửi cho trợ lý: **link Zoom + nội dung họp**. Mẫu lời giao việc: [handoff/MEETING_START.vi.txt](../handoff/MEETING_START.vi.txt). Nút **Sao chép lời giao việc** trên bảng cũng cho ra mẫu tương tự.
 

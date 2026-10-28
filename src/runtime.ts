@@ -1,8 +1,8 @@
 import { DatabaseSync } from 'node:sqlite';
 import { EventEmitter, once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
@@ -41,6 +41,7 @@ export class MeetingRuntime extends EventEmitter {
   lastError: string | null = null;
   lastAgentReadAt: string | null = null;
   agentCursor = 0;
+  lastFollowAt: string | null = null;
   context: any;
   closing = false;
   private stoppingCapture: Promise<void> | null = null;
@@ -76,7 +77,7 @@ export class MeetingRuntime extends EventEmitter {
       : savedIsCurrent ? this.context : { title: title || 'Phiên họp cá nhân', languages, translation_required: false, topics: [], contextSource: 'NONE', staleSavedContextDate: this.context.date };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
-    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastError = null; this.armedDevice = null; this.captureState = 'OFF'; this.captureInfo = {};
+    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.lastError = null; this.armedDevice = null; this.captureState = 'OFF'; this.captureInfo = {};
     this.ping(); return this.snapshot();
   }
   requireSession(id: string) {
@@ -96,8 +97,10 @@ export class MeetingRuntime extends EventEmitter {
     const row = this.db.prepare('INSERT INTO sources(session_id,text,origin,start,end,created,boundary,capture_id,language) VALUES(?,?,?,?,?,?,?,?,?)').run(this.session.id, text, origin, start, end, new Date().toISOString(), boundary, captureId, language);
     this.ping(); return Number(row.lastInsertRowid);
   }
-  async next(id: string, after = 0, waitMs = 20000, limit = 12) {
+  async next(id: string, after = 0, waitMs = 20000, limit = 12, follower = false) {
     this.requireSession(id); this.lastAgentReadAt = new Date().toISOString(); this.agentCursor = after;
+    // `pma follow` heartbeat: a Monitor is reading, so the Stop hook may let the turn end.
+    if (follower) this.lastFollowAt = this.lastAgentReadAt;
     const until = Date.now() + Math.max(0, Math.min(waitMs, 25000));
     while (!this.sources(id, after, 1).length && !this.session.ended && !this.closing && Date.now() < until) {
       await new Promise<void>(resolve => {
@@ -137,7 +140,7 @@ export class MeetingRuntime extends EventEmitter {
     const counts: any = id ? this.db.prepare('SELECT (SELECT COUNT(*) FROM sources WHERE session_id=?) AS sources,(SELECT COUNT(*) FROM notes WHERE session_id=?) AS notes').get(id, id) : { sources: 0, notes: 0 };
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0 };
     const { type, ...captureInfo } = this.captureInfo;
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, lastAgentReadAt: this.lastAgentReadAt, agentCursor: this.agentCursor, unread: backlog.count, sourceCount: counts.sources, noteCount: counts.notes };
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes };
   }
   historyList() { return this.db.prepare('SELECT id,title,created,ended,mode FROM sessions ORDER BY created DESC LIMIT 100').all(); }
   exportText(id: string) {
@@ -185,12 +188,25 @@ export class MeetingRuntime extends EventEmitter {
     this.requireSession(id);
     if (this.stoppingCapture || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (this.capture) return { state: this.captureState, info: this.captureInfo };
-    if (!this.armedDevice) throw new Error('SELECT_AND_AUTHORIZE_SOURCE_ON_PERSONAL_PANEL_FIRST');
+    if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select (or the panel)');
     if (Date.parse(this.armedDevice.expiresAt) <= Date.now()) throw new Error('SOURCE_GRANT_EXPIRED');
+    const maxSeconds = Math.min(7200, Math.floor((Date.parse(this.armedDevice.expiresAt) - Date.now()) / 1000));
+    return this.launch(id, ['--device', String(this.armedDevice.index), '--device-name', this.armedDevice.name], maxSeconds);
+  }
+  // Replays a recording through the same worker, chunking and ASR as a live meeting. No device is opened.
+  async replay(id: string, file: string, speed = 1) {
+    this.requireSession(id);
+    if (this.stoppingCapture || this.capture) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
+    const path = resolve(file);
+    if (!/\.(mp4|m4a|mp3|wav|webm|mkv|mov)$/i.test(path) || !existsSync(path)) throw new Error('REPLAY_FILE_NOT_FOUND_OR_UNSUPPORTED');
+    if (!(speed >= 0.5 && speed <= 20)) throw new Error('REPLAY_SPEED_0_5_TO_20');
+    this.session.replay = { file: basename(path), speed };
+    return this.launch(id, ['--replay', path, '--speed', String(speed)], 7200);
+  }
+  private launch(id: string, sourceArgs: string[], maxSeconds: number) {
     this.captureState = 'LOADING_ASR'; this.lastError = null;
     const captureId = randomUUID(); this.captureInfo = { captureId };
-    const maxSeconds = Math.min(7200, Math.floor((Date.parse(this.armedDevice.expiresAt) - Date.now()) / 1000));
-    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', '--device', String(this.armedDevice.index), '--device-name', this.armedDevice.name, '--parent', String(process.pid), '--max-seconds', String(maxSeconds), '--languages', (this.session.languages || ['vi']).join(','), '--model', join(this.root, '.local', 'models', 'small')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', ...sourceArgs, '--parent', String(process.pid), '--max-seconds', String(maxSeconds), '--languages', (this.session.languages || ['vi']).join(','), '--model', join(this.root, '.local', 'models', 'small')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.capture = child;
     this.captureDeadline = setTimeout(() => { this.lastError = 'Capture duration or source grant expired; source stopped.'; void this.stopCapture(); }, maxSeconds * 1000);
     const lines = createInterface({ input: child.stdout! });

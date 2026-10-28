@@ -12,7 +12,7 @@ async function withRuntime(fn, testMode = true) {
   try { await fn(runtime, directory); } finally { await runtime.close(); assert.ok(resolve(directory).startsWith(resolve(tmpdir()))); rmSync(directory, { recursive: true }); }
 }
 test('capture cannot be started by a model-supplied session ID without local source grant', async () => {
-  await withRuntime(async r => { r.prepare(); await assert.rejects(r.start(r.session.id), /AUTHORIZE_SOURCE/); assert.equal(r.capture, null); });
+  await withRuntime(async r => { r.prepare(); await assert.rejects(r.start(r.session.id), /SELECT_SOURCE_FIRST/); assert.equal(r.capture, null); });
 });
 test('normal runtime refuses synthetic meeting evidence', async () => {
   await withRuntime(async r => { assert.throws(() => r.prepare('fixture', true), /FIXTURE_DISABLED/); r.prepare(); assert.throws(() => r.ingest('fake', 'synthetic_fixture'), /FIXTURE_SOURCE_REJECTED/); }, false);

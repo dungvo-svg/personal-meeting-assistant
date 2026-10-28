@@ -1,6 +1,6 @@
 # Sổ quyết định
 
-Revision v0.4.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
+Revision v0.5.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
 
 ## Nguồn quyết định
 
@@ -23,6 +23,7 @@ Revision v0.4.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | U15 | 28/10: “update bộ nghe được tiếng hỗn hợp nhé VIỆT LÀO” |
 | U16 | 28/10: trả lời 4 câu hỏi backlog: host Claude Desktop tab Code; micro ưu tiên nếu được; chỉ mã nguồn mở có cộng đồng; chỉ AI Claude, không AI/dịch vụ ngoài; họp dài không ngắt giữa chừng; không cồng kềnh, mọi thứ qua Claude; học có chọn lọc |
 | U17 | 28/10: “sao không dựng và update đi nhỉ?” — làm ngay, áp dụng cho cuộc họp đang diễn ra |
+| U18 | 28/10: “MCP là phương án ban đầu không phải phương án tốt nhất audit nhé” → duyệt “Làm M1–M6” |
 
 Ảnh định hướng trong U1 và tài liệu b15f178 của repo AIOS chỉ cung cấp bối cảnh hai sản phẩm độc lập. Không nhập runtime, quyền phiên họp hoặc tiêu chí nghiệm thu của repo đó vào đây.
 
@@ -68,6 +69,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-14 | Stop hook Claude Code theo project (`.claude/settings.local.json` → `tools/meeting_stop_hook.mjs`) chặn kết thúc lượt khi phiên họp còn chạy; chỉ áp dụng cho phiên đã gọi hearing_start/source_next | Thực hiện OWN-015; 28/10 phải nhắn “tiếp tục theo dõi” ~12 lần |
 | ENG-15 | `source_select` cho agent cấp quyền nguồn loa sau khi người dùng đồng ý trong chat; micro bị từ chối ở tool này | Thực hiện OWN-016; thay quyền chỉ-trên-bảng của bản 0.2/0.3 |
 | ENG-16 | Quá tải ASR: giữ khối tới 30 s rồi ghi khoảng trống rõ ràng thay vì dừng bộ thu; câu ảo/lặp từ gắn cờ, không xóa | 28/10 một lần ASR_BACKLOG_LIMIT làm dừng phiên |
+| ENG-17 | Lõi là dịch vụ nghe chạy nền một bản mỗi máy + CLI `pma` + skill `hop` + Monitor trên `pma follow`; MCP chỉ là lớp chuyển tiếp | Audit 28/10 (E1–E6): server mỗi phiên làm hỏng trạng thái phiên khác, bộ thu chết theo host, chỉ kéo được không đẩy được, 233 lần hỏi vòng/1,5 giờ |
 | ENG-12 | `meeting_open` chỉ nhận link Zoom, dựng lại URL từ phần đã kiểm tra, không lưu passcode; chế độ test không mở Zoom | Thực hiện OWN-009 mà không đưa chuỗi tùy ý tới trình mở URL của hệ điều hành |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.

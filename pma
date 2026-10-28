@@ -1,0 +1,3 @@
+#!/bin/sh
+# Meeting runtime CLI for Git Bash / POSIX shells.
+exec node "$(dirname "$0")/dist/cli.js" "$@"
