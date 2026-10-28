@@ -43,7 +43,7 @@
     "tools/fetch_model.py": "0ac26787ad104df3a73544b5c9640b825d22f07c2a00bd3b88d7a8125ea94526",
     "tools/install_claude.py": "9053ac5b56c99be0818711be5f449b4c889d41692058c81e4b481d0b349443fd",
     "tools/mcp_config.py": "e265fbb1cafbd0b5f3e84ce55466b465cf99757b6f56ac744efb86eed79e7aeb",
-    "tools/meeting_stop_hook.mjs": "242277087329cfeb97e2252bec40afe1da2d3c648fbd004f7b676b4cfc38eecd",
+    "tools/meeting_stop_hook.mjs": "497adb497c49c151d7e568c27ee9d95b021505a70a38c925de5f574419d759e1",
     "tools/probe.mjs": "638169049c18af8004d5dc22fe615b9fbe39d91a708e043a9f250502f9a1c8f9",
     "tools/transcribe_recording.py": "b80a3c51ec81bf9de0188719c2642ae08d5632fa8dc3d24314ee402196ecd660",
     "tools/verify_baseline.py": "a00790a960316530fd4d38ce121c854647bfa54db5cd05e89d5188416c8af0f5",

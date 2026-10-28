@@ -10,10 +10,11 @@ if (process.env.PMA_STOP_HOOK === 'off') allow();
 let input = {};
 try { input = JSON.parse(readFileSync(0, 'utf8') || '{}'); } catch { allow(); }
 
-// Only the session that is following the meeting: its transcript has called hearing_start or source_next.
+// Only the session that is following the meeting: its transcript holds a real tool_use of hearing_start or
+// source_next. Mentions of those names in text (code, messages) are JSON-escaped and do not match.
 let transcript = '';
 try { transcript = readFileSync(input.transcript_path, 'utf8'); } catch { allow(); }
-if (!/personal-meeting-assistant__(hearing_start|source_next)/.test(transcript)) allow();
+if (!/"name":"mcp__personal-meeting-assistant__(hearing_start|source_next)"/.test(transcript)) allow();
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
