@@ -1,6 +1,6 @@
 # Sổ quyết định
 
-Revision v0.2.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
+Revision v0.3.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
 
 ## Nguồn quyết định
 
@@ -17,6 +17,10 @@ Revision v0.2.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | U9 | Làm rõ: “Chiêu nay chỉ có tiếng Việt không cần Phiên dịch” |
 | U10 | Chọn nguồn phát Zoom: G243FW — âm thanh qua màn hình NVIDIA |
 | U11 | Với đề nghị restart Claude/thu thử mẫu công khai, chọn “Tôi sẽ tự khởi động lại Claude sau” |
+| U12 | 28/10: chọn chạy theo dõi họp Zoom qua Claude Code (MCP local), nguồn G243FW |
+| U13 | 28/10: “khi tôi gửi link họp + nội dung thì nghe cho tôi sau đó có RAW + Summarize + task sau họp” |
+| U14 | 28/10: bộ công cụ được giao cho người dùng không dùng Claude; audit và chỉnh sửa |
+| U15 | 28/10: “update bộ nghe được tiếng hỗn hợp nhé VIỆT LÀO” |
 
 Ảnh định hướng trong U1 và tài liệu b15f178 của repo AIOS chỉ cung cấp bối cảnh hai sản phẩm độc lập. Không nhập runtime, quyền phiên họp hoặc tiêu chí nghiệm thu của repo đó vào đây.
 
@@ -32,6 +36,10 @@ Revision v0.2.0 —26/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | OWN-006 | U6 | Agent chủ động dùng tools; không thiết kế thành app gọi hàm dịch |
 | OWN-007 | U7 | Hỗ trợ cuộc họp đã mở, không cần tự mở lời mời/Join trong V1 |
 | OWN-008 | U8/U9 | Pilot hiện tại nghe tiếng Việt, không phiên dịch; tools/context/transcript phục vụ phiên chiều nay |
+| OWN-009 | U13 | Người dùng gửi link Zoom + nội dung họp; trợ lý mở link và nghe. Thay phần “không tự mở lời mời/Join” của OWN-007: trợ lý được mở link người dùng gửi, người dùng vẫn tự bấm Join/Join Audio |
+| OWN-010 | U13 | Sau họp có RAW transcript, Summary và Task |
+| OWN-011 | U14 | Bộ công cụ dùng được với host không phải Claude (Codex, Antigravity…), cùng bộ MCP tools |
+| OWN-012 | U15 | Bộ tai nghe cuộc họp nói lẫn tiếng Việt và tiếng Lào. Thay phần “chỉ tiếng Việt” của OWN-008; vẫn không phiên dịch |
 
 U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi máy. U11 là ranh giới vận hành lần này: không restart Claude hoặc thực hiện đề nghị thu thử thay người dùng. Claude đã ghi đè lần chỉnh config khi còn chạy; installer hiện yêu cầu app đóng trước khi apply. Host/device acceptance vẫn chờ. Hỏi đáp/ghi chú trong Claude khi người dùng yêu cầu là hỗ trợ theo scope pilot, không phải đã hoàn thành giao diện hỏi đáp hoặc V1 phiên dịch.
 
@@ -48,6 +56,10 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-07 | Windows là máy kiểm chứng đầu tiên theo workspace hiện tại | Mở rộng OS sau; không suy từ Windows thành đã hỗ trợ mọi máy |
 | ENG-08 | Pilot VI dùng faster-whisper small CPU int8, PyAudioWPatch, audio RAM và SQLite text | Công cụ nhận dạng hỗ trợ agent; không có backend dịch; test file công khai chưa là device/Human UAT |
 | ENG-09 | Node 24.14.0 + SDK 1.32.2 + dependency/model locks; PyAV 16.0.1 | Pin PyAV sau lỗi decode API ở 19.0.2; không auto-download model trong cuộc họp |
+| ENG-10 | Loopback có đo mức âm khi liệt kê nguồn và phát im lặng giữ khung âm khi nghe; tràn bộ đệm không làm dừng phiên | 28/10 G243FW không nhận khung âm nào vì Zoom phát ra Realtek; loopback WASAPI không có khung khi thiết bị im lặng |
+| ENG-11 | RAW.md do tool ghi khi kết thúc; SUMMARY.md/TASKS.md do agent của host viết và lưu qua tool, bắt buộc source ID; file chỉ lưu cục bộ | Thực hiện OWN-006/OWN-010: không gọi thêm LLM/API; host nào cũng dùng được (OWN-011) |
+| ENG-13 | Mỗi đoạn âm chọn vi hoặc lo (chỉ so hai ngôn ngữ của phiên), dò trong cùng lượt mã hóa; ngôn ngữ ngoài phiên mới chạy lại; gắn nhãn ngôn ngữ từng đoạn; cờ khi tiếng Lào bị ghi bằng chữ Thái | 28/10: whisper small viết tiếng Lào bằng chữ Thái; chất lượng tiếng Lào cần model/ASR khác và phép đo trên mẫu Lào trước khi dựa vào nội dung |
+| ENG-12 | `meeting_open` chỉ nhận link Zoom, dựng lại URL từ phần đã kiểm tra, không lưu passcode; chế độ test không mở Zoom | Thực hiện OWN-009 mà không đưa chuỗi tùy ý tới trình mở URL của hệ điều hành |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

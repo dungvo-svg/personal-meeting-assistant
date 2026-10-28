@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { MeetingRuntime } from '../dist/runtime.js';
@@ -56,4 +56,43 @@ test('empty wait means no new text, not meeting end; text input bounds enforced'
 });
 test('capture epochs remain distinguishable when source clocks restart after pause', async () => {
   await withRuntime(async r => { r.prepare(); const a=r.ingest('Nội dung kiểm tra.', 'local_asr_unverified',0,3,'CHUNK_RANGE','capture-a'); const b=r.ingest('Nội dung kiểm tra.', 'local_asr_unverified',0,3,'CHUNK_RANGE','capture-b'); const rows=r.sources(r.session.id); assert.equal(rows[0].captureId,'capture-a'); assert.equal(rows[1].captureId,'capture-b'); assert.notEqual(a,b); assert.match(r.exportText(r.session.id),/capture=capture-b/); });
+});
+test('only Zoom links open, rebuilt from validated parts; passcode not stored', async () => {
+  const { zoomLaunchUrl } = await import('../dist/runtime.js');
+  assert.equal(zoomLaunchUrl('https://us06web.zoom.us/j/81234567890?pwd=abc.1').launch, 'zoommtg://zoom.us/join?action=join&confno=81234567890&pwd=abc.1');
+  assert.equal(zoomLaunchUrl('https://zoom.us/my/nnc.room').launch, 'https://zoom.us/my/nnc.room');
+  for (const bad of ['https://evil.com/j/81234567890', 'https://zoom.us.evil.com/j/81234567890', 'http://zoom.us/j/81234567890', 'https://zoom.us/j/123', 'file:///C:/x.exe', 'zoom.us/j/81234567890', 'https://meet.google.com/abc-defg-hij']) assert.throws(() => zoomLaunchUrl(bad), /MEETING_URL/);
+  await withRuntime(async r => { const opened = []; r.opener = url => opened.push(url); r.prepare('Họp'); const got = r.openMeeting('https://zoom.us/j/81234567890?pwd=secret'); assert.equal(got.meetingId, '81234567890'); assert.equal(opened.length, 1); assert.doesNotMatch(JSON.stringify(r.snapshot().session), /secret/); assert.equal(r.session.context.meeting.meetingId, '81234567890'); assert.throws(() => r.openMeeting('https://evil.com/j/81234567890'), /MEETING_URL/); assert.equal(opened.length, 1); });
+});
+test('agenda sent by the user becomes session context; a saved agenda from another day is not reused', async () => {
+  await withRuntime(async r => { r.context = { title: 'Họp cũ', date: '2000-01-01', topics: ['xe'] }; r.prepare(); assert.equal(r.session.context.contextSource, 'NONE'); assert.equal(r.session.context.staleSavedContextDate, '2000-01-01'); await r.finish(r.session.id); r.prepare('Họp kho', false, 'Rà tồn kho tháng 10'); assert.equal(r.session.context.agenda, 'Rà tồn kho tháng 10'); assert.equal(r.history(r.session.id).context.agenda, 'Rà tồn kho tháng 10'); });
+});
+test('finish writes RAW; summary and tasks need real source IDs and work after the session ended', async () => {
+  await withRuntime(async (r, directory) => {
+    r.prepare('Họp kho', true); const id = r.session.id;
+    const a = r.ingest('Tuần này kiểm kê kho số 2.', 'synthetic_fixture'); const b = r.ingest('Anh Nam gửi báo cáo | trước thứ Sáu.', 'synthetic_fixture');
+    const finished = await r.finish(id); assert.ok(finished.raw.path.startsWith(directory)); assert.equal(finished.raw.sourceCount, 2);
+    const raw = readFileSync(finished.raw.path, 'utf8'); assert.ok(raw.includes('#' + a + ' (dữ liệu thử) Tuần này kiểm kê kho số 2.')); assert.match(raw, /CHƯA xác minh/);
+    assert.throws(() => r.saveSummary(id, 'Tóm tắt', [b + 99]), /SOURCE_OUTSIDE_SESSION/);
+    assert.throws(() => r.saveTasks(id, [{ task: 'x', sourceIds: [] }]), /SOURCE_IDS_REQUIRED/);
+    const summary = r.saveSummary(id, '- Kiểm kê kho số 2 trong tuần.', [a]); assert.match(readFileSync(summary.path, 'utf8'), /Kiểm kê kho số 2/);
+    const tasks = r.saveTasks(id, [{ task: 'Gửi báo cáo', owner: 'Anh Nam', due: 'trước thứ Sáu', sourceIds: [b] }, { task: 'Kiểm kê kho số 2', sourceIds: [a] }]);
+    const table = readFileSync(tasks.path, 'utf8'); assert.match(table, /\| 1 \| Gửi báo cáo \| Anh Nam \| trước thứ Sáu \| #/); assert.match(table, /\| 2 \| Kiểm kê kho số 2 \| Chưa nêu trong họp \| Chưa nêu trong họp \|/);
+    assert.match(r.saveTasks(id, []).path, /TASKS\.md$/); assert.match(r.reportFile(id, 'tasks').content, /Không thấy việc/);
+    assert.throws(() => r.reportFile(id, 'other'), /UNKNOWN_REPORT/);
+  });
+});
+test('mixed Vietnamese/Lao: default languages, per-source language label, unknown languages rejected', async () => {
+  await withRuntime(async r => {
+    assert.throws(() => r.prepare('x', false, undefined, ['th']), /LANGUAGES_MUST_BE_VI_LO/);
+    r.prepare('Họp Việt Lào'); assert.deepEqual(r.session.languages, ['vi', 'lo']); assert.equal(r.session.mode, 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION');
+    const vi = r.ingest('Kho số hai đủ hàng.', 'local_asr_unverified', 0, 3, '', 'cap-1', 'vi'); const lo = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 3, 6, '', 'cap-1', 'lo');
+    assert.throws(() => r.ingest('x', 'local_asr_unverified', 0, 1, '', 'cap-1', 'th'), /INVALID_SOURCE_LANGUAGE/);
+    const rows = r.sources(r.session.id); assert.equal(rows[0].language, 'vi'); assert.equal(rows[1].language, 'lo');
+    const raw = readFileSync(r.writeRaw(r.session.id).path, 'utf8'); assert.ok(raw.includes(`#${lo} (nghe · lo) ສະບາຍດີ`)); assert.ok(raw.includes(`#${vi} (nghe · vi)`));
+    await r.finish(r.session.id); r.prepare('Chỉ tiếng Việt', false, undefined, ['vi']); assert.equal(r.session.mode, 'VI_TRANSCRIPT_NO_TRANSLATION');
+  });
+});
+test('Lao written in Thai script is flagged in RAW', async () => {
+  await withRuntime(async r => { r.prepare(); r.ingest('วันหวา', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC; LAO_WRITTEN_IN_THAI_SCRIPT', 'cap', 'lo'); assert.match(readFileSync(r.writeRaw(r.session.id).path, 'utf8'), /lo · viết bằng chữ Thái/); });
 });

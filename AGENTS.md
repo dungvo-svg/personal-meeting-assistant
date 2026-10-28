@@ -22,6 +22,9 @@ Owner-locked V1: the agent activates hearing, obtains context and publishes a li
 
 ## Current scope and evidence
 
+Current owner scope (28 October, OWN-009..012): the user sends a Zoom link + meeting content; the agent opens the link (user still clicks Join), hears mixed Vietnamese/Lao without translation, and after the meeting writes RAW + Summary + Task via tools. The toolkit must work for non-Claude MCP hosts. Read docs/MEETING_RUNTIME.md. Lao ASR from whisper small comes out in Thai script and is flagged as unreliable. The 26 October scope below is history.
+
+
 Current owner scope (26 October): build/install a minimal runtime for this afternoon, Vietnamese only, no translation. Source preference is G243FW. The owner chose to restart Claude themselves later; do not restart Claude or run the offered device-capture test on their behalf. Local coding, dependency/model setup, public-file ASR and offline/protocol/UI tests are authorized. Read docs/PILOT_RUNTIME_20261026.md before operating this pilot.
 Later explicit user instructions may authorize those steps; do not keep asking for actions already authorized.
 Keep private audio, transcript, personal context, tokens, local config and runtime files out of Git. Never replay old AIOS output.

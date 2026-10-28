@@ -4,7 +4,7 @@ Ta xây bộ công cụ trên máy cá nhân để **AI agent chủ động hỗ
 
 **Runtime pilot v0.2.0 đã dựng cho phiên tiếng Việt, không phiên dịch.** Cần hoàn tất MCP config khi Claude đã thoát: app đang chạy đã ghi đè lần thêm entry đầu. Người dùng sẽ tự thoát/mở lại; dùng [Hoan-tat-cai-Claude.cmd](Hoan-tat-cai-Claude.cmd) ở giữa hai bước đó. Đã kiểm tra offline/protocol/UI và ASR trên file công khai; chưa xác nhận actual Claude tools hoặc thu âm G243FW.
 
-Đọc [hướng dẫn dùng chiều nay](docs/PILOT_RUNTIME_20261026.md) và [lời giao việc cho Claude](handoff/CLAUDE_MEETING_START.vi.txt) trước. Bảng cục bộ là `http://127.0.0.1:8796/` sau khi Claude nạp server.
+**v0.3.0 (28/10):** gửi link Zoom + nội dung họp cho trợ lý (Claude, Codex, Antigravity…), bộ tai nghe lẫn Việt–Lào, sau họp có RAW + Summary + Task. Đọc [cách dùng 0.3.0](docs/MEETING_RUNTIME.md) và [lời giao việc](handoff/MEETING_START.vi.txt). Runbook cũ: [26/10](docs/PILOT_RUNTIME_20261026.md), [lời giao việc cũ](handoff/CLAUDE_MEETING_START.vi.txt). Bảng cục bộ là `http://127.0.0.1:8796/` sau khi Claude nạp server.
 
 ## Ranh giới dự án
 
