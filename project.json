@@ -25,7 +25,8 @@
     "claude_code_skill_hop",
     "mcp_stdio_thin_adapter",
     "windows_wasapi_local_asr",
-    "recording_replay"
+    "recording_replay",
+    "cuda_lao_asr_routing"
   ],
   "assistant_switching": "EXPLICIT_USER_SELECTION",
   "automatic_fallback": false,
@@ -60,7 +61,7 @@
     ],
     "actual_claude_code_tool_calls_verified": true,
     "actual_device_capture_verified": "2026-10-28 v0.2.0 worker on Realtek loopback via Claude Code; v0.3.0 not yet run in a meeting",
-    "lao_asr_quality": "NOT_USABLE_THAI_SCRIPT_FLAGGED",
+    "lao_asr_quality": "BUZZASR_LAO_GPU_FLEURS_CER_0.363_LAO_SCRIPT; CPU_FALLBACK_THAI_SCRIPT_FLAGGED",
     "non_claude_hosts_verified": false,
     "primary_host": "claude_code_in_claude_desktop",
     "continuity": "MONITOR_ON_PMA_FOLLOW_PLUS_STOP_HOOK_NOT_YET_MEASURED_FULL_MEETING"
@@ -71,7 +72,7 @@
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "TEMPORARY_ONLY",
   "documentation_baseline": {
-    "version": "0.5.0",
+    "version": "0.6.0",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",

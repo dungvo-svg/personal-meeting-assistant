@@ -41,10 +41,10 @@ Công cụ mở được chọn: faster-whisper (MIT), Silero VAD (MIT, đã có
 
 | ID | Việc | Xong khi |
 | --- | --- | --- |
-| T07 | **Tự dò phần cứng:** có GPU NVIDIA thì chạy CUDA, không có thì CPU; model để ở ổ D | Cùng một lệnh cài chạy được cả máy có và không có GPU |
+| T07 | **[Xong 0.6.0]** **Tự dò phần cứng:** có GPU NVIDIA thì chạy CUDA, không có thì CPU; model để ở ổ D | Cùng một lệnh cài chạy được cả máy có và không có GPU |
 | T08 | **Bộ đo không cần người gõ** (thay cho việc nhờ người gõ bản chuẩn): độ chính xác đo trên mẫu công khai FLEURS vi/lo có sẵn đáp án; bản ghi hình họp 26/10 và 28/10 chỉ dùng để đo những thứ không cần đáp án: chữ Lào hay chữ Thái, nhận đúng ngôn ngữ, độ trễ, câu ảo. Claude đọc kết quả để soát những đoạn vô nghĩa | Báo cáo đo lặp lại được, file chỉ nằm trong `.local/` |
-| T09 | **Chọn ASR tiếng Lào:** so BuzzASR/lao và Omnilingual CTC trên GPU 6 GB | Chọn engine có CER Lào thấp nhất mà vẫn kịp thời gian thực; chữ Thái trong đầu ra tiếng Lào = trượt |
-| T10 | **Nhận ngôn ngữ và định tuyến:** mỗi đoạn vi → Whisper, lo → engine T09; đối chiếu VoxLingua107 khi Whisper không chắc; không chắc thì gắn `unknown` thay vì đoán | Nhận đúng ngôn ngữ ≥ 90% trên FLEURS và bản ghi |
+| T09 | **[Xong 0.6.0: BuzzASR/lao, CER 36,3%; Omnilingual chưa thử]** **Chọn ASR tiếng Lào:** so BuzzASR/lao và Omnilingual CTC trên GPU 6 GB | Chọn engine có CER Lào thấp nhất mà vẫn kịp thời gian thực; chữ Thái trong đầu ra tiếng Lào = trượt |
+| T10 | **[Xong 0.6.0: Whisper small, 100% trên FLEURS; VoxLingua107 chưa cần]** **Nhận ngôn ngữ và định tuyến:** mỗi đoạn vi → Whisper, lo → engine T09; đối chiếu VoxLingua107 khi Whisper không chắc; không chắc thì gắn `unknown` thay vì đoán | Nhận đúng ngôn ngữ ≥ 90% trên FLEURS và bản ghi |
 | T11 | **Dịch trên máy:** MADLAD-400 qua CTranslate2 cho Lào → Việt (kiểm tra lỗi tokenizer khi chuyển đổi). Bản dịch kém thì Claude soát/dịch lại khi tóm tắt (D4 cho phép) | Đoạn tiếng Lào có bản tiếng Việt đọc hiểu được trong RAW |
 | T12 | **Cắt đoạn theo điểm dừng lời** (ý từ AIOS): cắt khi người nói ngừng 0,6–1 s, kèm vài giây ngữ cảnh, không lặp chữ ở ranh giới | Ít câu bị cắt đôi hơn bản 0.3.0 trên cùng bản ghi |
 

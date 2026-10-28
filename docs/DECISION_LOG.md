@@ -1,6 +1,6 @@
 # Sổ quyết định
 
-Revision v0.5.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
+Revision v0.6.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
 
 ## Nguồn quyết định
 
@@ -70,6 +70,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-15 | `source_select` cho agent cấp quyền nguồn loa sau khi người dùng đồng ý trong chat; micro bị từ chối ở tool này | Thực hiện OWN-016; thay quyền chỉ-trên-bảng của bản 0.2/0.3 |
 | ENG-16 | Quá tải ASR: giữ khối tới 30 s rồi ghi khoảng trống rõ ràng thay vì dừng bộ thu; câu ảo/lặp từ gắn cờ, không xóa | 28/10 một lần ASR_BACKLOG_LIMIT làm dừng phiên |
 | ENG-17 | Lõi là dịch vụ nghe chạy nền một bản mỗi máy + CLI `pma` + skill `hop` + Monitor trên `pma follow`; MCP chỉ là lớp chuyển tiếp | Audit 28/10 (E1–E6): server mỗi phiên làm hỏng trạng thái phiên khác, bộ thu chết theo host, chỉ kéo được không đẩy được, 233 lần hỏi vòng/1,5 giờ |
+| ENG-18 | Tiếng Lào: Whisper small nhận diện vi/lo (th tính là lo), đoạn Lào sang BuzzASR/lao (MIT) trên CUDA; model Lào không chạy trên CPU khi họp trực tiếp | FLEURS 28/10: CER Lào 100,2% → 36,3%, chữ Thái → chữ Lào; nhận diện ngôn ngữ 100% trên 80 clip. Đáp ứng OWN-014 (mã nguồn mở, chạy trên máy) |
 | ENG-12 | `meeting_open` chỉ nhận link Zoom, dựng lại URL từ phần đã kiểm tra, không lưu passcode; chế độ test không mở Zoom | Thực hiện OWN-009 mà không đưa chuỗi tùy ý tới trình mở URL của hệ điều hành |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.

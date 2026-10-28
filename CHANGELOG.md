@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 —28/10/2026
+
+- Owner: “Làm tiếng Lào GPU”. ASR chạy CUDA trên RTX 3050 (cuBLAS/cuDNN từ wheel NVIDIA, `requirements-gpu.lock.txt`); không có GPU thì tự về CPU như trước.
+- Tiếng Lào: đoạn được Whisper small nhận là `lo` (gồm cả `th`) chuyển sang **BuzzASR/lao** (MIT, Whisper large-v3 fine-tune, revision `14f66e2`), chuyển sang CTranslate2 bằng `tools/convert_lao_model.py`. Sửa tokenizer: bộ từ vựng thay thế giữ tên token đặc biệt ở id thấp, model dùng id 51865+; thiếu `lang_ids` làm faster-whisper coi là model tiếng Anh và ra rỗng.
+- Đo trên FLEURS (40 clip mỗi ngôn ngữ, `tools/eval_asr.py`): nhận diện ngôn ngữ 100%/100%; CER Lào 36,3% (trước: 100,2%, toàn chữ Thái), chữ Lào 3.570 / chữ Thái 0; CER Việt 9,9%; tốc độ 0,12 (Lào) và 0,06 (Việt) so với thời gian thực. FLEURS là giọng đọc, chưa phải họp.
+- Phát lại file trộn công khai Việt→Lào→Lào qua `pma replay` trên GPU: đoạn Việt ra chữ Việt, đoạn Lào ra chữ Lào.
+- `tools/setup_lao_gpu.sh` cài toàn bộ (thư viện CUDA, model, dữ liệu chấm điểm, môi trường chuyển đổi riêng). Test: 25 Node, 8 Python.
+
 ## 0.5.0 —28/10/2026
 
 - Audit MCP (`docs/AUDIT_MCP_20261028.md`) theo yêu cầu owner: MCP không hợp làm lõi. Chuyển sang **dịch vụ nghe chạy nền một bản mỗi máy** (`src/daemon.ts`), **CLI `pma`** (`src/cli.ts`, `./pma`, `pma.cmd`), **skill `/hop`** (`.claude/skills/hop/SKILL.md`) và **Monitor trên `pma follow`**. MCP (`src/server.ts`) còn là lớp mỏng chuyển tiếp, không giữ trạng thái hay cổng.

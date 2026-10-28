@@ -29,6 +29,51 @@ class TranscriptFilterTests(unittest.TestCase):
         self.assertEqual(self.worker.collapse_repeats('ba ba xe'), 'ba ba xe')
 
 
+class LanguageRoutingTests(unittest.TestCase):
+    """Fake models: no ASR runs. Checks which model transcribes each chunk."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        self.worker = audio_worker
+
+    def fake(self, name, detected=None, probs=()):
+        calls = []
+
+        class Model:
+            def transcribe(self, audio, language=None, **options):
+                calls.append(language)
+                info = type('Info', (), {'language': detected if language is None else language, 'all_language_probs': list(probs)})()
+                return [f'{name}:{language}'], info
+        model = Model()
+        model.calls = calls
+        return model
+
+    def test_lao_chunks_go_to_the_lao_model(self):
+        main = self.fake('main', 'th', [('th', 0.7), ('lo', 0.1), ('vi', 0.05)])
+        lao = self.fake('lao')
+        segments, language, share = self.worker.transcribe_chunk(main, None, ['vi', 'lo'], lao)
+        self.assertEqual((segments, language), (['lao:lo'], 'lo'))
+        self.assertEqual(main.calls, [None])
+        self.assertGreater(share, 0.9)
+
+    def test_vietnamese_stays_on_the_main_model_in_one_pass(self):
+        main = self.fake('main', 'vi', [('vi', 0.9), ('th', 0.02)])
+        lao = self.fake('lao')
+        segments, language, _ = self.worker.transcribe_chunk(main, None, ['vi', 'lo'], lao)
+        self.assertEqual((segments, language, lao.calls), (['main:None'], 'vi', []))
+
+    def test_without_a_lao_model_lao_is_forced_on_the_main_model(self):
+        main = self.fake('main', 'th', [('th', 0.8), ('vi', 0.1)])
+        segments, language, _ = self.worker.transcribe_chunk(main, None, ['vi', 'lo'], None)
+        self.assertEqual((segments, language, main.calls), (['main:lo'], 'lo', [None, 'lo']))
+
+    def test_lao_only_session_uses_the_lao_model_directly(self):
+        main, lao = self.fake('main'), self.fake('lao')
+        segments, language, _ = self.worker.transcribe_chunk(main, None, ['lo'], lao)
+        self.assertEqual((segments, language, main.calls), (['lao:lo'], 'lo', []))
+
+
 class AudioInfrastructureTests(unittest.TestCase):
     def test_resample_lengths(self):
         import av

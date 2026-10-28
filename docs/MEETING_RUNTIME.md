@@ -22,7 +22,11 @@ Người dùng gửi cho trợ lý: **link Zoom + nội dung họp**. Mẫu lờ
 
 File nằm trong `.local/runtime/reports/<ngày-giờ>_<mã phiên>/`. Bảng có nút **Tải RAW / Tải Summary / Tải Task**, dùng được cả cho phiên cũ trong lịch sử.
 
-## Nghe lẫn tiếng Việt và tiếng Lào
+## Tiếng Lào trên GPU (từ 0.6.0)
+
+Có GPU NVIDIA và đã chạy `tools/setup_lao_gpu.sh` một lần: đoạn tiếng Lào được nhận dạng bằng BuzzASR/lao (MIT), ra **chữ Lào**. Đo trên FLEURS: CER Lào 36,3%, CER Việt 9,9%, nhận diện ngôn ngữ đúng 80/80 clip. Không có GPU thì giữ cách cũ: tiếng Lào bị gắn cờ chữ Thái. `./pma status` → `captureInfo.asr` cho biết đang chạy `cuda` hay `cpu` và có model Lào không.
+
+## Nghe lẫn tiếng Việt và tiếng Lào (0.3.0, CPU)
 
 `session_prepare` mặc định `languages: ["vi", "lo"]`. Với mỗi đoạn âm (tối thiểu 6 giây khi nghe hai thứ tiếng, tối đa 12 giây), ASR chọn tiếng Việt hoặc tiếng Lào rồi nhận dạng theo ngôn ngữ đó. Whisper hay nhận tiếng Lào thành tiếng Thái, nên điểm “Thái” được cộng vào “Lào”. Mỗi đoạn có nhãn `vi`/`lo` trên bảng, trong `source_next` và trong RAW. Họp chỉ một thứ tiếng thì truyền một ngôn ngữ để nhanh và chính xác hơn.
 

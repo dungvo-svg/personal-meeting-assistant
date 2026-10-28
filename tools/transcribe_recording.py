@@ -7,7 +7,7 @@ import sys
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from audio_worker import collapse_repeats, load_recording, segment_flags, transcribe_chunk  # noqa: E402  (same choices and filters as the live worker)
+from audio_worker import collapse_repeats, load_models, load_recording, segment_flags, transcribe_chunk  # noqa: E402  (same choices and filters as the live worker)
 
 LABELS = {'LAO_WRITTEN_IN_THAI_SCRIPT': 'chữ Thái, nội dung không đáng tin', 'LIKELY_HALLUCINATION': 'nghi câu ảo', 'REPETITION': 'lặp từ'}
 
@@ -36,12 +36,13 @@ def main():
     parser.add_argument('--title', default='Cuộc họp')
     parser.add_argument('--languages', default='vi,lo')
     parser.add_argument('--model', type=Path, default=Path(__file__).resolve().parents[1] / '.local' / 'models' / 'small')
-    parser.add_argument('--device', default='cpu')
+    parser.add_argument('--device', default='auto', choices=['auto', 'cuda', 'cpu'])
+    parser.add_argument('--lao-model', type=Path, default=Path(__file__).resolve().parents[1] / '.local' / 'models' / 'buzzasr-lao-ct2')
     parser.add_argument('--threads', type=int, default=10)
     args = parser.parse_args()
-    from faster_whisper import WhisperModel
     languages = args.languages.split(',')
-    model = WhisperModel(str(args.model), device=args.device, compute_type='int8' if args.device == 'cpu' else 'int8_float16', cpu_threads=args.threads, local_files_only=True)
+    model, lao_model, asr = load_models(args.model, args.lao_model, args.device, args.threads)
+    print(f'ASR: {asr}', file=sys.stderr, flush=True)
     lines, counter, stats = [], 0, {'vi': 0, 'lo': 0, 'flagged': 0, 'audioSeconds': 0.0}
     started = time.monotonic()
     for path in args.files:
@@ -52,7 +53,7 @@ def main():
         chunks = speech_chunks(audio)
         lines += ['', f'## {path.name}' + (f' — bắt đầu {base:%H:%M:%S}' if base else ''), '']
         for index, (begin, end) in enumerate(chunks, 1):
-            segments, language, probability = transcribe_chunk(model, audio[int(begin * 16000):int(end * 16000)], languages)
+            segments, language, probability = transcribe_chunk(model, audio[int(begin * 16000):int(end * 16000)], languages, lao_model)
             for segment in segments:
                 text = segment.text.strip()
                 if not text:
@@ -67,9 +68,9 @@ def main():
             print(f'{path.name}: {index}/{len(chunks)} chunks, {counter} lines, {time.monotonic() - started:.0f}s', file=sys.stderr, flush=True)
         del audio
     header = [f'# RAW transcript — {args.title}', '',
-              f'Nhận dạng lại từ {len(args.files)} file ghi hình, chạy trên máy (faster-whisper {args.model.name}, {args.device}). Âm thanh không được lưu thêm, không gửi đi đâu.',
+              f'Nhận dạng lại từ {len(args.files)} file ghi hình, chạy trên máy (faster-whisper {args.model.name}{' + ' + asr['laoModel'] + ' cho tiếng Lào' if asr['laoModel'] else ''}, {asr['device']}). Âm thanh không được lưu thêm, không gửi đi đâu.',
               f'Âm thanh {stats["audioSeconds"] / 60:.1f} phút · {counter} dòng · tiếng Việt {stats["vi"]} · tiếng Lào {stats["lo"]} · gắn cờ {stats["flagged"]} · xử lý {(time.monotonic() - started) / 60:.1f} phút.', '',
-              '> Văn bản ASR CHƯA xác minh. Giờ = giờ bắt đầu file ghi hình + vị trí trong file. Nhãn vi/lo do máy chọn từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ. Tiếng Lào bằng model small thường bị ghi thành chữ Thái.']
+              '> Văn bản ASR CHƯA xác minh. Giờ = giờ bắt đầu file ghi hình + vị trí trong file. Nhãn vi/lo do máy chọn từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ. Không có model tiếng Lào (cần GPU) thì tiếng Lào thường bị ghi thành chữ Thái.']
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text('\n'.join(header + lines) + '\n', encoding='utf-8')
     print(f'DONE {args.out} lines={counter} vi={stats["vi"]} lo={stats["lo"]} flagged={stats["flagged"]}', file=sys.stderr)

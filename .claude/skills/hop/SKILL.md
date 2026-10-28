@@ -31,7 +31,8 @@ Mỗi dòng có dạng `#id HH:MM:SS ngôn ngữ⚠cờ: nội dung`.
 
 | Cờ | Ý nghĩa và cách xử lý |
 | --- | --- |
-| `chữ Thái` | Tiếng Lào bị nhận dạng thành chữ Thái, độ tin thấp. Có thể dịch nghĩa sang tiếng Việt, ghi rõ “Claude dịch từ ASR chữ Thái, độ tin thấp”. |
+| (không cờ, `lo`) | Tiếng Lào bằng chữ Lào từ model tiếng Lào trên GPU. Sai khoảng 1/3 ký tự trên giọng đọc chuẩn; khi tóm tắt có thể dịch nghĩa sang tiếng Việt, ghi rõ “Claude dịch từ ASR tiếng Lào”, và giữ nguyên số, tên. |
+| `chữ Thái` | Máy không có GPU/model Lào: tiếng Lào bị ghi thành chữ Thái, độ tin thấp. Có thể dịch nghĩa, ghi rõ “Claude dịch từ ASR chữ Thái, độ tin thấp”. |
 | `nghi ảo` | Câu Whisper bịa khi im lặng. Bỏ qua. |
 | `lặp` | Từ bị lặp đã được gộp, dạng `từ [×N]`. |
 | `[KHOẢNG TRỐNG]` | Nhận dạng không theo kịp, có quãng âm thanh bị bỏ. Phải nêu trong tóm tắt. |

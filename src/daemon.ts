@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { MeetingRuntime } from './runtime.js';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.6.0';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
 const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON'];
 for (let i = 2; i < process.argv.length - 1; i++) {

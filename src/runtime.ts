@@ -156,6 +156,8 @@ export class MeetingRuntime extends EventEmitter {
     const context = JSON.parse(session.context); delete session.context;
     return { session, context, captureState: 'OFF', captureInfo: {}, lastError: null, armedDevice: null, lastAgentReadAt: null, backlog: { count: 0 }, sources: this.db.prepare('SELECT id,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? ORDER BY id DESC LIMIT 300').all(id).reverse(), notes: this.db.prepare('SELECT item_key AS itemKey,revision,kind,payload,created FROM notes WHERE session_id=? ORDER BY id DESC LIMIT 100').all(id).reverse().map((n: any) => ({ ...n, ...JSON.parse(n.payload), payload: undefined })), audioStorage: 'RAM_ONLY_NO_AUDIO_FILES', historyDirectory: this.dataDir, historicalView: true, historyLimit: 300 };
   }
+  // Lao goes to a Lao-specific model when installed (tools/convert_lao_model.py); the worker uses it only on CUDA.
+  laoModelArgs() { const path = process.env.PMA_LAO_MODEL || join(this.root, '.local', 'models', 'buzzasr-lao-ct2'); return this.session?.languages?.includes('lo') && existsSync(path) ? ['--lao-model', path] : []; }
   python() { return process.env.PMA_PYTHON || join(this.root, '.venv', 'Scripts', 'python.exe'); }
   async listDevices(levels = false) {
     const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--list', ...(levels ? ['--levels'] : [])], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -206,7 +208,7 @@ export class MeetingRuntime extends EventEmitter {
   private launch(id: string, sourceArgs: string[], maxSeconds: number) {
     this.captureState = 'LOADING_ASR'; this.lastError = null;
     const captureId = randomUUID(); this.captureInfo = { captureId };
-    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', ...sourceArgs, '--parent', String(process.pid), '--max-seconds', String(maxSeconds), '--languages', (this.session.languages || ['vi']).join(','), '--model', join(this.root, '.local', 'models', 'small')], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', ...sourceArgs, '--parent', String(process.pid), '--max-seconds', String(maxSeconds), '--languages', (this.session.languages || ['vi']).join(','), '--model', join(this.root, '.local', 'models', 'small'), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.capture = child;
     this.captureDeadline = setTimeout(() => { this.lastError = 'Capture duration or source grant expired; source stopped.'; void this.stopCapture(); }, maxSeconds * 1000);
     const lines = createInterface({ input: child.stdout! });

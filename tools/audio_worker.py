@@ -22,6 +22,17 @@ def emit(value):
         print(json.dumps(value, ensure_ascii=False), flush=True)
 
 
+def enable_cuda_libraries():
+    # cuBLAS/cuDNN come from pip NVIDIA wheels (site-packages/nvidia/*/bin). CTranslate2 loads them by name,
+    # which on Windows searches PATH, not os.add_dll_directory. Returns whether any were found.
+    import glob
+    import site
+    dirs = [d for base in site.getsitepackages() for d in glob.glob(os.path.join(base, 'nvidia', '*', 'bin'))]
+    if dirs:
+        os.environ['PATH'] = os.pathsep.join(dirs + [os.environ.get('PATH', '')])
+    return bool(dirs)
+
+
 def loopback_level(audio, pa, device, seconds):
     # Level only: peak of what the output device is playing now. No audio is kept.
     import numpy as np
@@ -119,9 +130,15 @@ def collapse_repeats(text):
     return REPEAT.sub(lambda m: f'{m.group(1)} [×{len(re.findall(re.escape(m.group(1)), m.group(0), re.IGNORECASE))}]', text)
 
 
-def transcribe_chunk(model, waveform16, languages):
+LAO_OPTIONS = {'no_repeat_ngram_size': 3, 'repetition_penalty': 1.2}
+
+
+def transcribe_chunk(model, waveform16, languages, lao_model=None):
     # max_new_tokens stops repetition loops on noisy or misdetected chunks.
     options = {'task': 'transcribe', 'max_new_tokens': 160, 'beam_size': 1, 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
+    if languages == ['lo'] and lao_model:
+        segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
+        return segments, 'lo', None
     if len(languages) == 1:
         segments, _ = model.transcribe(waveform16, language=languages[0], **options)
         return segments, languages[0], None
@@ -131,10 +148,36 @@ def transcribe_chunk(model, waveform16, languages):
     probabilities = dict(info.all_language_probs or [])
     scores = {'vi': probabilities.get('vi', 0.0), 'lo': probabilities.get('lo', 0.0) + probabilities.get('th', 0.0)}
     language = max(languages, key=lambda code: scores[code])
-    if language != info.language:
+    if language == 'lo' and lao_model:
+        # Lao goes to the Lao model (Lao script); the multilingual model would write Thai script.
+        segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
+    elif language != info.language:
         segments, _ = model.transcribe(waveform16, language=language, **options)
     total = scores['vi'] + scores['lo']
     return segments, language, round(scores[language] / total, 3) if total else None
+
+
+def load_models(model_path, lao_model_path, device_choice, threads):
+    """Main model on CUDA when it works (pip NVIDIA libraries), else CPU. The Lao model (Whisper large-v3 size)
+    loads only on CUDA: on CPU it cannot keep up with a live meeting."""
+    import numpy as np
+    from faster_whisper import WhisperModel
+    if device_choice in ('auto', 'cuda') and enable_cuda_libraries():
+        try:
+            model = WhisperModel(str(model_path), device='cuda', compute_type='int8_float16', local_files_only=True)
+            list(model.transcribe(np.zeros(16000, dtype=np.float32), language='vi')[0])
+            lao = None
+            if lao_model_path and Path(lao_model_path).is_dir():
+                lao = WhisperModel(str(lao_model_path), device='cuda', compute_type='int8_float16', local_files_only=True)
+            return model, lao, {'device': 'cuda', 'laoModel': Path(lao_model_path).name if lao else None}
+        except Exception as exc:
+            if device_choice == 'cuda':
+                raise
+            fallback = str(exc)[:200]
+    else:
+        fallback = 'CUDA libraries not found' if device_choice != 'cpu' else None
+    model = WhisperModel(str(model_path), device='cpu', compute_type='int8', cpu_threads=threads, num_workers=1, local_files_only=True)
+    return model, None, {'device': 'cpu', 'laoModel': None, 'cudaFallback': fallback}
 
 
 def load_recording(path):
@@ -152,7 +195,6 @@ def load_recording(path):
 def capture(args):
     import numpy as np
     import av
-    from faster_whisper import WhisperModel
     threading.Thread(target=parent_watch, args=(args.parent,), daemon=True).start()
     languages = args.languages.split(',')
     if not languages or any(code not in ('vi', 'lo') for code in languages):
@@ -172,7 +214,7 @@ def capture(args):
     threading.Thread(target=commands, daemon=True).start()
     model_path = Path(args.model).resolve(strict=True)
     started = time.monotonic()
-    model = WhisperModel(str(model_path), device='cpu', compute_type='int8', cpu_threads=6, num_workers=1, local_files_only=True)
+    model, lao_model, asr = load_models(model_path, args.lao_model, args.asr_device, 6)
     if stop.is_set():
         return
     audio = stream = keepalive = None
@@ -240,7 +282,7 @@ def capture(args):
                     source_done.set()
                     return
                 if not ready:
-                    emit({'type': 'ready', 'device': source_name, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'model': 'faster-whisper-small-int8-cpu', 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 4, 'maxChunkSeconds': 12, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
+                    emit({'type': 'ready', 'device': source_name, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'model': 'faster-whisper-small', 'asr': asr, 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 4, 'maxChunkSeconds': 12, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
                     ready = True
                 mono = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels).mean(axis=1)
                 blocks.append(mono.copy())
@@ -310,7 +352,7 @@ def capture(args):
             converted = resampler.resample(frame) + resampler.resample(None)
             waveform16 = np.concatenate([f.to_ndarray().reshape(-1) for f in converted]).astype(np.float32)
             inference_started = time.monotonic()
-            segments, language, language_probability = transcribe_chunk(model, waveform16, languages)
+            segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model)
             for segment in segments:
                 if stop.is_set():
                     break
@@ -340,6 +382,8 @@ if __name__ == '__main__':
     parser.add_argument('--languages', default='vi,lo')
     parser.add_argument('--replay')
     parser.add_argument('--speed', type=float, default=1.0)
+    parser.add_argument('--asr-device', default='auto', choices=['auto', 'cuda', 'cpu'])
+    parser.add_argument('--lao-model')
     args = parser.parse_args()
     try:
         if args.list:
