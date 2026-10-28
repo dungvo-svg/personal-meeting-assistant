@@ -58,7 +58,7 @@ export class MeetingRuntime extends EventEmitter {
     if (!columns.includes('capture_id')) this.db.exec("ALTER TABLE sources ADD COLUMN capture_id TEXT NOT NULL DEFAULT ''");
     if (!columns.includes('language')) this.db.exec("ALTER TABLE sources ADD COLUMN language TEXT NOT NULL DEFAULT ''");
     // Previous processes cannot resume a recording or accept late publication.
-    this.db.prepare('UPDATE sessions SET ended=? WHERE ended IS NULL').run(new Date().toISOString());
+    this.db.prepare("UPDATE sessions SET ended=COALESCE((SELECT MAX(created) FROM sources WHERE session_id=sessions.id), created) WHERE ended IS NULL").run();
     try { this.context = JSON.parse(readFileSync(join(root, '.local', 'meeting-context.json'), 'utf8')); }
     catch { this.context = { title: 'Phiên họp cá nhân', language: 'vi', translation_required: false, topics: [] }; }
   }
@@ -86,7 +86,7 @@ export class MeetingRuntime extends EventEmitter {
     if (!Number.isSafeInteger(after) || after < 0) throw new Error('INVALID_CURSOR');
     return this.db.prepare('SELECT id,session_id AS sessionId,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(id, after, Math.max(1, Math.min(100, limit))) as Source[];
   }
-  ingest(text: string, origin: 'operator_text' | 'local_asr_unverified' | 'synthetic_fixture', start = 0, end = 0, boundary = '', captureId = '', language = '') {
+  ingest(text: string, origin: 'operator_text' | 'local_asr_unverified' | 'synthetic_fixture' | 'system_gap', start = 0, end = 0, boundary = '', captureId = '', language = '') {
     this.requireSession(this.session?.id);
     if (origin === 'synthetic_fixture' && this.session.mode !== 'FIXTURE_NOT_MEETING') throw new Error('FIXTURE_SOURCE_REJECTED');
     text = text.trim(); if (!text || text.length > 8000 || !Number.isFinite(start) || !Number.isFinite(end) || end < start) throw new Error('INVALID_SOURCE');
@@ -132,7 +132,13 @@ export class MeetingRuntime extends EventEmitter {
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count,MIN(created) AS oldest FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0, oldest: null };
     return { session: this.session, context: this.session?.context ?? this.context, captureState: this.captureState, captureInfo: this.captureInfo, lastError: this.lastError, armedDevice: this.armedDevice, lastAgentReadAt: this.lastAgentReadAt, backlog, sources: recent, notes, audioStorage: 'RAM_ONLY_NO_AUDIO_FILES', historyDirectory: this.dataDir, testMode: this.testMode };
   }
-  compact() { const { sources, notes, ...status } = this.snapshot(); return { ...status, displayedSourceCount: sources.length, displayedNoteCount: notes.length }; }
+  compact() {
+    const s = this.session; const id = s?.id;
+    const counts: any = id ? this.db.prepare('SELECT (SELECT COUNT(*) FROM sources WHERE session_id=?) AS sources,(SELECT COUNT(*) FROM notes WHERE session_id=?) AS notes').get(id, id) : { sources: 0, notes: 0 };
+    const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0 };
+    const { type, ...captureInfo } = this.captureInfo;
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, lastAgentReadAt: this.lastAgentReadAt, agentCursor: this.agentCursor, unread: backlog.count, sourceCount: counts.sources, noteCount: counts.notes };
+  }
   historyList() { return this.db.prepare('SELECT id,title,created,ended,mode FROM sessions ORDER BY created DESC LIMIT 100').all(); }
   exportText(id: string) {
     const session: any = this.db.prepare('SELECT id,title,created,ended,mode FROM sessions WHERE id=?').get(id);
@@ -157,6 +163,18 @@ export class MeetingRuntime extends EventEmitter {
       const [code] = await once(child, 'exit'); if (code !== 0) throw new Error('AUDIO_DEVICE_PROBE_FAILED: ' + error);
       this.devices = JSON.parse(output); return this.devices;
     } finally { clearTimeout(timer); }
+  }
+  async select(id: string, deviceIndex: number) {
+    this.requireSession(id);
+    if (!this.devices.some(d => d.index === deviceIndex)) await this.listDevices(false);
+    const device = this.devices.find(d => d.index === deviceIndex);
+    if (device?.kind === 'microphone') throw new Error('MICROPHONE_NEEDS_SEPARATE_CONSENT: chỉ chọn nguồn loa (loopback) qua tool này');
+    return this.arm(id, deviceIndex);
+  }
+  suggest(devices: any[]) {
+    const loud = devices.filter(d => d.kind !== 'microphone' && d.level?.framesReceived).sort((a, b) => (b.level.peak ?? 0) - (a.level.peak ?? 0))[0];
+    const pick = loud?.level.peak >= 0.01 ? loud : devices.find(d => d.isDefaultOutput) ?? null;
+    return pick ? { index: pick.index, name: pick.name, why: pick.level?.peak >= 0.01 ? 'đang có tiếng' : 'loa mặc định của Windows (đang im)' } : null;
   }
   arm(id: string, deviceIndex: number) {
     this.requireSession(id); if (this.capture) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
@@ -185,6 +203,7 @@ export class MeetingRuntime extends EventEmitter {
         if (event.type === 'prepared') { this.captureState = 'WAITING_FOR_SOURCE'; this.captureInfo = { ...event, captureId }; }
         if (event.type === 'ready') { this.captureState = 'LISTENING'; this.captureInfo = { ...event, captureId }; }
         if (event.type === 'status') this.captureInfo = { ...this.captureInfo, ...event };
+        if (event.type === 'gap') this.ingest(`[Khoảng trống ${Math.round(event.end - event.start)} giây: ASR không theo kịp, âm thanh đoạn này không được nhận dạng]`, 'system_gap', event.start, event.end, event.reason || 'GAP', captureId);
         if (event.type === 'source') this.ingest(event.text, 'local_asr_unverified', event.start, event.end, event.boundary || '', captureId, event.language || '');
         if (event.type === 'error') { this.lastError = event.message; this.captureState = 'ERROR'; void this.stopCapture(); }
         this.ping();
@@ -220,7 +239,7 @@ export class MeetingRuntime extends EventEmitter {
     if (!this.session.ended) { this.session.ended = new Date().toISOString(); this.db.prepare('UPDATE sessions SET ended=? WHERE id=?').run(this.session.ended, id); }
     this.armedDevice = null; this.ping(); await this.stopCapture();
     let raw: any; try { raw = this.writeRaw(id); } catch (error) { raw = { error: String(error) }; }
-    return { ...this.snapshot(), raw };
+    return { ...this.compact(), raw };
   }
   openMeeting(input: string) {
     const { meetingId, launch } = zoomLaunchUrl(input);
@@ -250,12 +269,12 @@ export class MeetingRuntime extends EventEmitter {
   writeRaw(id: string) {
     const session = this.sessionRow(id);
     const rows: any[] = this.db.prepare('SELECT id,text,origin,created,capture_id,language,boundary FROM sources WHERE session_id=? ORDER BY id').all(id);
-    const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử' };
+    const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
     const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Không có audio lưu lại.', ''];
     let capture: string | null = null;
     for (const row of rows) {
       if (row.capture_id !== capture) { capture = row.capture_id; lines.push('', `— ${capture ? 'Lượt nghe ' + capture.slice(0, 8) : 'Không qua bộ tai'} —`, ''); }
-      lines.push(`[${localTime(row.created)}] #${row.id} (${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}) ${row.text}`);
+      lines.push(`[${localTime(row.created)}] #${row.id} (${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LIKELY_HALLUCINATION') ? ' · nghi câu ảo' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}) ${row.text}`);
     }
     if (!rows.length) lines.push('_Chưa có đoạn nào được ghi nhận._');
     const path = join(this.reportDir(id), 'RAW.md'); writeFileSync(path, lines.join('\n') + '\n', 'utf8');

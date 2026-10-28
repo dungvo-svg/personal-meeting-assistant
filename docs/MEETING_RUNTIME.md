@@ -8,8 +8,8 @@ Người dùng gửi cho trợ lý: **link Zoom + nội dung họp**. Mẫu lờ
 
 1. Trợ lý gọi `session_prepare(title, agenda)`. Agenda chỉ là context.
 2. Trợ lý gọi `meeting_open(url)`. Zoom mở phòng; **người dùng tự bấm Join và Join Audio**. Tool chỉ nhận link Zoom và không lưu passcode.
-3. Người dùng mở `http://127.0.0.1:8796/` → **Đọc danh sách nguồn** khi trong Zoom đang có tiếng. Bảng đo mức âm từng loa, gắn nhãn `CÓ TIẾNG` / `đang im` / `không có khung âm` và chọn sẵn nguồn có tiếng. Bấm **Cho phép nguồn này trong phiên**. Quyền chọn nguồn vẫn chỉ nằm trên bảng.
-4. Trợ lý gọi `hearing_start`, rồi đọc `source_next` liên tục.
+3. **Từ 0.4.0:** trợ lý gọi `source_list`, nói tên nguồn đang có tiếng (`suggested`), người dùng đồng ý trong chat thì trợ lý gọi `source_select`. Không cần mở trình duyệt. Cách cũ vẫn dùng được: người dùng mở `http://127.0.0.1:8796/` → **Đọc danh sách nguồn** khi trong Zoom đang có tiếng. Bảng đo mức âm từng loa, gắn nhãn `CÓ TIẾNG` / `đang im` / `không có khung âm` và chọn sẵn nguồn có tiếng. Bấm **Cho phép nguồn này trong phiên**. Quyền chọn nguồn vẫn chỉ nằm trên bảng.
+4. Trợ lý gọi `hearing_start`, rồi đọc `source_next` liên tục và **không kết thúc lượt cho đến khi người dùng nói kết thúc**. Trong Claude Code, Stop hook `tools/meeting_stop_hook.mjs` (cài ở `.claude/settings.local.json`) chặn kết thúc lượt khi phiên họp còn chạy.
 5. Khi họp xong, trợ lý gọi `session_finish`. Tool tự ghi `RAW.md`. Trợ lý đọc hết bằng `history_read`, rồi lưu `SUMMARY.md` (`report_save_summary`) và `TASKS.md` (`report_save_tasks`) kèm source ID thật.
 
 File nằm trong `.local/runtime/reports/<ngày-giờ>_<mã phiên>/`. Bảng có nút **Tải RAW / Tải Summary / Tải Task**, dùng được cả cho phiên cũ trong lịch sử.

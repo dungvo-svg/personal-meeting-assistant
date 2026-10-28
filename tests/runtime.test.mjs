@@ -96,3 +96,17 @@ test('mixed Vietnamese/Lao: default languages, per-source language label, unknow
 test('Lao written in Thai script is flagged in RAW', async () => {
   await withRuntime(async r => { r.prepare(); r.ingest('วันหวา', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC; LAO_WRITTEN_IN_THAI_SCRIPT', 'cap', 'lo'); assert.match(readFileSync(r.writeRaw(r.session.id).path, 'utf8'), /lo · viết bằng chữ Thái/); });
 });
+test('status replies stay small even with a large agenda; finish returns compact state with RAW', async () => {
+  await withRuntime(async r => { r.prepare('Họp', false, 'x'.repeat(19000)); for (let i = 0; i < 300; i++) r.ingest('Đoạn số ' + i, 'operator_text'); const c = r.compact(); assert.ok(JSON.stringify(c).length < 4000); assert.equal(c.sourceCount, 300); assert.equal(c.unread, 300); const done = await r.finish(r.session.id); assert.ok(JSON.stringify(done).length < 4000); assert.equal(done.raw.sourceCount, 300); });
+});
+test('source_select: agent may arm a speaker source but never a microphone; suggestion prefers the output with sound', async () => {
+  await withRuntime(async r => {
+    r.prepare(); const devices = [{ index: 12, name: 'Mic', kind: 'microphone' }, { index: 13, name: 'Realtek [Loopback]', kind: 'speaker_loopback_all_device_audio', isDefaultOutput: true, level: { framesReceived: 100, peak: 0.002 } }, { index: 14, name: 'G243FW [Loopback]', kind: 'speaker_loopback_all_device_audio', level: { framesReceived: 0, peak: 0 } }];
+    r.devices = devices; await assert.rejects(r.select(r.session.id, 12), /MICROPHONE_NEEDS_SEPARATE_CONSENT/); assert.equal(r.armedDevice, null);
+    assert.equal((await r.select(r.session.id, 13)).name, 'Realtek [Loopback]');
+    assert.equal(r.suggest(devices).index, 13); devices[2].level = { framesReceived: 100, peak: 0.3 }; assert.equal(r.suggest(devices).index, 14);
+  });
+});
+test('a session left open by a crash ends at its last source, not at the next start', async () => {
+  await withRuntime(async (r, directory) => { r.prepare('Họp'); const id = r.session.id; r.ingest('Đoạn cuối.', 'operator_text'); const last = r.sources(id).at(-1).createdAt; r.closing = true; r.db.close(); await new Promise(res => setTimeout(res, 30)); const reopened = new MeetingRuntime(resolve('.'), directory, true); try { assert.equal(reopened.history(id).session.ended, last); } finally { await reopened.close(); } });
+});

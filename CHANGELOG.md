@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0 —28/10/2026
+
+- Owner (U16–U17): host Claude Code; chỉ Claude là AI, công cụ âm thanh/ASR/dịch mã nguồn mở chạy trên máy; theo dõi đến khi người dùng kết thúc; mọi thao tác qua Claude. Ghi OWN-013..016, ENG-14..16; backlog `docs/V0_4_BACKLOG.md`.
+- T01: Stop hook giữ lượt khi đang họp (`tools/meeting_stop_hook.mjs`), cài cục bộ ở `.claude/settings.local.json`.
+- T02: tool `source_select` + `source_list.suggested`; không cần mở trình duyệt để cấp quyền nguồn loa.
+- T04/T05: quá tải ASR ghi khoảng trống thay vì dừng; câu ảo khi im lặng, lặp từ và tiếng Lào chữ Thái được gắn cờ (dùng chung cho bộ thu và `tools/transcribe_recording.py`).
+- T06: `session_status`/`hearing_pause`/`session_finish` trả bản gọn (< 4 KB); phiên bị bỏ dở do crash kết thúc ở thời điểm có nguồn cuối cùng.
+- Thêm `tools/transcribe_recording.py`: nhận dạng lại file ghi hình họp trên máy thành một RAW.md.
+- Kiểm chứng: 20 contract test, 4 test Python, probe 17 tools, hook thử với phiên không liên quan (cho dừng) và phiên đang họp (chặn). Chưa đo hook trong cả một cuộc họp thật.
+
 ## 0.3.0 —28/10/2026
 
 - Owner (U12–U14): nghe họp từ link Zoom + nội dung, sau họp có RAW + Summary + Task; bộ công cụ dùng được cho host không phải Claude. Ghi OWN-009..011; OWN-009 thay phần “không tự mở link/Join” của OWN-007.

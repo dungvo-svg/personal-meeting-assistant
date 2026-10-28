@@ -17,7 +17,7 @@
     "codex"
   ],
   "initial_intended_assistant": "claude",
-  "first_required_host": "claude_desktop",
+  "first_required_host": "claude_code_in_claude_desktop",
   "connected_assistant": null,
   "implemented_adapters": [
     "mcp_stdio",
@@ -57,7 +57,9 @@
     "actual_claude_code_tool_calls_verified": true,
     "actual_device_capture_verified": "2026-10-28 v0.2.0 worker on Realtek loopback via Claude Code; v0.3.0 not yet run in a meeting",
     "lao_asr_quality": "NOT_USABLE_THAI_SCRIPT_FLAGGED",
-    "non_claude_hosts_verified": false
+    "non_claude_hosts_verified": false,
+    "primary_host": "claude_code_in_claude_desktop",
+    "continuity": "STOP_HOOK_IMPLEMENTED_NOT_YET_MEASURED_FULL_MEETING"
   },
   "runtime_runbook": "docs/MEETING_RUNTIME.md",
   "v1_meeting_mode": "OPEN_USER_SENT_ZOOM_LINK_USER_CONFIRMS_JOIN",
@@ -65,7 +67,7 @@
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "TEMPORARY_ONLY",
   "documentation_baseline": {
-    "version": "0.3.0",
+    "version": "0.4.0",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",
@@ -81,7 +83,11 @@
       "OWN-009",
       "OWN-010",
       "OWN-011",
-      "OWN-012"
+      "OWN-012",
+      "OWN-013",
+      "OWN-014",
+      "OWN-015",
+      "OWN-016"
     ]
   },
   "acceptance_status": "NOT_EVALUATED",

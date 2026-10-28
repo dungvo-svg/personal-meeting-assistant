@@ -7,6 +7,28 @@ import sys
 import unittest
 
 
+class TranscriptFilterTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        self.worker = audio_worker
+
+    def segment(self, no_speech=0.1, compression=1.2):
+        return type('Segment', (), {'no_speech_prob': no_speech, 'compression_ratio': compression})()
+
+    def test_flags_mark_but_keep_text(self):
+        flags = self.worker.segment_flags
+        self.assertEqual(flags('Kho số hai đủ hàng.', self.segment(), 'vi'), [])
+        self.assertIn('LIKELY_HALLUCINATION', flags('Hãy đăng ký kênh để ủng hộ', self.segment(), 'vi'))
+        self.assertIn('LAO_WRITTEN_IN_THAI_SCRIPT', flags('วัน', self.segment(), 'lo'))
+        self.assertNotIn('LAO_WRITTEN_IN_THAI_SCRIPT', flags('ສະບາຍດີ', self.segment(), 'lo'))
+        self.assertIn('REPETITION', flags('dạ dạ dạ dạ dạ dạ dạ', self.segment(), 'vi'))
+
+    def test_collapse_repeats_keeps_count(self):
+        self.assertEqual(self.worker.collapse_repeats('ok dạ dạ dạ dạ dạ dạ dạ xong'), 'ok dạ [×7] xong')
+        self.assertEqual(self.worker.collapse_repeats('ba ba xe'), 'ba ba xe')
+
+
 class AudioInfrastructureTests(unittest.TestCase):
     def test_resample_lengths(self):
         import av

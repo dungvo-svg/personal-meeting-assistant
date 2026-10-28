@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
@@ -95,6 +96,27 @@ def parent_watch(pid):
     kernel.WaitForSingleObject(handle, 0xFFFFFFFF)
     kernel.CloseHandle(handle)
     os._exit(0)
+
+
+# Phrases Whisper invents over silence or music. They are kept but flagged, never silently removed.
+SILENCE_PHRASES = ('đăng ký kênh', 'subscribe', 'cảm ơn các bạn đã theo dõi', 'cảm ơn các bạn đã xem', 'hẹn gặp lại các bạn', 'ghiền mì gõ', 'like và share')
+REPEAT = re.compile(r'(\b\S+\b)(?:\W+\1\b){5,}', re.IGNORECASE)
+
+
+def segment_flags(text, segment, language):
+    flags = []
+    # Whisper small often writes Lao speech in Thai script; flag it instead of presenting it as Lao text.
+    if language == 'lo' and any('฀' <= ch <= '๿' for ch in text):
+        flags.append('LAO_WRITTEN_IN_THAI_SCRIPT')
+    if any(phrase in text.lower() for phrase in SILENCE_PHRASES) or segment.no_speech_prob > 0.6:
+        flags.append('LIKELY_HALLUCINATION')
+    if segment.compression_ratio > 2.4 or REPEAT.search(text):
+        flags.append('REPETITION')
+    return flags
+
+
+def collapse_repeats(text):
+    return REPEAT.sub(lambda m: f'{m.group(1)} [×{len(re.findall(re.escape(m.group(1)), m.group(0), re.IGNORECASE))}]', text)
 
 
 def transcribe_chunk(model, waveform16, languages):
@@ -198,7 +220,11 @@ def capture(args):
                         try:
                             chunks.put_nowait(chunk)
                         except queue.Full:
-                            raise RuntimeError('ASR_BACKLOG_LIMIT: source stopped; unprocessed audio discarded from RAM, coverage incomplete.')
+                            # ASR is behind: keep growing this block (bounded) instead of stopping the meeting.
+                            if duration < 30:
+                                continue
+                            # Still behind after 30 s: drop this block from RAM and record the gap explicitly.
+                            emit({'type': 'gap', 'start': block_start / rate, 'end': samples / rate, 'reason': 'ASR_BEHIND_AUDIO_DROPPED'})
                     blocks = []
                     block_samples = 0
                     block_peak_rms = 0.0
@@ -236,9 +262,8 @@ def capture(args):
                     break
                 text = segment.text.strip()
                 if text:
-                    # Whisper small often writes Lao speech in Thai script; flag it instead of presenting it as Lao text.
-                    script = '; LAO_WRITTEN_IN_THAI_SCRIPT' if language == 'lo' and any('฀' <= ch <= '๿' for ch in text) else ''
-                    emit({'type': 'source', 'text': text, 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + script, 'language': language, 'languageProbability': language_probability})
+                    marks = ''.join('; ' + flag for flag in segment_flags(text, segment, language))
+                    emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability})
             emit({'type': 'status', 'lastASRSeconds': round(time.monotonic() - inference_started, 3), 'lastChunkSeconds': round(end - begin, 3), 'queuedChunks': chunks.qsize()})
             del waveform, waveform16
     finally:
