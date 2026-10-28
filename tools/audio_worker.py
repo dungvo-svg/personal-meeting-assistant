@@ -133,12 +133,15 @@ def collapse_repeats(text):
 LAO_OPTIONS = {'no_repeat_ngram_size': 3, 'repetition_penalty': 1.2}
 
 
-def transcribe_chunk(model, waveform16, languages, lao_model=None):
+def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None):
     # max_new_tokens stops repetition loops on noisy or misdetected chunks.
     options = {'task': 'transcribe', 'max_new_tokens': 160, 'beam_size': 1, 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
     if languages == ['lo'] and lao_model:
         segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
         return segments, 'lo', None
+    if languages == ['vi'] and vi_model:
+        segments, _ = vi_model.transcribe(waveform16, language='vi', **options)
+        return segments, 'vi', None
     if len(languages) == 1:
         segments, _ = model.transcribe(waveform16, language=languages[0], **options)
         return segments, languages[0], None
@@ -151,33 +154,56 @@ def transcribe_chunk(model, waveform16, languages, lao_model=None):
     if language == 'lo' and lao_model:
         # Lao goes to the Lao model (Lao script); the multilingual model would write Thai script.
         segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
+    elif language == 'vi' and vi_model:
+        # A Vietnamese-specialised model, when configured, transcribes what the detector called Vietnamese.
+        segments, _ = vi_model.transcribe(waveform16, language='vi', **options)
     elif language != info.language:
         segments, _ = model.transcribe(waveform16, language=language, **options)
     total = scores['vi'] + scores['lo']
     return segments, language, round(scores[language] / total, 3) if total else None
 
 
-def load_models(model_path, lao_model_path, device_choice, threads):
-    """Main model on CUDA when it works (pip NVIDIA libraries), else CPU. The Lao model (Whisper large-v3 size)
-    loads only on CUDA: on CPU it cannot keep up with a live meeting."""
+MODELS = Path(__file__).resolve().parents[1] / '.local' / 'models'
+
+
+def asr_profile():
+    """Which models to use. .local/models/asr-profile.json may set {"main", "vi", "lo"} (folder names under
+    .local/models); "main" detects vi/lo and transcribes anything without a dedicated model. Defaults: Whisper
+    small as main, no Vietnamese model, BuzzASR/lao when installed."""
+    try:
+        profile = json.loads((MODELS / 'asr-profile.json').read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        profile = {}
+
+    def path(name):
+        return MODELS / name if name and (MODELS / name).is_dir() else None
+    return {'main': path(profile.get('main')) or MODELS / 'small', 'vi': path(profile.get('vi')), 'lo': path(profile.get('lo', 'buzzasr-lao-ct2'))}
+
+
+def load_models(model_path, lao_model_path, device_choice, threads, vi_model_path=None):
+    """Main model on CUDA when it works (pip NVIDIA libraries), else CPU. The Lao and Vietnamese models are
+    Whisper large size: they load only on CUDA, on CPU they cannot keep up with a live meeting."""
     import numpy as np
     from faster_whisper import WhisperModel
     if device_choice in ('auto', 'cuda') and enable_cuda_libraries():
         try:
-            model = WhisperModel(str(model_path), device='cuda', compute_type='int8_float16', local_files_only=True)
+            def gpu(path):
+                return WhisperModel(str(path), device='cuda', compute_type='int8_float16', local_files_only=True)
+            model = gpu(model_path)
             list(model.transcribe(np.zeros(16000, dtype=np.float32), language='vi')[0])
-            lao = None
-            if lao_model_path and Path(lao_model_path).is_dir():
-                lao = WhisperModel(str(lao_model_path), device='cuda', compute_type='int8_float16', local_files_only=True)
-            return model, lao, {'device': 'cuda', 'laoModel': Path(lao_model_path).name if lao else None}
+            lao = gpu(lao_model_path) if lao_model_path and Path(lao_model_path).is_dir() else None
+            vi = gpu(vi_model_path) if vi_model_path and Path(vi_model_path).is_dir() else None
+            return model, lao, vi, {'device': 'cuda', 'mainModel': Path(model_path).name, 'laoModel': Path(lao_model_path).name if lao else None, 'viModel': Path(vi_model_path).name if vi else None}
         except Exception as exc:
             if device_choice == 'cuda':
                 raise
             fallback = str(exc)[:200]
     else:
         fallback = 'CUDA libraries not found' if device_choice != 'cpu' else None
-    model = WhisperModel(str(model_path), device='cpu', compute_type='int8', cpu_threads=threads, num_workers=1, local_files_only=True)
-    return model, None, {'device': 'cpu', 'laoModel': None, 'cudaFallback': fallback}
+    # CPU: only a small main model keeps up in real time.
+    cpu_model = model_path if any(size in Path(model_path).name for size in ('small', 'base', 'tiny')) else MODELS / 'small'
+    model = WhisperModel(str(cpu_model), device='cpu', compute_type='int8', cpu_threads=threads, num_workers=1, local_files_only=True)
+    return model, None, None, {'device': 'cpu', 'mainModel': Path(cpu_model).name, 'laoModel': None, 'viModel': None, 'cudaFallback': fallback}
 
 
 def load_recording(path):
@@ -212,9 +238,10 @@ def capture(args):
         stop.set()
 
     threading.Thread(target=commands, daemon=True).start()
-    model_path = Path(args.model).resolve(strict=True)
+    profile = asr_profile()
+    model_path = Path(args.model or profile['main']).resolve(strict=True)
     started = time.monotonic()
-    model, lao_model, asr = load_models(model_path, args.lao_model, args.asr_device, 6)
+    model, lao_model, vi_model, asr = load_models(model_path, args.lao_model or profile['lo'], args.asr_device, 6, args.vi_model or profile['vi'])
     if stop.is_set():
         return
     audio = stream = keepalive = None
@@ -282,7 +309,7 @@ def capture(args):
                     source_done.set()
                     return
                 if not ready:
-                    emit({'type': 'ready', 'device': source_name, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'model': 'faster-whisper-small', 'asr': asr, 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 4, 'maxChunkSeconds': 12, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
+                    emit({'type': 'ready', 'device': source_name, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'asr': asr, 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 4, 'maxChunkSeconds': 12, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
                     ready = True
                 mono = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels).mean(axis=1)
                 blocks.append(mono.copy())
@@ -352,7 +379,7 @@ def capture(args):
             converted = resampler.resample(frame) + resampler.resample(None)
             waveform16 = np.concatenate([f.to_ndarray().reshape(-1) for f in converted]).astype(np.float32)
             inference_started = time.monotonic()
-            segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model)
+            segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model, vi_model)
             for segment in segments:
                 if stop.is_set():
                     break
@@ -384,6 +411,7 @@ if __name__ == '__main__':
     parser.add_argument('--speed', type=float, default=1.0)
     parser.add_argument('--asr-device', default='auto', choices=['auto', 'cuda', 'cpu'])
     parser.add_argument('--lao-model')
+    parser.add_argument('--vi-model')
     args = parser.parse_args()
     try:
         if args.list:

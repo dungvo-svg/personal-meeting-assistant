@@ -64,7 +64,8 @@
     "lao_asr_quality": "BUZZASR_LAO_GPU_FLEURS_CER_0.363_LAO_SCRIPT; CPU_FALLBACK_THAI_SCRIPT_FLAGGED",
     "non_claude_hosts_verified": false,
     "primary_host": "claude_code_in_claude_desktop",
-    "continuity": "MONITOR_ON_PMA_FOLLOW_PLUS_STOP_HOOK_NOT_YET_MEASURED_FULL_MEETING"
+    "continuity": "MONITOR_ON_PMA_FOLLOW_PLUS_STOP_HOOK_NOT_YET_MEASURED_FULL_MEETING",
+    "vi_asr_quality": "WHISPER_LARGE_V3_TURBO_GPU_FLEURS_CER_0.048"
   },
   "runtime_runbook": "docs/MEETING_RUNTIME.md",
   "v1_meeting_mode": "OPEN_USER_SENT_ZOOM_LINK_USER_CONFIRMS_JOIN",
@@ -72,7 +73,7 @@
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "TEMPORARY_ONLY",
   "documentation_baseline": {
-    "version": "0.6.0",
+    "version": "0.7.0",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",

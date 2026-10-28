@@ -72,6 +72,7 @@ def main():
     parser.add_argument('--limit', type=int, default=40)
     parser.add_argument('--label', default=None)
     parser.add_argument('--pipeline-lao-model', help='score the live pipeline instead: --model detects vi/lo, Lao chunks go to this model')
+    parser.add_argument('--pipeline-vi-model', help='with --pipeline-lao-model: Vietnamese chunks go to this model')
     args = parser.parse_args()
     if args.device == 'cuda':
         enable_cuda_libraries()
@@ -80,8 +81,8 @@ def main():
     started = time.monotonic()
     lao_model = None
     if args.pipeline_lao_model:
-        model, lao_model, asr = load_models(args.model, args.pipeline_lao_model, args.device, 8)
-        compute = f"pipeline {asr['device']} lao={asr['laoModel']}"
+        model, lao_model, vi_model, asr = load_models(args.model, args.pipeline_lao_model, args.device, 8, args.pipeline_vi_model)
+        compute = f"pipeline {asr['device']} main={asr['mainModel']} vi={asr['viModel']} lao={asr['laoModel']}"
     else:
         model = WhisperModel(str(args.model), device=args.device, compute_type=compute, cpu_threads=8, local_files_only=True)
     load_seconds = time.monotonic() - started
@@ -91,7 +92,7 @@ def main():
         audio = decode(data)
         t = time.monotonic()
         if args.pipeline_lao_model:
-            segments, chosen, _ = transcribe_chunk(model, audio, ['vi', 'lo'], lao_model)
+            segments, chosen, _ = transcribe_chunk(model, audio, ['vi', 'lo'], lao_model, vi_model)
             totals['languageCorrect'] += chosen == args.language
         else:
             segments, _ = model.transcribe(audio, language=args.force_language or args.language, beam_size=1, temperature=0, condition_on_previous_text=False, max_new_tokens=200, no_repeat_ngram_size=3, repetition_penalty=1.2)

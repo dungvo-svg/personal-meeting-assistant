@@ -68,6 +68,15 @@ class LanguageRoutingTests(unittest.TestCase):
         segments, language, _ = self.worker.transcribe_chunk(main, None, ['vi', 'lo'], None)
         self.assertEqual((segments, language, main.calls), (['main:lo'], 'lo', [None, 'lo']))
 
+    def test_vietnamese_chunks_go_to_the_vietnamese_model_when_configured(self):
+        main = self.fake('main', 'vi', [('vi', 0.9)])
+        vi, lao = self.fake('vi'), self.fake('lao')
+        segments, language, _ = self.worker.transcribe_chunk(main, None, ['vi', 'lo'], lao, vi)
+        self.assertEqual((segments, language, vi.calls, lao.calls), (['vi:vi'], 'vi', ['vi'], []))
+        lao_chunk = self.fake('main', 'lo', [('lo', 0.8)])
+        segments, language, _ = self.worker.transcribe_chunk(lao_chunk, None, ['vi', 'lo'], lao, vi)
+        self.assertEqual((segments, language), (['lao:lo'], 'lo'))
+
     def test_lao_only_session_uses_the_lao_model_directly(self):
         main, lao = self.fake('main'), self.fake('lao')
         segments, language, _ = self.worker.transcribe_chunk(main, None, ['lo'], lao)

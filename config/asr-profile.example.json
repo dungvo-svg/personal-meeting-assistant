@@ -1,0 +1,6 @@
+{
+  "main": "whisper-large-v3-turbo-ct2",
+  "lo": "buzzasr-lao-ct2",
+  "vi": null,
+  "note": "Copied to .local/models/asr-profile.json by tools/setup_lao_gpu.sh. Folder names under .local/models. main = language detection + Vietnamese; lo = Lao; vi = optional Vietnamese-only model (e.g. phowhisper-large-ct2). Without a GPU the worker falls back to small on CPU."
+}

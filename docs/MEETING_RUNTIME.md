@@ -22,7 +22,11 @@ Người dùng gửi cho trợ lý: **link Zoom + nội dung họp**. Mẫu lờ
 
 File nằm trong `.local/runtime/reports/<ngày-giờ>_<mã phiên>/`. Bảng có nút **Tải RAW / Tải Summary / Tải Task**, dùng được cả cho phiên cũ trong lịch sử.
 
-## Tiếng Lào trên GPU (từ 0.6.0)
+## Model nhận dạng trên GPU (từ 0.7.0)
+
+`tools/setup_lao_gpu.sh` cài và tạo `.local/models/asr-profile.json`: **Whisper large-v3-turbo** nhận diện Việt/Lào và nhận dạng tiếng Việt (FLEURS CER 4,8%), **BuzzASR/lao** nhận dạng tiếng Lào (CER 36,4%, chữ Lào). Dùng khoảng 3,6 GB VRAM. Muốn thử model chỉ-tiếng-Việt (ví dụ PhoWhisper-large) thì đặt `"vi": "phowhisper-large-ct2"` trong file đó. Không có GPU thì tự dùng Whisper small trên CPU.
+
+## Tiếng Lào trên GPU (0.6.0)
 
 Có GPU NVIDIA và đã chạy `tools/setup_lao_gpu.sh` một lần: đoạn tiếng Lào được nhận dạng bằng BuzzASR/lao (MIT), ra **chữ Lào**. Đo trên FLEURS: CER Lào 36,3%, CER Việt 9,9%, nhận diện ngôn ngữ đúng 80/80 clip. Không có GPU thì giữ cách cũ: tiếng Lào bị gắn cờ chữ Thái. `./pma status` → `captureInfo.asr` cho biết đang chạy `cuda` hay `cpu` và có model Lào không.
 

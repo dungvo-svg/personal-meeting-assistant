@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 —28/10/2026
+
+- Owner: “Nâng tiếng Việt GPU”. Model chính trên GPU là **Whisper large-v3-turbo** (MIT, tự chuyển từ bản gốc `41f01f3` bằng `tools/convert_whisper_model.py`): nhận diện vi/lo và nhận dạng tiếng Việt. Tiếng Lào vẫn qua BuzzASR/lao. Không có GPU thì về small trên CPU.
+- Chọn model bằng `.local/models/asr-profile.json` (mẫu `config/asr-profile.example.json`): `main`, `lo`, và tùy chọn `vi` cho model chỉ-tiếng-Việt. Bộ thu, phát lại và nhận dạng video dùng chung.
+- Đo FLEURS tiếng Việt (40 clip, toàn luồng GPU): small 9,9% → turbo **4,8%**; turbo + PhoWhisper-large 3,9%; turbo + PhoWhisper-medium 5,9%. Nhận diện ngôn ngữ với turbo: Việt 40/40, Lào 39/40; CER Lào 36,4%.
+- Không chọn PhoWhisper mặc định: trên họp thật nó viết toàn chữ thường, đọc số thành chữ ("một trăm năm mươi"), sai tên viết tắt ("enancy" cho NNC), chậm hơn 1,6 lần và cần 5,4 GB VRAM (turbo: 3,6 GB).
+- Video họp 28/10 (44 phút): câu ảo 35 → 18, tên "Sơn" nhận được 6 → 41 lần, "NNC" 3 → 8; xử lý 4,3 phút. Test: 25 Node, 9 Python.
+
 ## 0.6.0 —28/10/2026
 
 - Owner: “Làm tiếng Lào GPU”. ASR chạy CUDA trên RTX 3050 (cuBLAS/cuDNN từ wheel NVIDIA, `requirements-gpu.lock.txt`); không có GPU thì tự về CPU như trước.

@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-time setup for Lao ASR on an NVIDIA GPU. Everything stays on this machine under the ignored .local/.
+# One-time setup for GPU ASR (Vietnamese: Whisper large-v3-turbo; Lao: BuzzASR/lao) on an NVIDIA GPU. Everything stays on this machine under the ignored .local/.
 # Open-source only: CUDA runtime wheels (NVIDIA redistributable), BuzzASR/lao (MIT), FLEURS (CC-BY-4.0, scoring only).
 set -e
 cd "$(dirname "$0")/.."
@@ -24,7 +24,9 @@ echo "== [4/5] Conversion-only venv (torch CPU + transformers); the runtime venv
 .local/convert-venv/Scripts/python.exe -m pip install --disable-pip-version-check -q torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
 .local/convert-venv/Scripts/python.exe -m pip install --disable-pip-version-check -q transformers==5.21.0 ctranslate2==4.8.4 tokenizers==0.23.3
 
-echo "== [5/5] Convert to CTranslate2 and score"
+echo "== [5/5] Convert to CTranslate2 (Lao model + Whisper large-v3-turbo, MIT) and score"
 HF_HUB_OFFLINE=1 .local/convert-venv/Scripts/python.exe tools/convert_lao_model.py
-PYTHONIOENCODING=utf-8 "$PY" tools/eval_asr.py --model .local/models/small --pipeline-lao-model .local/models/buzzasr-lao-ct2 --language lo --limit 40 --label pipeline
+.local/convert-venv/Scripts/python.exe tools/convert_whisper_model.py openai/whisper-large-v3-turbo 41f01f3fe87f28c78e2fbf8b568835947dd65ed9 whisper-large-v3-turbo-ct2
+[ -f .local/models/asr-profile.json ] || cp config/asr-profile.example.json .local/models/asr-profile.json
+PYTHONIOENCODING=utf-8 "$PY" tools/eval_asr.py --model .local/models/whisper-large-v3-turbo-ct2 --pipeline-lao-model .local/models/buzzasr-lao-ct2 --language lo --limit 40 --label pipeline
 echo "== DONE"
