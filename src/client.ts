@@ -31,11 +31,11 @@ export async function ensureDaemon(): Promise<Info> {
   if (await alive(known)) return known!;
   // The runtime must outlive the Claude session, shell command or MCP adapter that starts it, and must not
   // hold their stdout pipes. On Windows a detached child still inherits those handles and the caller's job,
-  // so it is created through WMI instead. Settings travel as --env arguments because WMI drops the environment.
+  // so it is created through WMI instead, with its console hidden. Settings travel as --env arguments because WMI drops the environment.
   const settings = DAEMON_ENV.filter(key => process.env[key]).flatMap(key => ['--env', `${key}=${process.env[key]}`]);
-  const argv = [process.execPath, join(root, 'dist', 'daemon.js'), ...settings];
+  const argv = [process.execPath, '--no-warnings', join(root, 'dist', 'daemon.js'), ...settings];
   const child = process.platform === 'win32'
-    ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:PMA_LAUNCH; CurrentDirectory = $env:PMA_LAUNCH_DIR }; exit $r.ReturnValue'], { stdio: 'ignore', windowsHide: true, env: { ...process.env, PMA_LAUNCH: argv.map(a => `"${a}"`).join(' '), PMA_LAUNCH_DIR: root } })
+    ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:PMA_LAUNCH; CurrentDirectory = $env:PMA_LAUNCH_DIR; ProcessStartupInformation = $s }; exit $r.ReturnValue'], { stdio: 'ignore', windowsHide: true, env: { ...process.env, PMA_LAUNCH: argv.map(a => `"${a}"`).join(' '), PMA_LAUNCH_DIR: root } })
     : spawn(argv[0], argv.slice(1), { detached: true, stdio: 'ignore' });
   child.unref();
   const deadline = Date.now() + 20000;
