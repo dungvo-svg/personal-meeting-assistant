@@ -114,7 +114,28 @@ SILENCE_PHRASES = ('đăng ký kênh', 'subscribe', 'cảm ơn các bạn đã t
 REPEAT = re.compile(r'(\b\S+\b)(?:\W+\1\b){5,}', re.IGNORECASE)
 
 
-def segment_flags(text, segment, language):
+# Longest chunk before a forced cut, and how long a backed-up queue may keep growing a chunk before audio is dropped.
+MAX_CHUNK_SECONDS = 20
+GROWTH_LIMIT_SECONDS = MAX_CHUNK_SECONDS + 10
+LANG_UNSURE_BELOW = 0.65
+LAO_LOW_LOGPROB = -1.0
+
+
+def split_point(block_rms, block_sizes, rate, window_seconds=3):
+    # Where to cut a chunk that hit the hard window: the quietest block among those covering the last window_seconds
+    # (the latest one on ties). Returns the index of the last block of the first chunk; never below 0.
+    best = len(block_rms) - 1
+    covered = 0
+    for index in range(len(block_rms) - 1, -1, -1):
+        if block_rms[index] < block_rms[best]:
+            best = index
+        covered += block_sizes[index]
+        if covered >= window_seconds * rate:
+            break
+    return best
+
+
+def segment_flags(text, segment, language, language_probability=None):
     flags = []
     # Whisper small often writes Lao speech in Thai script; flag it instead of presenting it as Lao text.
     if language == 'lo' and any('฀' <= ch <= '๿' for ch in text):
@@ -123,6 +144,10 @@ def segment_flags(text, segment, language):
         flags.append('LIKELY_HALLUCINATION')
     if segment.compression_ratio > 2.4 or REPEAT.search(text):
         flags.append('REPETITION')
+    if language_probability is not None and language_probability < LANG_UNSURE_BELOW:
+        flags.append('LANG_UNSURE')
+    if language == 'lo' and getattr(segment, 'avg_logprob', 0.0) < LAO_LOW_LOGPROB:
+        flags.append('LAO_LOW_CONFIDENCE')
     return flags
 
 
@@ -135,7 +160,7 @@ LAO_OPTIONS = {'no_repeat_ngram_size': 3, 'repetition_penalty': 1.2}
 
 def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None):
     # max_new_tokens stops repetition loops on noisy or misdetected chunks.
-    options = {'task': 'transcribe', 'max_new_tokens': 160, 'beam_size': 1, 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
+    options = {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': 1, 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
     if languages == ['lo'] and lao_model:
         segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
         return segments, 'lo', None
@@ -218,6 +243,39 @@ def load_recording(path):
     return np.concatenate(parts).astype(np.float32)
 
 
+# A microphone near the speakers also hears the meeting. A mic chunk is kept as the user's own speech only when, in
+# enough of its loud blocks, the mic is clearly louder than what the speakers play at the same moment.
+MIC_OVER_SPEAKER = 2.0
+MIC_OWN_SHARE = 0.3
+SOUND_RMS = 0.006
+
+
+def mic_is_own_voice(mic_rms, speaker_rms, ratio=MIC_OVER_SPEAKER, share=MIC_OWN_SHARE):
+    loud = [(m, s) for m, s in zip(mic_rms, speaker_rms) if m >= SOUND_RMS]
+    if not loud:
+        return False
+    return sum(1 for m, s in loud if m > ratio * s) / len(loud) >= share
+
+
+def raise_priority():
+    # Other work on the machine (agents, builds) must not make the transcript fall behind the meeting.
+    if os.name == 'nt':
+        try:
+            ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x8000)  # ABOVE_NORMAL
+        except Exception:
+            pass
+
+
+def open_input(audio, index, expected_name):
+    device = audio.get_device_info_by_index(index)
+    if device['name'] != expected_name or device['maxInputChannels'] < 1:
+        raise RuntimeError('Selected audio device changed. Re-select the source.')
+    rate, channels = int(device['defaultSampleRate']), int(device['maxInputChannels'])
+    if channels > 8 or rate > 192000:
+        raise RuntimeError('Unsupported source format')
+    return device, rate, channels
+
+
 def capture(args):
     import numpy as np
     import av
@@ -228,7 +286,7 @@ def capture(args):
     # Mixed sessions use longer chunks: detection is more reliable and per-chunk overhead stays below real time.
     min_chunk_seconds = 6 if len(languages) > 1 else 3
     stop = threading.Event()
-    chunks = queue.Queue(maxsize=4)
+    chunks = queue.Queue(maxsize=6)
 
     def commands():
         for line in sys.stdin:
@@ -237,15 +295,34 @@ def capture(args):
                 return
         stop.set()
 
-    threading.Thread(target=commands, daemon=True).start()
+    if not args.wait_source:
+        threading.Thread(target=commands, daemon=True).start()
+    raise_priority()
     profile = asr_profile()
     model_path = Path(args.model or profile['main']).resolve(strict=True)
     started = time.monotonic()
     model, lao_model, vi_model, asr = load_models(model_path, args.lao_model or profile['lo'], args.asr_device, 6, args.vi_model or profile['vi'])
+    if args.wait_source:
+        # Warm start: models load when the session opens; the source arrives later as one JSON line on stdin.
+        emit({'type': 'warm', 'asr': asr, 'modelLoadSeconds': round(time.monotonic() - started, 3)})
+        line = sys.stdin.readline().strip()
+        if not line or line == 'stop':
+            return
+        request = json.loads(line)
+        if request.get('replay'):
+            args.replay, args.speed = request['replay'], float(request.get('speed', 1))
+        else:
+            args.device, args.device_name = int(request['device']), str(request['deviceName'])
+            if request.get('micDevice') is not None:
+                args.mic_device, args.mic_name = int(request['micDevice']), str(request['micName'])
+        args.max_seconds = int(request.get('maxSeconds', args.max_seconds))
+        threading.Thread(target=commands, daemon=True).start()
     if stop.is_set():
         return
-    audio = stream = keepalive = None
+    audio = keepalive = None
+    streams = []
     source_done = threading.Event()
+    speaker_levels = {}  # 0.1 s slot since capture start -> speaker RMS, for the mic echo check
     if args.replay:
         # Replay a recording through the same chunking and ASR, paced like a live source. No device is opened.
         pcm = load_recording(args.replay)
@@ -262,16 +339,11 @@ def capture(args):
             if delay > 0:
                 time.sleep(delay)
             return block.tobytes()
+        inputs = [('speaker', read_block, rate, channels)]
     else:
         import pyaudiowpatch as pa
         audio = pa.PyAudio()
-        device = audio.get_device_info_by_index(args.device)
-        if device['name'] != args.device_name or device['maxInputChannels'] < 1:
-            raise RuntimeError('Selected audio device changed. Re-select the source.')
-        rate = int(device['defaultSampleRate'])
-        channels = int(device['maxInputChannels'])
-        if channels > 8 or rate > 192000:
-            raise RuntimeError('Unsupported source format')
+        device, rate, channels = open_input(audio, args.device, args.device_name)
         source_name = device['name']
         keepalive_note = 'NOT_LOOPBACK'
         if device.get('isLoopbackDevice'):
@@ -281,16 +353,26 @@ def capture(args):
             except Exception as exc:
                 keepalive_note = 'KEEPALIVE_FAILED_FRAMES_STOP_WHEN_SILENT: ' + str(exc)
         stream = audio.open(format=pa.paFloat32, channels=channels, rate=rate, input=True, input_device_index=args.device, frames_per_buffer=2048)
-
-        def read_block():
-            # A short CPU stall must not end a long meeting; overflow is reported, not fatal.
-            return stream.read(2048, exception_on_overflow=False)
+        streams.append(stream)
+        # A short CPU stall must not end a long meeting; overflow is reported, not fatal.
+        inputs = [('speaker', lambda: stream.read(2048, exception_on_overflow=False), rate, channels)]
+        if args.mic_device is not None:
+            # The user's own microphone ("Tôi"), only when they agreed to it in chat for this session.
+            mic, mic_rate, mic_channels = open_input(audio, args.mic_device, args.mic_name)
+            if mic.get('isLoopbackDevice'):
+                raise RuntimeError('Microphone channel must be a microphone, not a loopback device')
+            mic_stream = audio.open(format=pa.paFloat32, channels=mic_channels, rate=mic_rate, input=True, input_device_index=args.mic_device, frames_per_buffer=2048)
+            streams.append(mic_stream)
+            inputs.append(('mic', lambda: mic_stream.read(2048, exception_on_overflow=False), mic_rate, mic_channels))
     capture_started = time.monotonic()
 
-    def reader():
+    def reader(channel, read_block, rate, channels):
+        primary = channel == 'speaker'
         samples = 0
         block_start = 0
         blocks = []
+        block_rms = []
+        block_sizes = []
         silence_samples = 0
         block_samples = 0
         block_peak_rms = 0.0
@@ -303,30 +385,45 @@ def capture(args):
                 try:
                     raw = read_block()
                 except EOFError:
-                    if block_samples and block_peak_rms >= 0.006:
-                        chunks.put((np.concatenate(blocks), block_start / rate, samples / rate, 'END_OF_RECORDING'))
+                    if block_samples and block_peak_rms >= SOUND_RMS:
+                        chunks.put((np.concatenate(blocks), block_start / rate, samples / rate, 'END_OF_RECORDING', channel, rate))
                     block_samples = 0
                     source_done.set()
                     return
-                if not ready:
-                    emit({'type': 'ready', 'device': source_name, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'asr': asr, 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 4, 'maxChunkSeconds': 12, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
+                if primary and not ready:
+                    emit({'type': 'ready', 'device': source_name, 'micDevice': args.mic_name if args.mic_device is not None else None, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'asr': asr, 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 6, 'maxChunkSeconds': MAX_CHUNK_SECONDS, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
                     ready = True
                 mono = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels).mean(axis=1)
                 blocks.append(mono.copy())
+                block_sizes.append(len(mono))
                 block_samples += len(mono)
                 samples += len(mono)
                 rms = float(np.sqrt(np.mean(mono * mono)))
+                block_rms.append(rms)
+                if primary:
+                    slot = int(samples / rate * 10)
+                    speaker_levels[slot] = max(rms, speaker_levels.get(slot, 0.0))
                 block_peak_rms = max(block_peak_rms, rms)
-                silence_samples = silence_samples + len(mono) if rms < 0.006 else 0
-                if time.monotonic() - last_meter > 1:
+                silence_samples = silence_samples + len(mono) if rms < SOUND_RMS else 0
+                if primary and time.monotonic() - last_meter > 1:
                     emit({'type': 'status', 'capturedSeconds': samples / rate, 'rms': round(rms, 5), 'queuedChunks': chunks.qsize(), 'lastSoundSecondsAgo': round(silence_samples / rate, 1)})
                     last_meter = time.monotonic()
                 duration = block_samples / rate
-                # Silence boundaries reduce cut words. Long uninterrupted speech has an explicit boundary warning.
-                if duration >= 12 or (duration >= min_chunk_seconds and silence_samples / rate >= 0.55):
+                # Silence boundaries reduce cut words. At the hard window the cut goes after the quietest block of the
+                # last seconds, not the last block; the blocks after it start the next chunk.
+                hard = duration >= MAX_CHUNK_SECONDS
+                if hard or (duration >= min_chunk_seconds and silence_samples / rate >= 0.55):
+                    cut = split_point(block_rms, block_sizes, rate) if hard else len(blocks) - 1
+                    cut_samples = sum(block_sizes[:cut + 1])
+                    keep = max(block_rms[:cut + 1]) >= SOUND_RMS
+                    if keep and not primary:
+                        # Mic chunk: drop it when it is mostly the meeting coming back through the speakers.
+                        offsets = [block_start + sum(block_sizes[:i]) for i in range(cut + 1)]
+                        speaker = [speaker_levels.get(int(offset / rate * 10), 0.0) for offset in offsets]
+                        keep = mic_is_own_voice(block_rms[:cut + 1], speaker)
                     # Pure digital/room silence is not sent to ASR; it only costs CPU and backlog.
-                    if block_peak_rms >= 0.006:
-                        chunk = (np.concatenate(blocks), block_start / rate, samples / rate, 'MAX_WINDOW_POSSIBLE_WORD_CUT' if duration >= 12 else 'SILENCE_BOUNDARY_HEURISTIC')
+                    if keep:
+                        chunk = (np.concatenate(blocks[:cut + 1]), block_start / rate, (block_start + cut_samples) / rate, 'MAX_WINDOW_SPLIT_AT_QUIETEST' if hard else 'SILENCE_BOUNDARY_HEURISTIC', channel, rate)
                         try:
                             if args.replay:
                                 # A recording can wait for ASR; nothing is lost by slowing the replay down.
@@ -340,34 +437,30 @@ def capture(args):
                                 chunks.put_nowait(chunk)
                         except queue.Full:
                             # ASR is behind: keep growing this block (bounded) instead of stopping the meeting.
-                            if duration < 30:
+                            if duration < GROWTH_LIMIT_SECONDS:
                                 continue
-                            # Still behind after 30 s: drop this block from RAM and record the gap explicitly.
-                            emit({'type': 'gap', 'start': block_start / rate, 'end': samples / rate, 'reason': 'ASR_BEHIND_AUDIO_DROPPED'})
-                    blocks = []
-                    block_samples = 0
-                    block_peak_rms = 0.0
-                    block_start = samples
-            if block_samples:
+                            # Still behind past the growth limit: drop the cut part from RAM and record the gap explicitly.
+                            emit({'type': 'gap', 'start': block_start / rate, 'end': (block_start + cut_samples) / rate, 'reason': 'ASR_BEHIND_AUDIO_DROPPED', 'channel': channel})
+                    blocks = blocks[cut + 1:]
+                    block_rms = block_rms[cut + 1:]
+                    block_sizes = block_sizes[cut + 1:]
+                    block_samples -= cut_samples
+                    block_peak_rms = max(block_rms, default=0.0)
+                    block_start += cut_samples
+            if primary and block_samples:
                 emit({'type': 'status', 'discardedTailSeconds': block_samples / rate, 'tailReason': 'STOP_NO_NEW_SOURCE'})
         except Exception as exc:
-            emit({'type': 'error', 'message': str(exc)})
+            emit({'type': 'error', 'message': f'{channel}: {exc}'})
             stop.set()
-        finally:
-            if stream:
-                stream.stop_stream()
-                stream.close()
-            if keepalive:
-                keepalive.stop_stream()
-                keepalive.close()
 
-    reader_thread = threading.Thread(target=reader, daemon=True)
+    threads = [threading.Thread(target=reader, args=item, daemon=True) for item in inputs]
     emit({'type': 'prepared', 'modelReady': True, 'device': source_name, 'firstReadVerified': False})
-    reader_thread.start()
+    for thread in threads:
+        thread.start()
     try:
         while not stop.is_set():
             try:
-                waveform, begin, end, boundary = chunks.get(timeout=0.2)
+                waveform, begin, end, boundary, channel, rate = chunks.get(timeout=0.2)
             except queue.Empty:
                 if source_done.is_set():
                     emit({'type': 'status', 'replayEnded': True})
@@ -385,13 +478,27 @@ def capture(args):
                     break
                 text = segment.text.strip()
                 if text:
-                    marks = ''.join('; ' + flag for flag in segment_flags(text, segment, language))
-                    emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability})
-            emit({'type': 'status', 'lastASRSeconds': round(time.monotonic() - inference_started, 3), 'lastChunkSeconds': round(end - begin, 3), 'queuedChunks': chunks.qsize()})
+                    marks = ''.join('; ' + flag for flag in segment_flags(text, segment, language, language_probability))
+                    if channel == 'mic':
+                        marks += '; CHANNEL_MIC'
+                    emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel})
+            # How far the text lags behind the audio (seconds of meeting not yet transcribed when this chunk finished).
+            lag = round((time.monotonic() - capture_started) * (args.speed if args.replay else 1) - end, 1)
+            emit({'type': 'status', 'lastASRSeconds': round(time.monotonic() - inference_started, 3), 'lastChunkSeconds': round(end - begin, 3), 'queuedChunks': chunks.qsize(), 'lagSeconds': lag})
             del waveform, waveform16
     finally:
         stop.set()
-        reader_thread.join(timeout=2)
+        for thread in threads:
+            thread.join(timeout=2)
+        for stream in streams:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+        if keepalive:
+            keepalive.stop_stream()
+            keepalive.close()
         if audio:
             audio.terminate()
 
@@ -412,6 +519,9 @@ if __name__ == '__main__':
     parser.add_argument('--asr-device', default='auto', choices=['auto', 'cuda', 'cpu'])
     parser.add_argument('--lao-model')
     parser.add_argument('--vi-model')
+    parser.add_argument('--wait-source', action='store_true')
+    parser.add_argument('--mic-device', type=int)
+    parser.add_argument('--mic-name')
     args = parser.parse_args()
     try:
         if args.list:

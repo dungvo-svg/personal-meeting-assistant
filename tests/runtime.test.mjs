@@ -107,6 +107,46 @@ test('source_select: agent may arm a speaker source but never a microphone; sugg
     assert.equal(r.suggest(devices).index, 13); devices[2].level = { framesReceived: 100, peak: 0.3 }; assert.equal(r.suggest(devices).index, 14);
   });
 });
+test('RAW: silence phrases go to an appendix, repeated short segments fold, glossary names shown with what ASR heard', async () => {
+  await withRuntime(async (r, directory) => {
+    r.prepare('Họp');
+    r.glossaryAdd('Namfon', ['Nam Phủ', 'Nam Phổn']);
+    const said = r.ingest('Nam Phủ gửi giá vận chuyển', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC', 'cap', 'vi');
+    const ghost = r.ingest('Hãy subscribe cho kênh Ghiền Mì Gõ', 'local_asr_unverified', 3, 6, 'SILENCE_BOUNDARY_HEURISTIC; LIKELY_HALLUCINATION', 'cap', 'vi');
+    const loop = [1, 2, 3, 4].map(i => r.ingest('cái', 'local_asr_unverified', 6 + i, 7 + i, 'REPETITION', 'cap', 'vi'));
+    const raw = readFileSync(r.writeRaw(r.session.id).path, 'utf8');
+    assert.ok(raw.includes(`#${said} (nghe · vi) Namfon (nghe: Nam Phủ) gửi giá vận chuyển`));
+    assert.ok(raw.includes(`#${loop[0]}–#${loop[3]}`) && raw.includes('[×4]'));
+    const [main, appendix] = raw.split('## Phụ lục');
+    assert.ok(!main.includes('subscribe') && appendix.includes(`#${ghost} Hãy subscribe`));
+    assert.equal(r.sources(r.session.id)[0].text, 'Nam Phủ gửi giá vận chuyển');
+    assert.equal(r.sources(r.session.id)[0].shown, 'Namfon (nghe: Nam Phủ) gửi giá vận chuyển');
+    assert.deepEqual(JSON.parse(readFileSync(join(directory, 'glossary.json'), 'utf8'))[0].variants, ['Nam Phủ', 'Nam Phổn']);
+    assert.throws(() => r.glossaryAdd('', ['x']), /INVALID_GLOSSARY_ENTRY/);
+  });
+});
+test('glossary replaces whole words only and keeps two different short segments apart', async () => {
+  const { applyGlossary, foldRuns } = await import('../dist/text.js');
+  assert.equal(applyGlossary('mì da và mì dai', [{ name: 'MISA', variants: ['mì da'] }]), 'MISA (nghe: mì da) và mì dai');
+  assert.equal(foldRuns([{ id: 1, text: 'cái' }, { id: 2, text: 'cái' }, { id: 3, text: 'dạ' }]).length, 3);
+});
+test('warm worker gets its source on listen; the user microphone joins only as an explicit "Tôi" channel', async () => {
+  await withRuntime(async r => {
+    r.prepare(); const id = r.session.id;
+    r.devices = [{ index: 12, name: 'Mic', kind: 'microphone' }, { index: 13, name: 'Realtek [Loopback]', kind: 'speaker_loopback_all_device_audio' }];
+    await assert.rejects(r.selectMic(id, 13), /NOT_A_MICROPHONE/);
+    const written = []; const child = new EventEmitter(); child.exitCode = null; child.signalCode = null; child.stdin = { write: line => written.push(line) }; child.kill = () => {};
+    r.capture = child; r.captureState = 'WARM_READY';
+    r.arm(id, 13); await r.selectMic(id, 12);
+    const started = await r.start(id);
+    assert.equal(started.state, 'WAITING_FOR_SOURCE');
+    assert.deepEqual(JSON.parse(written[0]), { device: 13, deviceName: 'Realtek [Loopback]', micDevice: 12, micName: 'Mic', maxSeconds: JSON.parse(written[0]).maxSeconds });
+    assert.equal(r.compact().armedMic.index, 12);
+    r.capture = null; r.captureState = 'OFF'; clearTimeout(r.captureDeadline);
+    r.ingest('Em gửi bảng giá chiều nay', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC; CHANNEL_MIC', 'cap', 'vi');
+    assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /· Tôi \(micro\)\) Em gửi bảng giá/);
+  });
+});
 test('a session left open by a crash ends at its last source, not at the next start', async () => {
   await withRuntime(async (r, directory) => { r.prepare('Họp'); const id = r.session.id; r.ingest('Đoạn cuối.', 'operator_text'); const last = r.sources(id).at(-1).createdAt; r.closing = true; r.db.close(); await new Promise(res => setTimeout(res, 30)); const reopened = new MeetingRuntime(resolve('.'), directory, true); try { assert.equal(reopened.history(id).session.ended, last); } finally { await reopened.close(); } });
 });

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { MeetingRuntime } from './runtime.js';
 
-export const VERSION = '0.7.0';
+export const VERSION = '0.8.0';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
 const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON'];
 for (let i = 2; i < process.argv.length - 1; i++) {
@@ -42,6 +42,7 @@ const methods: Record<string, (input: any) => any> = {
   open: input => runtime.openMeeting(z.object({ url: z.string().min(10).max(2000) }).parse(input).url),
   sources: async input => { const devices = await runtime.listDevices(z.object({ levels: z.boolean().default(true) }).parse(input).levels); return { devices, suggested: runtime.suggest(devices) }; },
   select: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative() }).parse(input); const armed = await runtime.select(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, expiresAt: armed.expiresAt }; },
+  selectMic: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), consent: z.literal(true) }).parse(input); const armed = await runtime.selectMic(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, channel: 'Tôi', expiresAt: armed.expiresAt }; },
   listen: input => runtime.start(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   replay: input => { const a = z.object({ sessionId: sid.optional(), file: z.string().min(1).max(1000), speed: z.number().min(0.5).max(20).default(1) }).parse(input); return runtime.replay(current(a.sessionId), a.file, a.speed); },
   pause: async input => { runtime.requireSession(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)); await runtime.stopCapture(); return runtime.compact(); },
@@ -54,6 +55,12 @@ const methods: Record<string, (input: any) => any> = {
   summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200) }).parse(input); return runtime.saveSummary(current(a.sessionId), a.markdown, a.sourceIds); },
   tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), sourceIds: ids.min(1).max(50) })).max(200) }).parse(input); return runtime.saveTasks(current(a.sessionId), a.tasks); },
   history: () => runtime.historyList(),
+  glossary: input => {
+    const a = z.object({ action: z.enum(['list', 'add', 'remove']).default('list'), name: z.string().max(80).optional(), variants: z.array(z.string().max(80)).max(20).default([]) }).parse(input);
+    if (a.action === 'add') return runtime.glossaryAdd(a.name ?? '', a.variants);
+    if (a.action === 'remove') return runtime.glossaryRemove(a.name ?? '');
+    return runtime.glossary;
+  },
   fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); return { id: runtime.ingest(z.object({ text: z.string().min(1).max(8000) }).parse(input).text, 'synthetic_fixture') }; },
   shutdown: () => { setTimeout(() => void shutdown(), 50); return { stopping: true }; },
 };

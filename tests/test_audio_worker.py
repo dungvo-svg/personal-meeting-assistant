@@ -13,8 +13,15 @@ class TranscriptFilterTests(unittest.TestCase):
         import audio_worker
         self.worker = audio_worker
 
-    def segment(self, no_speech=0.1, compression=1.2):
-        return type('Segment', (), {'no_speech_prob': no_speech, 'compression_ratio': compression})()
+    def segment(self, no_speech=0.1, compression=1.2, logprob=-0.3):
+        return type('Segment', (), {'no_speech_prob': no_speech, 'compression_ratio': compression, 'avg_logprob': logprob})()
+
+    def test_mic_keeps_own_voice_and_drops_speaker_echo(self):
+        own = self.worker.mic_is_own_voice
+        self.assertTrue(own([0.05, 0.06, 0.05], [0.0, 0.01, 0.0]))  # user speaks, meeting quiet
+        self.assertFalse(own([0.02, 0.02, 0.02], [0.05, 0.06, 0.05]))  # mic only hears the speakers
+        self.assertFalse(own([0.001, 0.002], [0.0, 0.0]))  # silence
+        self.assertTrue(own([0.05, 0.02, 0.02, 0.06], [0.01, 0.05, 0.05, 0.0]))  # half own voice over a busy meeting
 
     def test_flags_mark_but_keep_text(self):
         flags = self.worker.segment_flags
@@ -24,9 +31,45 @@ class TranscriptFilterTests(unittest.TestCase):
         self.assertNotIn('LAO_WRITTEN_IN_THAI_SCRIPT', flags('ສະບາຍດີ', self.segment(), 'lo'))
         self.assertIn('REPETITION', flags('dạ dạ dạ dạ dạ dạ dạ', self.segment(), 'vi'))
 
+    def test_unsure_language_is_flagged_below_threshold_only(self):
+        flags = self.worker.segment_flags
+        self.assertIn('LANG_UNSURE', flags('Kho số hai đủ hàng.', self.segment(), 'vi', 0.64))
+        self.assertNotIn('LANG_UNSURE', flags('Kho số hai đủ hàng.', self.segment(), 'vi', 0.65))
+        self.assertNotIn('LANG_UNSURE', flags('Kho số hai đủ hàng.', self.segment(), 'vi', None))
+
+    def test_lao_low_confidence_needs_lao_and_low_logprob(self):
+        flags = self.worker.segment_flags
+        self.assertIn('LAO_LOW_CONFIDENCE', flags('ສະບາຍດີ', self.segment(logprob=-1.2), 'lo'))
+        self.assertNotIn('LAO_LOW_CONFIDENCE', flags('ສະບາຍດີ', self.segment(logprob=-0.5), 'lo'))
+        self.assertNotIn('LAO_LOW_CONFIDENCE', flags('Kho số hai đủ hàng.', self.segment(logprob=-1.2), 'vi'))
+
     def test_collapse_repeats_keeps_count(self):
         self.assertEqual(self.worker.collapse_repeats('ok dạ dạ dạ dạ dạ dạ dạ xong'), 'ok dạ [×7] xong')
         self.assertEqual(self.worker.collapse_repeats('ba ba xe'), 'ba ba xe')
+
+
+class SplitPointTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        self.worker = audio_worker
+
+    def test_picks_the_quietest_block_inside_the_last_three_seconds(self):
+        # 2048-sample blocks at 16 kHz are 128 ms each, so the last 3 s are the last 24 blocks (indices 17-40).
+        rms = [0.001] + [0.05] * 40
+        rms[30] = 0.004
+        rms[38] = 0.02
+        self.assertEqual(self.worker.split_point(rms, [2048] * 41, 16000), 30)
+
+    def test_ignores_quiet_blocks_older_than_the_window(self):
+        rms = [0.0] * 5 + [0.05] * 40
+        self.assertEqual(self.worker.split_point(rms, [2048] * 45, 16000), 44)
+
+    def test_latest_block_wins_ties_and_first_chunk_is_never_empty(self):
+        self.assertEqual(self.worker.split_point([0.02] * 30, [2048] * 30, 16000), 29)
+        self.assertEqual(self.worker.split_point([0.0], [2048], 16000), 0)
+        for rms in ([0.0, 0.5, 0.5], [0.5, 0.0, 0.0], [0.3, 0.3]):
+            self.assertGreaterEqual(self.worker.split_point(rms, [48000] * len(rms), 16000), 0)
 
 
 class LanguageRoutingTests(unittest.TestCase):

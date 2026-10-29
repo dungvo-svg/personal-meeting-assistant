@@ -46,14 +46,14 @@ Công cụ mở được chọn: faster-whisper (MIT), Silero VAD (MIT, đã có
 | T09 | **[Xong 0.6.0: BuzzASR/lao, CER 36,3%; Omnilingual chưa thử]** **Chọn ASR tiếng Lào:** so BuzzASR/lao và Omnilingual CTC trên GPU 6 GB | Chọn engine có CER Lào thấp nhất mà vẫn kịp thời gian thực; chữ Thái trong đầu ra tiếng Lào = trượt |
 | T10 | **[Xong 0.6.0: Whisper small, 100% trên FLEURS; VoxLingua107 chưa cần]** **Nhận ngôn ngữ và định tuyến:** mỗi đoạn vi → Whisper, lo → engine T09; đối chiếu VoxLingua107 khi Whisper không chắc; không chắc thì gắn `unknown` thay vì đoán | Nhận đúng ngôn ngữ ≥ 90% trên FLEURS và bản ghi |
 | T11 | **Dịch trên máy:** MADLAD-400 qua CTranslate2 cho Lào → Việt (kiểm tra lỗi tokenizer khi chuyển đổi). Bản dịch kém thì Claude soát/dịch lại khi tóm tắt (D4 cho phép) | Đoạn tiếng Lào có bản tiếng Việt đọc hiểu được trong RAW |
-| T12 | **Cắt đoạn theo điểm dừng lời** (ý từ AIOS): cắt khi người nói ngừng 0,6–1 s, kèm vài giây ngữ cảnh, không lặp chữ ở ranh giới | Ít câu bị cắt đôi hơn bản 0.3.0 trên cùng bản ghi |
+| T12 | **[0.8.0: cắt tối đa 20 s, ở khối yên nhất 3 s cuối — audit 29/10 A7]** **Cắt đoạn theo điểm dừng lời** (ý từ AIOS): cắt khi người nói ngừng 0,6–1 s, kèm vài giây ngữ cảnh, không lặp chữ ở ranh giới | Ít câu bị cắt đôi hơn bản 0.3.0 trên cùng bản ghi |
 
 ## P2 — Họp công việc
 
 | ID | Việc | Xong khi |
 | --- | --- | --- |
-| T13 | **Kênh micro “Tôi”** (D2): thu thêm micro khi người dùng đồng ý trong chat; loa = “Người khác”. Không bật được thì chạy chỉ loa như hiện nay | RAW ghi rõ đoạn của người dùng khi có micro |
-| T14 | **Ghi chú cuốn chiếu cho họp dài:** cứ ~10 phút Claude ghi tóm tắt khúc có source ID; tóm tắt cuối ghép từ các khúc | Họp 2 giờ vẫn tóm tắt được mà không phải đọc lại toàn bộ |
+| T13 | **[0.8.0: `pma select-mic <index> --consent`, bỏ tiếng loa lọt vào micro — audit 29/10 A9]** **Kênh micro “Tôi”** (D2): thu thêm micro khi người dùng đồng ý trong chat; loa = “Người khác”. Không bật được thì chạy chỉ loa như hiện nay | RAW ghi rõ đoạn của người dùng khi có micro |
+| T14 | **[0.8.0: follow nhắc mỗi 10 phút — audit 29/10 A10]** **Ghi chú cuốn chiếu cho họp dài:** cứ ~10 phút Claude ghi tóm tắt khúc có source ID; tóm tắt cuối ghép từ các khúc | Họp 2 giờ vẫn tóm tắt được mà không phải đọc lại toàn bộ |
 | T15 | **Tóm tắt theo mục tiêu:** nội dung họp người dùng gửi lúc đầu được dùng làm mục tiêu; SUMMARY nêu mục nào đã chốt, mục nào còn mở; TASKS có cột thời điểm | Mẫu đầu ra ổn định |
 | T16 | **Lưu theo ngày + mục lục** (ý từ call.md): `reports/YYYY/MM/DD/<tên>/` và `index.md` để Claude tìm lại cuộc họp cũ khi được hỏi | “Cuộc họp tuần trước chốt gì?” trả lời được |
 

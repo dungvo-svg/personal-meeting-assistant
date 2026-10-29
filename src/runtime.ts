@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { applyGlossary, foldRuns, isHallucination, type GlossaryEntry } from './text.js';
 
 export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
 export type Opener = (url: string) => void;
@@ -28,7 +29,7 @@ const localTime = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { h
 const localDate = (iso: string) => new Date(iso).toLocaleDateString('vi-VN');
 const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 
-export type Source = { id: number; sessionId: string; text: string; origin: string; start: number; end: number; createdAt: string; boundary: string; captureId: string; language: string };
+export type Source = { id: number; sessionId: string; text: string; origin: string; start: number; end: number; createdAt: string; boundary: string; captureId: string; language: string; shown?: string };
 export type Language = 'vi' | 'lo';
 export class MeetingRuntime extends EventEmitter {
   db: DatabaseSync;
@@ -36,6 +37,7 @@ export class MeetingRuntime extends EventEmitter {
   capture: ChildProcess | null = null;
   devices: any[] = [];
   armedDevice: any = null;
+  armedMic: any = null;
   captureState = 'OFF';
   captureInfo: any = {};
   lastError: string | null = null;
@@ -62,7 +64,24 @@ export class MeetingRuntime extends EventEmitter {
     this.db.prepare("UPDATE sessions SET ended=COALESCE((SELECT MAX(created) FROM sources WHERE session_id=sessions.id), created) WHERE ended IS NULL").run();
     try { this.context = JSON.parse(readFileSync(join(root, '.local', 'meeting-context.json'), 'utf8')); }
     catch { this.context = { title: 'Phiên họp cá nhân', language: 'vi', translation_required: false, topics: [] }; }
+    try { this.glossary = JSON.parse(readFileSync(join(dataDir, 'glossary.json'), 'utf8')); } catch { this.glossary = []; }
   }
+  // Names ASR keeps getting wrong (people, suppliers, systems). Applied when text is shown, never to stored text.
+  glossary: GlossaryEntry[] = [];
+  glossaryAdd(name: string, variants: string[]) {
+    name = name.trim(); variants = [...new Set(variants.map(v => v.trim()).filter(v => v && v.length <= 80))];
+    if (!name || name.length > 80 || !variants.length || variants.length > 20) throw new Error('INVALID_GLOSSARY_ENTRY');
+    const entry = this.glossary.find(e => e.name.toLowerCase() === name.toLowerCase());
+    if (entry) entry.variants = [...new Set([...entry.variants, ...variants])]; else if (this.glossary.length < 500) this.glossary.push({ name, variants }); else throw new Error('GLOSSARY_FULL');
+    writeFileSync(join(this.dataDir, 'glossary.json'), JSON.stringify(this.glossary, null, 1), 'utf8'); this.ping();
+    return this.glossary;
+  }
+  glossaryRemove(name: string) {
+    this.glossary = this.glossary.filter(e => e.name.toLowerCase() !== name.trim().toLowerCase());
+    writeFileSync(join(this.dataDir, 'glossary.json'), JSON.stringify(this.glossary, null, 1), 'utf8'); this.ping();
+    return this.glossary;
+  }
+  shown(text: string) { return applyGlossary(text, this.glossary); }
   ping() { this.emit('change'); }
   prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo']) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
@@ -77,7 +96,8 @@ export class MeetingRuntime extends EventEmitter {
       : savedIsCurrent ? this.context : { title: title || 'Phiên họp cá nhân', languages, translation_required: false, topics: [], contextSource: 'NONE', staleSavedContextDate: this.context.date };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
-    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.lastError = null; this.armedDevice = null; this.captureState = 'OFF'; this.captureInfo = {};
+    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.captureState = 'OFF'; this.captureInfo = {};
+    if (!fixture) this.warmUp(this.session.id);
     this.ping(); return this.snapshot();
   }
   requireSession(id: string) {
@@ -85,7 +105,8 @@ export class MeetingRuntime extends EventEmitter {
   }
   sources(id: string, after = 0, limit = 20): Source[] {
     if (!Number.isSafeInteger(after) || after < 0) throw new Error('INVALID_CURSOR');
-    return this.db.prepare('SELECT id,session_id AS sessionId,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(id, after, Math.max(1, Math.min(100, limit))) as Source[];
+    const rows = this.db.prepare('SELECT id,session_id AS sessionId,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(id, after, Math.max(1, Math.min(100, limit))) as Source[];
+    return rows.map(row => ({ ...row, shown: this.shown(row.text) }));
   }
   ingest(text: string, origin: 'operator_text' | 'local_asr_unverified' | 'synthetic_fixture' | 'system_gap', start = 0, end = 0, boundary = '', captureId = '', language = '') {
     this.requireSession(this.session?.id);
@@ -137,10 +158,10 @@ export class MeetingRuntime extends EventEmitter {
   }
   compact() {
     const s = this.session; const id = s?.id;
-    const counts: any = id ? this.db.prepare('SELECT (SELECT COUNT(*) FROM sources WHERE session_id=?) AS sources,(SELECT COUNT(*) FROM notes WHERE session_id=?) AS notes').get(id, id) : { sources: 0, notes: 0 };
+    const counts: any = id ? this.db.prepare('SELECT (SELECT COUNT(*) FROM sources WHERE session_id=?) AS sources,(SELECT COUNT(*) FROM notes WHERE session_id=?) AS notes,(SELECT MAX(created) FROM notes WHERE session_id=?) AS lastNoteAt').get(id, id, id) : { sources: 0, notes: 0, lastNoteAt: null };
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0 };
     const { type, ...captureInfo } = this.captureInfo;
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes };
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt };
   }
   historyList() { return this.db.prepare('SELECT id,title,created,ended,mode FROM sessions ORDER BY created DESC LIMIT 100').all(); }
   exportText(id: string) {
@@ -181,36 +202,65 @@ export class MeetingRuntime extends EventEmitter {
     const pick = loud?.level.peak >= 0.01 ? loud : devices.find(d => d.isDefaultOutput) ?? null;
     return pick ? { index: pick.index, name: pick.name, why: pick.level?.peak >= 0.01 ? 'đang có tiếng' : 'loa mặc định của Windows (đang im)' } : null;
   }
+  // The user's own microphone as channel "Tôi". Only after the user agreed in chat for this session.
+  async selectMic(id: string, deviceIndex: number) {
+    this.requireSession(id);
+    if (!this.devices.some(d => d.index === deviceIndex)) await this.listDevices(false);
+    const device = this.devices.find(d => d.index === deviceIndex);
+    if (!device) throw new Error('DEVICE_NOT_LISTED');
+    if (device.kind !== 'microphone') throw new Error('NOT_A_MICROPHONE');
+    if (this.capture && !this.warm()) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
+    this.armedMic = { ...device, grantedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3 * 3600_000).toISOString() }; this.ping(); return this.armedMic;
+  }
+  // A worker started at session open with models loaded, waiting for its source.
+  warm() { return !!this.capture && ['WARMING', 'WARM_READY'].includes(this.captureState); }
   arm(id: string, deviceIndex: number) {
-    this.requireSession(id); if (this.capture) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
+    this.requireSession(id); if (this.capture && !this.warm()) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
     const device = this.devices.find(d => d.index === deviceIndex); if (!device) throw new Error('DEVICE_NOT_LISTED');
     this.armedDevice = { ...device, grantedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3 * 3600_000).toISOString() }; this.ping(); return this.armedDevice;
   }
   async start(id: string) {
     this.requireSession(id);
     if (this.stoppingCapture || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
-    if (this.capture) return { state: this.captureState, info: this.captureInfo };
+    if (this.capture && !this.warm()) return { state: this.captureState, info: this.captureInfo };
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select (or the panel)');
     if (Date.parse(this.armedDevice.expiresAt) <= Date.now()) throw new Error('SOURCE_GRANT_EXPIRED');
     const maxSeconds = Math.min(7200, Math.floor((Date.parse(this.armedDevice.expiresAt) - Date.now()) / 1000));
-    return this.launch(id, ['--device', String(this.armedDevice.index), '--device-name', this.armedDevice.name], maxSeconds);
+    const mic = this.armedMic && Date.parse(this.armedMic.expiresAt) > Date.now() ? { micDevice: this.armedMic.index, micName: this.armedMic.name } : {};
+    return this.launch(id, { device: this.armedDevice.index, deviceName: this.armedDevice.name, ...mic }, maxSeconds);
   }
   // Replays a recording through the same worker, chunking and ASR as a live meeting. No device is opened.
   async replay(id: string, file: string, speed = 1) {
     this.requireSession(id);
-    if (this.stoppingCapture || this.capture) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
+    if (this.stoppingCapture || (this.capture && !this.warm())) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
     const path = resolve(file);
     if (!/\.(mp4|m4a|mp3|wav|webm|mkv|mov)$/i.test(path) || !existsSync(path)) throw new Error('REPLAY_FILE_NOT_FOUND_OR_UNSUPPORTED');
     if (!(speed >= 0.5 && speed <= 20)) throw new Error('REPLAY_SPEED_0_5_TO_20');
     this.session.replay = { file: basename(path), speed };
-    return this.launch(id, ['--replay', path, '--speed', String(speed)], 7200);
+    return this.launch(id, { replay: path, speed }, 7200);
   }
-  private launch(id: string, sourceArgs: string[], maxSeconds: number) {
-    this.captureState = 'LOADING_ASR'; this.lastError = null;
-    const captureId = randomUUID(); this.captureInfo = { captureId };
-    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', ...sourceArgs, '--parent', String(process.pid), '--max-seconds', String(maxSeconds), '--languages', (this.session.languages || ['vi']).join(','), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.capture = child;
+  // Warm start: models load while people join; `listen` only hands the worker its source (A2, audit 29/10).
+  private warmUp(id: string) {
+    if (this.testMode || process.env.PMA_WARM === '0' || this.capture || this.closing) return;
+    this.captureState = 'WARMING'; this.lastError = null;
+    try { this.spawnWorker(id, ['--wait-source', '--max-seconds', '7200']); } catch (error) { this.captureState = 'OFF'; this.lastError = String(error); }
+  }
+  private launch(id: string, source: { device?: number; deviceName?: string; micDevice?: number; micName?: string; replay?: string; speed?: number }, maxSeconds: number) {
+    if (this.warm()) {
+      this.capture!.stdin!.write(JSON.stringify({ ...source, maxSeconds }) + '\n');
+      this.captureState = this.captureState === 'WARM_READY' ? 'WAITING_FOR_SOURCE' : 'LOADING_ASR';
+    } else {
+      this.captureState = 'LOADING_ASR'; this.lastError = null;
+      const args = source.replay ? ['--replay', source.replay, '--speed', String(source.speed ?? 1)] : ['--device', String(source.device), '--device-name', String(source.deviceName), ...(source.micDevice !== undefined ? ['--mic-device', String(source.micDevice), '--mic-name', String(source.micName)] : [])];
+      this.spawnWorker(id, [...args, '--max-seconds', String(maxSeconds)]);
+    }
     this.captureDeadline = setTimeout(() => { this.lastError = 'Capture duration or source grant expired; source stopped.'; void this.stopCapture(); }, maxSeconds * 1000);
+    this.ping(); return { state: this.captureState, instruction: 'Model loads locally; use session_status to verify LISTENING. Do not claim capture active while loading.' };
+  }
+  private spawnWorker(id: string, workerArgs: string[]) {
+    const captureId = randomUUID(); this.captureInfo = { captureId };
+    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', ...workerArgs, '--parent', String(process.pid), '--languages', (this.session.languages || ['vi']).join(','), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.capture = child;
     const lines = createInterface({ input: child.stdout! });
     let error = '';
     child.stderr!.on('data', d => { error = (error + d).slice(-3000); });
@@ -218,8 +268,9 @@ export class MeetingRuntime extends EventEmitter {
       if (line.length > 100000 || this.capture !== child || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState) || this.session?.id !== id || this.session.ended) return;
       try {
         const event = JSON.parse(line);
+        if (event.type === 'warm' && this.captureState === 'WARMING') { this.captureState = 'WARM_READY'; this.captureInfo = { ...this.captureInfo, modelLoadSeconds: event.modelLoadSeconds, asr: event.asr }; }
         if (event.type === 'prepared') { this.captureState = 'WAITING_FOR_SOURCE'; this.captureInfo = { ...event, captureId }; }
-        if (event.type === 'ready') { this.captureState = 'LISTENING'; this.captureInfo = { ...event, captureId }; }
+        if (event.type === 'ready') { this.captureState = 'LISTENING'; this.captureInfo = { ...event, captureId, listeningSince: new Date().toISOString() }; }
         if (event.type === 'status') this.captureInfo = { ...this.captureInfo, ...event };
         if (event.type === 'gap') this.ingest(`[Khoảng trống ${Math.round(event.end - event.start)} giây: ASR không theo kịp, âm thanh đoạn này không được nhận dạng]`, 'system_gap', event.start, event.end, event.reason || 'GAP', captureId);
         if (event.type === 'source') this.ingest(event.text, 'local_asr_unverified', event.start, event.end, event.boundary || '', captureId, event.language || '');
@@ -231,7 +282,7 @@ export class MeetingRuntime extends EventEmitter {
     child.on('exit', code => {
       lines.close(); if (this.capture === child) { this.capture = null; if (this.captureDeadline) clearTimeout(this.captureDeadline); this.captureDeadline = null; this.captureState = code === 0 ? 'OFF' : 'ERROR'; if (code !== 0) this.lastError ||= 'Audio worker stopped: ' + error; this.ping(); }
     });
-    this.ping(); return { state: this.captureState, instruction: 'Model loads locally; use session_status to verify LISTENING. Do not claim capture active while loading.' };
+    return child;
   }
   async stopCapture() {
     if (this.stoppingCapture) return this.stoppingCapture;
@@ -241,6 +292,7 @@ export class MeetingRuntime extends EventEmitter {
     this.captureInfo = { ...this.captureInfo, stopCoverage: 'Unprocessed audio/tail may be discarded on immediate stop; transcript is not complete-meeting evidence.' };
     this.stoppingCapture = this.stopOwned(child);
     try { await this.stoppingCapture; } finally { this.stoppingCapture = null; }
+    if (this.session && !this.session.ended && !this.closing && !this.lastError && this.captureState === 'OFF') this.warmUp(this.session.id);
   }
   private async stopOwned(child: ChildProcess) {
     const exited = once(child, 'exit').catch(() => []);
@@ -255,7 +307,7 @@ export class MeetingRuntime extends EventEmitter {
   async finish(id: string) {
     if (!this.session || this.session.id !== id) throw new Error('SESSION_NOT_FOUND');
     if (!this.session.ended) { this.session.ended = new Date().toISOString(); this.db.prepare('UPDATE sessions SET ended=? WHERE id=?').run(this.session.ended, id); }
-    this.armedDevice = null; this.ping(); await this.stopCapture();
+    this.armedDevice = null; this.armedMic = null; this.ping(); await this.stopCapture();
     let raw: any; try { raw = this.writeRaw(id); } catch (error) { raw = { error: String(error) }; }
     return { ...this.compact(), raw };
   }
@@ -288,15 +340,22 @@ export class MeetingRuntime extends EventEmitter {
     const session = this.sessionRow(id);
     const rows: any[] = this.db.prepare('SELECT id,text,origin,created,capture_id,language,boundary FROM sources WHERE session_id=? ORDER BY id').all(id);
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
-    const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Không có audio lưu lại.', ''];
+    const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. Không có audio lưu lại.', ''];
+    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${row.boundary.includes('CHANNEL_MIC') ? ' · Tôi (micro)' : ''}`;
+    // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
+    const ghosts = rows.filter(isHallucination);
     let capture: string | null = null;
-    for (const row of rows) {
+    for (const group of foldRuns(rows.filter(row => !isHallucination(row)))) {
+      const row = group.first;
       if (row.capture_id !== capture) { capture = row.capture_id; lines.push('', `— ${capture ? 'Lượt nghe ' + capture.slice(0, 8) : 'Không qua bộ tai'} —`, ''); }
-      lines.push(`[${localTime(row.created)}] #${row.id} (${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LIKELY_HALLUCINATION') ? ' · nghi câu ảo' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}) ${row.text}`);
+      lines.push(group.count > 1
+        ? `[${localTime(row.created)}] #${row.id}–#${group.last.id} (${label(row)} · lặp ${group.count} đoạn liền) ${this.shown(row.text)} [×${group.count}]`
+        : `[${localTime(row.created)}] #${row.id} (${label(row)}) ${this.shown(row.text)}`);
     }
     if (!rows.length) lines.push('_Chưa có đoạn nào được ghi nhận._');
+    if (ghosts.length) lines.push('', '## Phụ lục — đoạn nghi câu ảo (thường do im lặng hoặc nhạc), không dùng làm nội dung họp', '', ...ghosts.map(row => `[${localTime(row.created)}] #${row.id} ${row.text}`));
     const path = join(this.reportDir(id), 'RAW.md'); writeFileSync(path, lines.join('\n') + '\n', 'utf8');
-    return { path, sourceCount: rows.length, firstSourceId: rows[0]?.id ?? null, lastSourceId: rows.at(-1)?.id ?? null };
+    return { path, sourceCount: rows.length, hallucinationCount: ghosts.length, firstSourceId: rows[0]?.id ?? null, lastSourceId: rows.at(-1)?.id ?? null };
   }
   private checkSources(id: string, sourceIds: number[]) {
     const ids = [...new Set(sourceIds)];
