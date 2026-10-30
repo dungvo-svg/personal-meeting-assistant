@@ -150,3 +150,46 @@ test('warm worker gets its source on listen; the user microphone joins only as a
 test('a session left open by a crash ends at its last source, not at the next start', async () => {
   await withRuntime(async (r, directory) => { r.prepare('Họp'); const id = r.session.id; r.ingest('Đoạn cuối.', 'operator_text'); const last = r.sources(id).at(-1).createdAt; r.closing = true; r.db.close(); await new Promise(res => setTimeout(res, 30)); const reopened = new MeetingRuntime(resolve('.'), directory, true); try { assert.equal(reopened.history(id).session.ended, last); } finally { await reopened.close(); } });
 });
+test('micro "Tôi" is on by default and follows Zoom in the worker; --no-mic leaves it out', async () => {
+  await withRuntime(async r => {
+    r.prepare(); const id = r.session.id;
+    r.devices = [{ index: 13, name: 'Realtek [Loopback]', kind: 'speaker_loopback_all_device_audio' }];
+    const fakeWorker = () => { const written = []; const child = new EventEmitter(); child.exitCode = null; child.signalCode = null; child.stdin = { write: line => written.push(line) }; child.kill = () => {}; r.capture = child; r.captureState = 'WARM_READY'; return written; };
+    let written = fakeWorker(); r.arm(id, 13); await r.start(id);
+    assert.equal(JSON.parse(written[0]).micAuto, true);
+    r.capture = null; r.captureState = 'OFF'; clearTimeout(r.captureDeadline);
+    written = fakeWorker(); await r.start(id, false);
+    assert.equal(JSON.parse(written[0]).micAuto, undefined);
+    r.capture = null; r.captureState = 'OFF'; clearTimeout(r.captureDeadline);
+  });
+});
+test('glossary refuses short, everyday or already-used variants unless forced', async () => {
+  await withRuntime(async r => {
+    r.glossaryAdd('MISA', ['mì da', 'Amit']);
+    assert.throws(() => r.glossaryAdd('Tạ Văn', ['Ta']), /GLOSSARY_VARIANT_RISKY: "Ta" quá ngắn/);
+    assert.throws(() => r.glossaryAdd('Phet', ['phim']), /là từ thông dụng/);
+    assert.throws(() => r.glossaryAdd('AMIS', ['Amit']), /đã là cách nghe của "MISA"/);
+    assert.equal(r.glossaryAdd('AMIS', ['Amit'], true).find(e => e.name === 'AMIS').variants[0], 'Amit');
+  });
+});
+test('reports say how much was heard, mark the user, and list "Việc của tôi" first', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp', false, undefined, ['vi'], { me: 'Dũng', at: '00:00' }); const id = r.session.id;
+    const a = r.ingest('Dũng làm báo cáo khách hàng', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC', 'cap', 'vi');
+    const b = r.ingest('Em gửi bảng giá', 'local_asr_unverified', 3, 6, 'SILENCE_BOUNDARY_HEURISTIC; CHANNEL_MIC', 'cap', 'vi');
+    const raw = readFileSync(r.writeRaw(id).path, 'utf8');
+    assert.match(raw, /\*\*Độ phủ:\*\* nghe được .* · lịch họp .* · \*\*không nghe được \d+ phút đầu\*\*/);
+    assert.ok(raw.includes(`#${b} (nghe · vi · Tôi — Dũng (micro)) Em gửi bảng giá`));
+    await r.finish(id);
+    const tasks = readFileSync(r.saveTasks(id, [{ task: 'Báo cáo khách hàng', owner: 'Dũng', sourceIds: [a] }, { task: 'Gửi giá', owner: 'Oanh', sourceIds: [b] }]).path, 'utf8');
+    const [mine, all] = tasks.split('## Tất cả việc');
+    assert.ok(mine.includes('## Việc của tôi (Dũng)') && mine.includes('Báo cáo khách hàng') && !mine.includes('Gửi giá') && all.includes('Gửi giá'));
+    r.prepare('Họp sau'); assert.equal(r.session.context.me, 'Dũng');
+  });
+});
+test('follow prints long segments on continuation lines that Monitor will not cut', async () => {
+  const { wrapLine } = await import('../dist/text.js');
+  const parts = wrapLine('#1 vi: ' + 'chữ '.repeat(300), 450);
+  assert.ok(parts.length > 1 && parts.every(p => p.length <= 455) && parts[1].startsWith('  ↳ '));
+  assert.deepEqual(wrapLine('#2 vi: ngắn'), ['#2 vi: ngắn']);
+});

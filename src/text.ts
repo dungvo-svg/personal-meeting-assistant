@@ -20,6 +20,29 @@ export function applyGlossary(text: string, glossary: GlossaryEntry[]) {
   return text;
 }
 
+// Variants that would rewrite ordinary speech: very short, everyday words, or already standing for another name
+// (audit 30/10: "Ta" almost added; "Amit" heard for both MISA and AMIS).
+const COMMON = new Set(['ta', 'là', 'và', 'có', 'không', 'cái', 'này', 'đó', 'thì', 'mà', 'anh', 'chị', 'em', 'ạ', 'dạ', 'vâng', 'ừ', 'ok', 'rồi', 'nha', 'nhé', 'nữa', 'với', 'cho', 'của', 'các', 'những', 'một', 'hai', 'ba', 'bên', 'người', 'việc', 'làm', 'đi', 'được', 'phải', 'nó', 'họ', 'mình', 'bạn', 'tôi', 'ông', 'bà', 'cô', 'chú', 'bác', 'sếp', 'file', 'phim', 'mã', 'mạng', 'giá', 'hàng', 'khách']);
+export function riskyVariants(name: string, variants: string[], glossary: GlossaryEntry[]) {
+  const out: { variant: string; why: string }[] = [];
+  for (const variant of variants) {
+    const key = variant.trim().toLowerCase();
+    const other = glossary.find(e => e.name.toLowerCase() !== name.trim().toLowerCase() && (e.name.toLowerCase() === key || e.variants.some(v => v.toLowerCase() === key)));
+    if ([...key.replace(/[^\p{L}\p{N}]/gu, '')].length < 3) out.push({ variant, why: 'quá ngắn' });
+    else if (COMMON.has(key)) out.push({ variant, why: 'là từ thông dụng' });
+    else if (other) out.push({ variant, why: `đã là cách nghe của "${other.name}"` });
+  }
+  return out;
+}
+
+// Monitor shows one stdout line per event and cuts long lines (audit 30/10), so a batch is printed one segment per
+// line and a long segment continues on following lines.
+export function wrapLine(text: string, width = 450) {
+  const out: string[] = [];
+  while (text.length > width) { const cut = text.lastIndexOf(' ', width); const at = cut > width / 2 ? cut : width; out.push(text.slice(0, at)); text = '  ↳ ' + text.slice(at).trimStart(); }
+  return [...out, text];
+}
+
 const normalized = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
 
 // ASR loops ("cái", "cái", "cái"…) arrive as many segments; three or more identical short ones become one entry.

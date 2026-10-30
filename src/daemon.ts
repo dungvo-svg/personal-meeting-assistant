@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { MeetingRuntime } from './runtime.js';
 
-export const VERSION = '0.8.0';
+export const VERSION = '0.9.0';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
 const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON'];
 for (let i = 2; i < process.argv.length - 1; i++) {
@@ -38,12 +38,12 @@ const languages = z.array(z.enum(['vi', 'lo'])).min(1).max(2).default(['vi', 'lo
 const methods: Record<string, (input: any) => any> = {
   ping: () => ({ ok: true, version: VERSION, pid: process.pid, testMode: runtime.testMode }),
   status: () => runtime.compact(),
-  prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages); return runtime.compact(); },
+  prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional(), me: z.string().max(80).optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages, { me: a.me, at: a.at }); return { ...runtime.compact(), me: runtime.profile.me ?? null, expectedLoadSeconds: runtime.profile.lastModelLoadSeconds ?? null }; },
   open: input => runtime.openMeeting(z.object({ url: z.string().min(10).max(2000) }).parse(input).url),
   sources: async input => { const devices = await runtime.listDevices(z.object({ levels: z.boolean().default(true) }).parse(input).levels); return { devices, suggested: runtime.suggest(devices) }; },
   select: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative() }).parse(input); const armed = await runtime.select(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, expiresAt: armed.expiresAt }; },
   selectMic: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), consent: z.literal(true) }).parse(input); const armed = await runtime.selectMic(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, channel: 'Tôi', expiresAt: armed.expiresAt }; },
-  listen: input => runtime.start(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
+  listen: input => { const a = z.object({ sessionId: sid.optional(), mic: z.boolean().default(true) }).parse(input); return runtime.start(current(a.sessionId), a.mic); },
   replay: input => { const a = z.object({ sessionId: sid.optional(), file: z.string().min(1).max(1000), speed: z.number().min(0.5).max(20).default(1) }).parse(input); return runtime.replay(current(a.sessionId), a.file, a.speed); },
   pause: async input => { runtime.requireSession(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)); await runtime.stopCapture(); return runtime.compact(); },
   next: input => { const a = z.object({ sessionId: sid.optional(), after: z.number().int().nonnegative().default(0), waitMs: z.number().int().min(0).max(25000).default(20000), limit: z.number().int().min(1).max(100).default(12), follower: z.boolean().default(false) }).parse(input); return runtime.next(current(a.sessionId), a.after, a.waitMs, a.limit, a.follower); },
@@ -56,8 +56,8 @@ const methods: Record<string, (input: any) => any> = {
   tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), sourceIds: ids.min(1).max(50) })).max(200) }).parse(input); return runtime.saveTasks(current(a.sessionId), a.tasks); },
   history: () => runtime.historyList(),
   glossary: input => {
-    const a = z.object({ action: z.enum(['list', 'add', 'remove']).default('list'), name: z.string().max(80).optional(), variants: z.array(z.string().max(80)).max(20).default([]) }).parse(input);
-    if (a.action === 'add') return runtime.glossaryAdd(a.name ?? '', a.variants);
+    const a = z.object({ action: z.enum(['list', 'add', 'remove']).default('list'), name: z.string().max(80).optional(), variants: z.array(z.string().max(80)).max(20).default([]), force: z.boolean().default(false) }).parse(input);
+    if (a.action === 'add') return runtime.glossaryAdd(a.name ?? '', a.variants, a.force);
     if (a.action === 'remove') return runtime.glossaryRemove(a.name ?? '');
     return runtime.glossary;
   },

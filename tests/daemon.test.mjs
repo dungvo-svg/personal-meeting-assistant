@@ -47,7 +47,7 @@ test('follow prints batched lines with flags, marks the follower heartbeat and s
   for (const text of ['Tuần này kiểm kê kho số 2.', 'Anh Nam gửi báo cáo trước thứ Sáu.']) await call('fixture', { text });
   await sleep(2500);
   assert.match(output, /FOLLOWING "Phiên thử"/);
-  assert.match(output, /LÔ #1–#2 \(2 đoạn\): #1 .*kiểm kê kho số 2\. ‖ #2/);
+  assert.match(output, /LÔ #1–#2 \(2 đoạn\):\n#1 .*kiểm kê kho số 2\.\n#2 /);
   assert.ok((await json('status')).lastFollowAt);
   const stopped = await json('stop');
   assert.equal(stopped.raw.sourceCount, 2);

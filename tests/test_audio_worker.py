@@ -43,6 +43,27 @@ class TranscriptFilterTests(unittest.TestCase):
         self.assertNotIn('LAO_LOW_CONFIDENCE', flags('ສະບາຍດີ', self.segment(logprob=-0.5), 'lo'))
         self.assertNotIn('LAO_LOW_CONFIDENCE', flags('Kho số hai đủ hàng.', self.segment(logprob=-1.2), 'vi'))
 
+    def test_mic_follows_the_zoom_mic_button_and_unknown_means_off(self):
+        gate = self.worker.mic_gate
+        self.assertEqual(gate({'meeting': True, 'muted': False, 'device': 'Mic'}), 'ON')
+        self.assertEqual(gate({'meeting': True, 'muted': True}), 'MUTED')
+        self.assertEqual(gate({'meeting': True, 'muted': None}), 'MUTED')
+        self.assertEqual(gate({'meeting': False, 'muted': None}), 'NO_MEETING')
+        self.assertEqual(gate({'error': 'zoom_mic_state stopped'}), 'UNKNOWN')
+        self.assertEqual(gate(None), 'UNKNOWN')
+
+    def test_mic_is_the_one_zoom_uses_else_the_windows_default(self):
+        mics = [(12, 'Mic in at front panel (Pink) (Realtek(R) Audio)'), (15, 'Headset (Jabra)')]
+        self.assertEqual(self.worker.pick_mic(mics, 12, 'Headset (Jabra)'), (15, 'Headset (Jabra)'))
+        self.assertEqual(self.worker.pick_mic(mics, 12, None), mics[0])
+        self.assertEqual(self.worker.pick_mic(mics, 12, 'Unplugged device'), mics[0])
+        self.assertEqual(self.worker.pick_mic([], -1, None), (None, None))
+
+    def test_greeting_alone_is_flagged_but_inside_a_sentence_is_not(self):
+        flags = self.worker.segment_flags
+        self.assertIn('LIKELY_HALLUCINATION', flags('Chào mừng.', self.segment(), 'vi'))
+        self.assertNotIn('LIKELY_HALLUCINATION', flags('Chào mừng anh Phet về lại công ty', self.segment(), 'vi'))
+
     def test_collapse_repeats_keeps_count(self):
         self.assertEqual(self.worker.collapse_repeats('ok dạ dạ dạ dạ dạ dạ dạ xong'), 'ok dạ [×7] xong')
         self.assertEqual(self.worker.collapse_repeats('ba ba xe'), 'ba ba xe')

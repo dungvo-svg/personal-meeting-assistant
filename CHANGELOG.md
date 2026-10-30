@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.0 —30/10/2026
+
+- Owner (U19): micro “Tôi” **bật mặc định** và chỉ lấy tiếng khi **nút micro Zoom đang bật**. `tools/zoom_mic_state.ps1` đọc tên nút micro trong cửa sổ họp qua Windows UI Automation và micro Zoom đang dùng qua Core Audio (chỉ đọc). Tắt mic, chưa vào họp hoặc không đọc được đều tính là tắt. Micro chọn theo micro Zoom đang dùng, không có thì micro mặc định Windows. `pma listen --no-mic` để tắt cho một buổi; `select-mic` không cần `--consent` nữa.
+- Sửa theo buổi họp thật 30/10:
+  - `pma follow` in mỗi đoạn một dòng; đoạn dài nối dòng `↳`, vì Monitor cắt dòng dài khoảng 500 ký tự.
+  - Bảng tên từ chối biến thể quá ngắn, là từ thông dụng, hoặc đã thuộc tên khác; thêm `--force` và `pma glossary help`.
+  - `start` báo lần trước nạp mô hình mất bao lâu; `listen` chờ tới 5 phút.
+  - `start --at HH:MM` để RAW/SUMMARY/TASKS ghi **độ phủ** (nghe được từ–đến, lỡ bao nhiêu phút đầu).
+  - `start --me "Tên"`, nhớ cho lần sau: RAW ghi `Tôi — Tên (micro)`, TASKS.md có mục **Việc của tôi**.
+  - Câu “Chào mừng” đứng một mình được coi là câu ảo.
+  - Skill `hop`: nhắc bật lại Monitor sau 30 phút.
+- Chưa làm, để vào issue chờ thêm dữ liệu họp: phân biệt người nói, từ nghiệp vụ nghe sai, thời gian nạp mô hình lúc dài lúc ngắn, kiểm micro Zoom trên buổi họp thật.
+- Test: 32 Node, 18 Python.
+
+## 0.8.0 —29/10/2026
+
+- Sửa theo audit 2 buổi họp 29/10 (`docs/AUDIT_HOP_20261029.md`): nạp sẵn mô hình, cắt đoạn ở chỗ yên nhất (tối đa 20 s), báo độ trễ, câu ảo xuống phụ lục, gộp đoạn lặp, bảng tên, kênh micro “Tôi”, nhắc ghi chú.
+
 ## 0.7.0 —28/10/2026
 
 - Owner: “Nâng tiếng Việt GPU”. Model chính trên GPU là **Whisper large-v3-turbo** (MIT, tự chuyển từ bản gốc `41f01f3` bằng `tools/convert_whisper_model.py`): nhận diện vi/lo và nhận dạng tiếng Việt. Tiếng Lào vẫn qua BuzzASR/lao. Không có GPU thì về small trên CPU.

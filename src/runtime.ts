@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { applyGlossary, foldRuns, isHallucination, type GlossaryEntry } from './text.js';
+import { applyGlossary, foldRuns, isHallucination, riskyVariants, type GlossaryEntry } from './text.js';
 
 export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
 export type Opener = (url: string) => void;
@@ -65,12 +65,18 @@ export class MeetingRuntime extends EventEmitter {
     try { this.context = JSON.parse(readFileSync(join(root, '.local', 'meeting-context.json'), 'utf8')); }
     catch { this.context = { title: 'Phiên họp cá nhân', language: 'vi', translation_required: false, topics: [] }; }
     try { this.glossary = JSON.parse(readFileSync(join(dataDir, 'glossary.json'), 'utf8')); } catch { this.glossary = []; }
+    try { this.profile = JSON.parse(readFileSync(join(dataDir, 'profile.json'), 'utf8')); } catch { this.profile = {}; }
   }
+  // Kept between sessions: the user's own name (`start --me`) and how long the last model load took.
+  profile: { me?: string; lastModelLoadSeconds?: number } = {};
+  saveProfile(change: { me?: string; lastModelLoadSeconds?: number }) { this.profile = { ...this.profile, ...change }; writeFileSync(join(this.dataDir, 'profile.json'), JSON.stringify(this.profile, null, 1), 'utf8'); }
   // Names ASR keeps getting wrong (people, suppliers, systems). Applied when text is shown, never to stored text.
   glossary: GlossaryEntry[] = [];
-  glossaryAdd(name: string, variants: string[]) {
+  glossaryAdd(name: string, variants: string[], force = false) {
     name = name.trim(); variants = [...new Set(variants.map(v => v.trim()).filter(v => v && v.length <= 80))];
     if (!name || name.length > 80 || !variants.length || variants.length > 20) throw new Error('INVALID_GLOSSARY_ENTRY');
+    const risky = riskyVariants(name, variants, this.glossary);
+    if (risky.length && !force) throw new Error('GLOSSARY_VARIANT_RISKY: ' + risky.map(r => `"${r.variant}" ${r.why}`).join('; ') + '. Bỏ biến thể đó, hoặc thêm --force nếu chắc chắn.');
     const entry = this.glossary.find(e => e.name.toLowerCase() === name.toLowerCase());
     if (entry) entry.variants = [...new Set([...entry.variants, ...variants])]; else if (this.glossary.length < 500) this.glossary.push({ name, variants }); else throw new Error('GLOSSARY_FULL');
     writeFileSync(join(this.dataDir, 'glossary.json'), JSON.stringify(this.glossary, null, 1), 'utf8'); this.ping();
@@ -83,7 +89,7 @@ export class MeetingRuntime extends EventEmitter {
   }
   shown(text: string) { return applyGlossary(text, this.glossary); }
   ping() { this.emit('change'); }
-  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo']) {
+  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo'], extra: { me?: string; at?: string } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
     if (this.session && !this.session.ended) return this.snapshot();
     if (this.capture || this.stoppingCapture || this.captureState === 'CLEANUP_UNCONFIRMED') throw new Error('PREVIOUS_CAPTURE_NOT_CLOSED');
@@ -92,8 +98,12 @@ export class MeetingRuntime extends EventEmitter {
     const created = new Date().toISOString();
     // A saved agenda from another day must not be presented as context for today's meeting.
     const savedIsCurrent = !this.context.date || this.context.date === new Date().toLocaleDateString('sv-SE');
-    const context = agenda?.trim() ? { title: title || 'Phiên họp', languages, translation_required: false, agenda: agenda.trim().slice(0, 20000), contextSource: 'USER_PROVIDED_FOR_THIS_SESSION' }
+    const base = agenda?.trim() ? { title: title || 'Phiên họp', languages, translation_required: false, agenda: agenda.trim().slice(0, 20000), contextSource: 'USER_PROVIDED_FOR_THIS_SESSION' }
       : savedIsCurrent ? this.context : { title: title || 'Phiên họp cá nhân', languages, translation_required: false, topics: [], contextSource: 'NONE', staleSavedContextDate: this.context.date };
+    // Who "Tôi" is (remembered for next time) and when the meeting was scheduled, for the coverage line in reports.
+    if (extra.me?.trim()) this.saveProfile({ me: extra.me.trim().slice(0, 80) });
+    const scheduled = extra.at && /^([01]?\d|2[0-3]):[0-5]\d$/.test(extra.at) ? new Date(new Date().toDateString() + ' ' + extra.at).toISOString() : undefined;
+    const context = { ...base, me: this.profile.me, scheduledStart: scheduled };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
     this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.captureState = 'OFF'; this.captureInfo = {};
@@ -219,15 +229,16 @@ export class MeetingRuntime extends EventEmitter {
     const device = this.devices.find(d => d.index === deviceIndex); if (!device) throw new Error('DEVICE_NOT_LISTED');
     this.armedDevice = { ...device, grantedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3 * 3600_000).toISOString() }; this.ping(); return this.armedDevice;
   }
-  async start(id: string) {
+  async start(id: string, mic = true) {
     this.requireSession(id);
     if (this.stoppingCapture || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (this.capture && !this.warm()) return { state: this.captureState, info: this.captureInfo };
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select (or the panel)');
     if (Date.parse(this.armedDevice.expiresAt) <= Date.now()) throw new Error('SOURCE_GRANT_EXPIRED');
     const maxSeconds = Math.min(7200, Math.floor((Date.parse(this.armedDevice.expiresAt) - Date.now()) / 1000));
-    const mic = this.armedMic && Date.parse(this.armedMic.expiresAt) > Date.now() ? { micDevice: this.armedMic.index, micName: this.armedMic.name } : {};
-    return this.launch(id, { device: this.armedDevice.index, deviceName: this.armedDevice.name, ...mic }, maxSeconds);
+    // Micro "Tôi" is on by default (owner, 30/10/2026); the worker uses it only while the Zoom mic button is on.
+    const own = !mic || process.env.PMA_MIC === '0' ? {} : this.armedMic && Date.parse(this.armedMic.expiresAt) > Date.now() ? { micDevice: this.armedMic.index, micName: this.armedMic.name } : { micAuto: true };
+    return this.launch(id, { device: this.armedDevice.index, deviceName: this.armedDevice.name, ...own }, maxSeconds);
   }
   // Replays a recording through the same worker, chunking and ASR as a live meeting. No device is opened.
   async replay(id: string, file: string, speed = 1) {
@@ -243,15 +254,16 @@ export class MeetingRuntime extends EventEmitter {
   private warmUp(id: string) {
     if (this.testMode || process.env.PMA_WARM === '0' || this.capture || this.closing) return;
     this.captureState = 'WARMING'; this.lastError = null;
-    try { this.spawnWorker(id, ['--wait-source', '--max-seconds', '7200']); } catch (error) { this.captureState = 'OFF'; this.lastError = String(error); }
+    try { this.spawnWorker(id, ['--wait-source', '--max-seconds', '7200']); this.captureInfo = { ...this.captureInfo, warmingSince: new Date().toISOString(), expectedLoadSeconds: this.profile.lastModelLoadSeconds }; }
+    catch (error) { this.captureState = 'OFF'; this.lastError = String(error); }
   }
-  private launch(id: string, source: { device?: number; deviceName?: string; micDevice?: number; micName?: string; replay?: string; speed?: number }, maxSeconds: number) {
+  private launch(id: string, source: { device?: number; deviceName?: string; micDevice?: number; micName?: string; micAuto?: boolean; replay?: string; speed?: number }, maxSeconds: number) {
     if (this.warm()) {
       this.capture!.stdin!.write(JSON.stringify({ ...source, maxSeconds }) + '\n');
       this.captureState = this.captureState === 'WARM_READY' ? 'WAITING_FOR_SOURCE' : 'LOADING_ASR';
     } else {
       this.captureState = 'LOADING_ASR'; this.lastError = null;
-      const args = source.replay ? ['--replay', source.replay, '--speed', String(source.speed ?? 1)] : ['--device', String(source.device), '--device-name', String(source.deviceName), ...(source.micDevice !== undefined ? ['--mic-device', String(source.micDevice), '--mic-name', String(source.micName)] : [])];
+      const args = source.replay ? ['--replay', source.replay, '--speed', String(source.speed ?? 1)] : ['--device', String(source.device), '--device-name', String(source.deviceName), ...(source.micDevice !== undefined ? ['--mic-device', String(source.micDevice), '--mic-name', String(source.micName)] : source.micAuto ? ['--mic-auto'] : [])];
       this.spawnWorker(id, [...args, '--max-seconds', String(maxSeconds)]);
     }
     this.captureDeadline = setTimeout(() => { this.lastError = 'Capture duration or source grant expired; source stopped.'; void this.stopCapture(); }, maxSeconds * 1000);
@@ -268,7 +280,7 @@ export class MeetingRuntime extends EventEmitter {
       if (line.length > 100000 || this.capture !== child || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState) || this.session?.id !== id || this.session.ended) return;
       try {
         const event = JSON.parse(line);
-        if (event.type === 'warm' && this.captureState === 'WARMING') { this.captureState = 'WARM_READY'; this.captureInfo = { ...this.captureInfo, modelLoadSeconds: event.modelLoadSeconds, asr: event.asr }; }
+        if (event.type === 'warm' && this.captureState === 'WARMING') { this.captureState = 'WARM_READY'; this.captureInfo = { ...this.captureInfo, modelLoadSeconds: event.modelLoadSeconds, asr: event.asr }; this.saveProfile({ lastModelLoadSeconds: event.modelLoadSeconds }); }
         if (event.type === 'prepared') { this.captureState = 'WAITING_FOR_SOURCE'; this.captureInfo = { ...event, captureId }; }
         if (event.type === 'ready') { this.captureState = 'LISTENING'; this.captureInfo = { ...event, captureId, listeningSince: new Date().toISOString() }; }
         if (event.type === 'status') this.captureInfo = { ...this.captureInfo, ...event };
@@ -334,14 +346,27 @@ export class MeetingRuntime extends EventEmitter {
   }
   private header(session: any, kind: string) {
     const meeting = session.context?.meeting?.meetingId ? ' · Zoom ' + session.context.meeting.meetingId : '';
-    return [`# ${kind} — ${session.title}`, '', `Ngày ${localDate(session.created)} · bắt đầu ${localTime(session.created)}` + (session.ended ? ` · kết thúc ${localTime(session.ended)}` : ' · phiên chưa kết thúc') + meeting, ''];
+    return [`# ${kind} — ${session.title}`, '', `Ngày ${localDate(session.created)} · mở phiên ${localTime(session.created)}` + (session.ended ? ` · kết thúc ${localTime(session.ended)}` : ' · phiên chưa kết thúc') + meeting, '', this.coverage(session), ''];
+  }
+  // How much of the meeting was actually heard (audit 30/10: scheduled 13:30, heard only 14:04–14:13).
+  coverage(session: any) {
+    const span: any = this.db.prepare("SELECT MIN(created) AS first, MAX(created) AS last FROM sources WHERE session_id=? AND origin='local_asr_unverified'").get(session.id);
+    const scheduled = session.context?.scheduledStart;
+    const minutes = (a: string, b: string) => Math.round((Date.parse(b) - Date.parse(a)) / 60000);
+    if (!span?.first) return `**Độ phủ:** chưa nghe được đoạn nào${scheduled ? ` · lịch họp ${localTime(scheduled)}` : ''}.`;
+    const parts = [`**Độ phủ:** nghe được ${localTime(span.first)}–${localTime(span.last)} (khoảng ${Math.max(1, minutes(span.first, span.last))} phút)`];
+    if (scheduled) {
+      parts.push(`lịch họp ${localTime(scheduled)}`);
+      if (minutes(scheduled, span.first) >= 2) parts.push(`**không nghe được ${minutes(scheduled, span.first)} phút đầu** (${localTime(scheduled)}–${localTime(span.first)})`);
+    } else parts.push('chưa có giờ họp theo lịch (pma start --at HH:MM) nên không biết có lỡ phần đầu không');
+    return parts.join(' · ') + '.';
   }
   writeRaw(id: string) {
     const session = this.sessionRow(id);
     const rows: any[] = this.db.prepare('SELECT id,text,origin,created,capture_id,language,boundary FROM sources WHERE session_id=? ORDER BY id').all(id);
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
     const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. Không có audio lưu lại.', ''];
-    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${row.boundary.includes('CHANNEL_MIC') ? ' · Tôi (micro)' : ''}`;
+    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${row.boundary.includes('CHANNEL_MIC') ? ` · Tôi${session.context?.me ? ' — ' + session.context.me : ''} (micro)` : ''}`;
     // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
     const ghosts = rows.filter(isHallucination);
     let capture: string | null = null;
@@ -378,8 +403,14 @@ export class MeetingRuntime extends EventEmitter {
       const ids = this.checkSources(id, t.sourceIds || []); all.push(...ids);
       return `| ${i + 1} | ${cell(task)} | ${cell(t.owner?.trim() || 'Chưa nêu trong họp')} | ${cell(t.due?.trim() || 'Chưa nêu trong họp')} | #${ids.join(', #')} |`;
     });
+    // "Việc của tôi" first when the user's name is known (audit 30/10: the user had to pick their own tasks by hand).
+    const me = session.context?.me?.toLowerCase();
+    const isMine = (owner?: string) => !!owner?.trim() && (/^tôi$/i.test(owner.trim()) || (!!me && (owner.toLowerCase().includes(me) || me.includes(owner.trim().toLowerCase()))));
+    const mine = me ? rows.filter((_, i) => isMine(tasks[i].owner)) : [];
+    const head = ['| # | Việc | Người phụ trách | Hạn | Nguồn |', '| --- | --- | --- | --- | --- |'];
     const lines = [...this.header(session, 'Việc cần làm sau họp'), '> Trợ lý AI rút từ RAW transcript chưa xác minh. Người phụ trách/hạn chỉ ghi khi được nói trong họp; cần người dùng xác nhận trước khi giao việc.', '',
-      ...(rows.length ? ['| # | Việc | Người phụ trách | Hạn | Nguồn |', '| --- | --- | --- | --- | --- |', ...rows] : ['_Không thấy việc cần làm nào được nêu rõ trong transcript._'])];
+      ...(me ? [`## Việc của tôi (${session.context.me})`, '', ...(mine.length ? [...head, ...mine] : ['_Không có việc nào ghi rõ là của bạn._']), '', '## Tất cả việc', ''] : []),
+      ...(rows.length ? [...head, ...rows] : ['_Không thấy việc cần làm nào được nêu rõ trong transcript._'])];
     return this.saveReport(id, 'tasks', 'TASKS.md', lines.join('\n') + '\n', [...new Set(all)]);
   }
   private saveReport(id: string, kind: string, file: string, content: string, ids: number[]) {

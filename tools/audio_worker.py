@@ -111,6 +111,8 @@ def parent_watch(pid):
 
 # Phrases Whisper invents over silence or music. They are kept but flagged, never silently removed.
 SILENCE_PHRASES = ('đăng ký kênh', 'subscribe', 'cảm ơn các bạn đã theo dõi', 'cảm ơn các bạn đã xem', 'hẹn gặp lại các bạn', 'ghiền mì gõ', 'like và share')
+# Whole segments that are only a greeting-style opener; real speech rarely is just these words (audit 30/10, #1523).
+SILENCE_WHOLE = ('chào mừng', 'chào mừng các bạn', 'chào mừng các bạn đã đến với kênh')
 REPEAT = re.compile(r'(\b\S+\b)(?:\W+\1\b){5,}', re.IGNORECASE)
 
 
@@ -140,7 +142,8 @@ def segment_flags(text, segment, language, language_probability=None):
     # Whisper small often writes Lao speech in Thai script; flag it instead of presenting it as Lao text.
     if language == 'lo' and any('฀' <= ch <= '๿' for ch in text):
         flags.append('LAO_WRITTEN_IN_THAI_SCRIPT')
-    if any(phrase in text.lower() for phrase in SILENCE_PHRASES) or segment.no_speech_prob > 0.6:
+    whole = re.sub(r'[^\w\s]', '', text.lower()).strip()
+    if any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or segment.no_speech_prob > 0.6:
         flags.append('LIKELY_HALLUCINATION')
     if segment.compression_ratio > 2.4 or REPEAT.search(text):
         flags.append('REPETITION')
@@ -257,6 +260,61 @@ def mic_is_own_voice(mic_rms, speaker_rms, ratio=MIC_OVER_SPEAKER, share=MIC_OWN
     return sum(1 for m, s in loud if m > ratio * s) / len(loud) >= share
 
 
+def mic_gate(report):
+    # The "Tôi" channel follows the user's Zoom mic button: open only when Zoom says the mic is on. Anything else is off.
+    if not report or report.get('error'):
+        return 'UNKNOWN'
+    if not report.get('meeting'):
+        return 'NO_MEETING'
+    return 'ON' if report.get('muted') is False else 'MUTED'
+
+
+def pick_mic(mics, default_index, zoom_device):
+    # The microphone Zoom is using right now, else the Windows default input. mics: [(index, name)].
+    for index, name in mics:
+        if zoom_device and name == zoom_device:
+            return index, name
+    return next(((index, name) for index, name in mics if index == default_index), (None, None))
+
+
+class ZoomMicWatch:
+    # Runs tools/zoom_mic_state.ps1 (read-only UI Automation + Core Audio) and keeps its latest report.
+    def __init__(self):
+        import subprocess
+        self.report = None
+        self.changed = threading.Event()
+        script = Path(__file__).with_name('zoom_mic_state.ps1')
+        try:
+            self.process = subprocess.Popen(['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script), '-ParentPid', str(os.getpid())],
+                                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True, encoding='utf-8',
+                                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        except OSError:
+            self.process = None
+            return
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for line in self.process.stdout:
+            try:
+                self.report = json.loads(line)
+            except ValueError:
+                self.report = {'error': 'bad line'}
+            self.changed.set()
+        self.report = {'error': 'zoom_mic_state stopped'}
+        self.changed.set()
+
+    def first(self, timeout=8):
+        self.changed.wait(timeout)
+        return self.report
+
+    def state(self):
+        return mic_gate(self.report)
+
+    def stop(self):
+        if self.process and self.process.poll() is None:
+            self.process.kill()
+
+
 def raise_priority():
     # Other work on the machine (agents, builds) must not make the transcript fall behind the meeting.
     if os.name == 'nt':
@@ -315,11 +373,12 @@ def capture(args):
             args.device, args.device_name = int(request['device']), str(request['deviceName'])
             if request.get('micDevice') is not None:
                 args.mic_device, args.mic_name = int(request['micDevice']), str(request['micName'])
+            args.mic_auto = bool(request.get('micAuto'))
         args.max_seconds = int(request.get('maxSeconds', args.max_seconds))
         threading.Thread(target=commands, daemon=True).start()
     if stop.is_set():
         return
-    audio = keepalive = None
+    audio = keepalive = zoom = None
     streams = []
     source_done = threading.Event()
     speaker_levels = {}  # 0.1 s slot since capture start -> speaker RMS, for the mic echo check
@@ -356,8 +415,18 @@ def capture(args):
         streams.append(stream)
         # A short CPU stall must not end a long meeting; overflow is reported, not fatal.
         inputs = [('speaker', lambda: stream.read(2048, exception_on_overflow=False), rate, channels)]
+        if args.mic_auto or args.mic_device is not None:
+            # The user's own microphone ("Tôi"), on by default (owner's choice, 30/10/2026). Its audio is used only
+            # while Zoom shows the user's mic as on; muted, no meeting, or unknown all mean silence.
+            zoom = ZoomMicWatch()
+            report = zoom.first()
+            if args.mic_device is None:
+                wasapi = audio.get_host_api_info_by_type(pa.paWASAPI)
+                mics = [(i, d['name']) for i in range(audio.get_device_count()) for d in [audio.get_device_info_by_index(i)]
+                        if d['hostApi'] == wasapi['index'] and d['maxInputChannels'] > 0 and not d.get('isLoopbackDevice')]
+                args.mic_device, args.mic_name = pick_mic(mics, wasapi['defaultInputDevice'], (report or {}).get('device'))
+            emit({'type': 'status', 'micGate': zoom.state(), 'zoomMicDevice': (report or {}).get('device'), 'micDevice': args.mic_name})
         if args.mic_device is not None:
-            # The user's own microphone ("Tôi"), only when they agreed to it in chat for this session.
             mic, mic_rate, mic_channels = open_input(audio, args.mic_device, args.mic_name)
             if mic.get('isLoopbackDevice'):
                 raise RuntimeError('Microphone channel must be a microphone, not a loopback device')
@@ -377,6 +446,7 @@ def capture(args):
         block_samples = 0
         block_peak_rms = 0.0
         last_meter = 0.0
+        last_gate = None
         ready = False
         try:
             while not stop.is_set():
@@ -394,6 +464,13 @@ def capture(args):
                     emit({'type': 'ready', 'device': source_name, 'micDevice': args.mic_name if args.mic_device is not None else None, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'asr': asr, 'modelLoadSeconds': round(time.monotonic() - started, 3), 'audioStorage': 'RAM_ONLY', 'maxQueuedChunks': 6, 'maxChunkSeconds': MAX_CHUNK_SECONDS, 'maxSessionSeconds': args.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
                     ready = True
                 mono = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels).mean(axis=1)
+                if channel == 'mic':
+                    gate = (zoom.state(), (zoom.report or {}).get('device')) if zoom else ('UNKNOWN', None)
+                    if gate != last_gate:
+                        emit({'type': 'status', 'micGate': gate[0], 'zoomMicDevice': gate[1]})
+                        last_gate = gate
+                    if gate[0] != 'ON':
+                        mono = np.zeros_like(mono)  # Zoom mic off: the user's words are not taken
                 blocks.append(mono.copy())
                 block_sizes.append(len(mono))
                 block_samples += len(mono)
@@ -499,6 +576,8 @@ def capture(args):
         if keepalive:
             keepalive.stop_stream()
             keepalive.close()
+        if zoom:
+            zoom.stop()
         if audio:
             audio.terminate()
 
@@ -522,6 +601,7 @@ if __name__ == '__main__':
     parser.add_argument('--wait-source', action='store_true')
     parser.add_argument('--mic-device', type=int)
     parser.add_argument('--mic-name')
+    parser.add_argument('--mic-auto', action='store_true')
     args = parser.parse_args()
     try:
         if args.list:
