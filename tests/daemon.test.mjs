@@ -8,7 +8,7 @@ import { promisify } from 'node:util';
 
 const run = promisify(execFile);
 const directory = mkdtempSync(join(tmpdir(), 'pma-daemon-test-'));
-const env = { ...process.env, PMA_PORT: '8798', PMA_TEST_MODE: '1', PMA_DATA_DIR: directory, PMA_STOP_HOOK: 'off' };
+const env = { ...process.env, PMA_PORT: process.env.PMA_TEST_PORT || '8798', PMA_TEST_MODE: '1', PMA_DATA_DIR: directory, PMA_STOP_HOOK: 'off' };
 Object.assign(process.env, env);
 const { call, daemonInfo } = await import('../dist/client.js');
 const pma = async (...args) => { const { stdout } = await run(process.execPath, [resolve('dist/cli.js'), ...args], { env }); return stdout; };
