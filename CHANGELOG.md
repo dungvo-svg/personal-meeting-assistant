@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.10.0 —30/10/2026
+
+Sửa theo buổi thử thật 30/10 trên Google Meet (`docs/PLAN_0_10.md`). Opus chốt kiến trúc, 5 agent Sonnet làm song song (A–E), Opus gộp.
+
+- **Tiếng Lào (A3, A2/B2):**
+  - Model BuzzASR/lao bị CTranslate2 coi là English-only, nên từ 0.6 đến 0.9 tiếng Lào được giải mã với `<|en|>`. Đã sửa.
+  - Đo trên FLEURS (GPU), sai ký tự tiếng Lào giảm: 33,2% → 24,4% (sửa lỗi trên) → 21,3% (thêm beam 5).
+  - Tiếng Việt 4,33% → 4,09%.
+  - Đoạn Lào ngắn 1,5–3 s nhận đúng 78,7% → 90,0%, nhờ giải mã cả hai bên khi bộ dò không chắc. Đổi lại, mảnh Việt 1–3 chữ giảm 3–5 điểm; tắt bằng `LANG_PICK_DEFAULT`.
+- **Tận dụng GPU:** beam 5 trên cuda (CPU giữ 1). Đoạn âm tối thiểu 3 s trên GPU.
+- **Phản hồi nhanh hơn:** `pma follow` mặc định lô 15 s (trước 60 s; đo 30/10: ASR chỉ trễ ~0,3 s, chậm nằm ở lô và chờ đủ đoạn).
+- **Hai phiên theo dõi:** dịch thô (Haiku, effort low, `--batch 15 --as dich --no-notes`) và tổng hợp (Sonnet, `--batch 60`).
+  - Mỗi người theo dõi có con trỏ và heartbeat riêng.
+  - Stop hook giữ đúng từng phiên.
+  - Skill `hop` mở phiên dịch thô ngay sau LISTENING.
+- **Micro "Tôi" không phụ thuộc nền tảng (A1/B4):**
+  - Bỏ đọc nút mute Zoom của 0.9.0.
+  - Micro luôn mở; lấy micro mà ứng dụng họp (Zoom, trình duyệt, Teams…) đang giữ, không có thì micro mặc định Windows. Kiểm lại mỗi 30 s (`tools/mic_in_use.ps1`).
+  - Tiếng loa lọt vào vẫn bị bỏ. Lời nói khi đang tắt mic trên Zoom/Meet cũng vào "Tôi".
+- **Google Meet:** `--link https://meet.google.com/…` mở trình duyệt; báo cáo ghi "Google Meet <mã>".
+- **Tạm dừng giữ mô hình (A9):** `pma pause` → `pma listen` có chữ ngay.
+- **Số đo nạp mô hình (A4):** 1.273 s ở buổi 30/10 là thời gian chờ họp bị tính nhầm. Nay tách `modelLoadSeconds` và `waitedForSourceSeconds`.
+- **Lưu âm thanh (B3, opt-in):** `pma listen --save-audio [--keep-days 7]`; WAV từng kênh trên máy, tự xoá; `pma audio [list|purge]`.
+- **Lọc chữ (A5, A6):**
+  - Câu bịa "video hấp dẫn", "nhấn chuông"…
+  - "Cảm ơn." đứng một mình chỉ bị lọc khi đoạn gần như im lặng.
+  - Vòng lặp 2–4 chữ gộp `cụm [×N]`, cả với dữ liệu cũ.
+- **Giờ họp (A10):** `pma at HH:MM` sửa giờ họp theo lịch sau khi mở phiên.
+- **Dịch Lào→Việt (B1):** Claude dịch trong phiên; `pma translate` lưu, RAW in `→ (Claude dịch) …`. Màn hình chung `/live` đã làm rồi bỏ theo owner (U21: họp trên session, không qua web).
+- **Phát lại bản ghi Zoom 11,9 phút ở tốc độ thật (GPU, 0.10):**
+  - Nạp model 13,3 s.
+  - ASR trễ p50 0,4 s / p90 0,7 s / max 3,6 s.
+  - Đoạn dài p50 8,4 s, p90 15,5 s.
+  - 3/180 đoạn cắt cưỡng bức.
+  - VRAM đỉnh 4,4 GB / 6 GB.
+  - 3/180 mảnh Việt ~3 s bị gắn `lo` (có cờ ngôn ngữ không chắc).
+- **Test:** 45 Node, 33 Python.
+
 ## 0.9.0 —30/10/2026
 
 - Owner (U19): micro “Tôi” **bật mặc định** và chỉ lấy tiếng khi **nút micro Zoom đang bật**. `tools/zoom_mic_state.ps1` đọc tên nút micro trong cửa sổ họp qua Windows UI Automation và micro Zoom đang dùng qua Core Audio (chỉ đọc). Tắt mic, chưa vào họp hoặc không đọc được đều tính là tắt. Micro chọn theo micro Zoom đang dùng, không có thì micro mặc định Windows. `pma listen --no-mic` để tắt cho một buổi; `select-mic` không cần `--consent` nữa.
