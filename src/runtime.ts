@@ -6,6 +6,7 @@ import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { applyGlossary, foldRuns, isHallucination, riskyVariants, type GlossaryEntry } from './text.js';
+import { audioInfo, keepDaysOf, listAudio, markAudioDir, purgeAudio } from './audio.js';
 
 export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
 export type Opener = (url: string) => void;
@@ -46,6 +47,12 @@ export class MeetingRuntime extends EventEmitter {
   lastFollowAt: string | null = null;
   context: any;
   closing = false;
+  // Set when `listen --save-audio` was asked for this session; the files themselves are described by audioInfo().
+  audioSave: { dir: string; keepDays: number; expiresAt: string } | null = null;
+  // One ID per listening (a paused worker listens again under a new one: its clock restarts at 0).
+  private captureId = '';
+  // Only a worker started with --wait-source can pause and keep its models; a cold one stops instead.
+  private resumable = false;
   private stoppingCapture: Promise<void> | null = null;
   private captureDeadline: ReturnType<typeof setTimeout> | null = null;
   opener: Opener = defaultOpener;
@@ -106,7 +113,7 @@ export class MeetingRuntime extends EventEmitter {
     const context = { ...base, me: this.profile.me, scheduledStart: scheduled };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
-    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.captureState = 'OFF'; this.captureInfo = {};
+    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.audioSave = null; this.captureState = 'OFF'; this.captureInfo = {};
     if (!fixture) this.warmUp(this.session.id);
     this.ping(); return this.snapshot();
   }
@@ -164,14 +171,28 @@ export class MeetingRuntime extends EventEmitter {
     const recent = id ? this.db.prepare('SELECT id,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? ORDER BY id DESC LIMIT 300').all(id).reverse() : [];
     const notes = id ? this.db.prepare('SELECT item_key AS itemKey,revision,kind,payload,created FROM notes WHERE session_id=? ORDER BY id DESC LIMIT 100').all(id).reverse().map((n: any) => ({ ...n, ...JSON.parse(n.payload), payload: undefined })) : [];
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count,MIN(created) AS oldest FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0, oldest: null };
-    return { session: this.session, context: this.session?.context ?? this.context, captureState: this.captureState, captureInfo: this.captureInfo, lastError: this.lastError, armedDevice: this.armedDevice, lastAgentReadAt: this.lastAgentReadAt, backlog, sources: recent, notes, audioStorage: 'RAM_ONLY_NO_AUDIO_FILES', historyDirectory: this.dataDir, testMode: this.testMode };
+    return { session: this.session, context: this.session?.context ?? this.context, captureState: this.captureState, captureInfo: this.captureInfo, lastError: this.lastError, armedDevice: this.armedDevice, lastAgentReadAt: this.lastAgentReadAt, backlog, sources: recent, notes, audioStorage: this.audioInfoOf(id) ? 'WAV_SAVED_LOCALLY_UNTIL_AUTO_DELETE' : 'RAM_ONLY_NO_AUDIO_FILES', historyDirectory: this.dataDir, testMode: this.testMode };
   }
   compact() {
     const s = this.session; const id = s?.id;
     const counts: any = id ? this.db.prepare('SELECT (SELECT COUNT(*) FROM sources WHERE session_id=?) AS sources,(SELECT COUNT(*) FROM notes WHERE session_id=?) AS notes,(SELECT MAX(created) FROM notes WHERE session_id=?) AS lastNoteAt').get(id, id, id) : { sources: 0, notes: 0, lastNoteAt: null };
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0 };
     const { type, ...captureInfo } = this.captureInfo;
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt };
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id) };
+  }
+  // Saved audio of a session: where it is, how big, and when it is deleted. Null when nothing was saved (RAM only).
+  audioInfoOf(id?: string) {
+    if (!id) return null;
+    const info = audioInfo(this.dataDir, id);
+    return info ?? (this.audioSave && this.session?.id === id ? { ...this.audioSave, savedAt: this.session.created, files: 0, bytes: 0 } : null);
+  }
+  audioNote(id: string) {
+    const info = audioInfo(this.dataDir, id);
+    return info ? `Âm thanh đã lưu trên máy tại ${info.dir} (${info.files} file, ${Math.round(info.bytes / 1048576)} MB), tự xoá sau ${localDate(info.expiresAt)}; không gửi đi đâu.` : 'Không có audio lưu lại.';
+  }
+  audioList() { return listAudio(this.dataDir).map(item => ({ ...item, title: (this.db.prepare('SELECT title FROM sessions WHERE id=?').get(item.sessionId) as any)?.title ?? null })); }
+  purgeAudio(olderThanDays?: number) {
+    return purgeAudio(this.dataDir, { olderThanDays, keep: this.session && !this.session.ended && this.capture ? [this.session.id] : [] });
   }
   historyList() { return this.db.prepare('SELECT id,title,created,ended,mode FROM sessions ORDER BY created DESC LIMIT 100').all(); }
   exportText(id: string) {
@@ -179,7 +200,7 @@ export class MeetingRuntime extends EventEmitter {
     if (!session) throw new Error('SESSION_NOT_FOUND');
     const rows: any[] = this.db.prepare('SELECT id,text,origin,start,end,capture_id FROM sources WHERE session_id=? ORDER BY id').all(id);
     const notes: any[] = this.db.prepare('SELECT item_key,revision,kind,payload FROM notes WHERE session_id=? ORDER BY id').all(id);
-    return [session.title, session.created, session.mode, 'Nguồn ASR/nhập tay chưa xác minh. Mốc giây tính trong từng capture ID, không phải timestamp từng từ. Không phải biên bản được chấp thuận. Không có audio cuộc họp lưu lại.', '', ...rows.map(s => `#${s.id} [${s.start.toFixed(1)}–${s.end.toFixed(1)}s] ${s.origin} capture=${s.capture_id || 'none'}\n${s.text}\n`), '\nGHI CHÚ CỦA TRỢ LÝ — nhận định chưa xác minh', ...notes.map(n => { const p=JSON.parse(n.payload); return `${n.item_key} r${n.revision} · ${n.kind} · nguồn ${p.sourceIds.join(', ')}\n${p.text}\n`; })].join('\n');
+    return [session.title, session.created, session.mode, 'Nguồn ASR/nhập tay chưa xác minh. Mốc giây tính trong từng capture ID, không phải timestamp từng từ. Không phải biên bản được chấp thuận. ' + this.audioNote(id), '', ...rows.map(s => `#${s.id} [${s.start.toFixed(1)}–${s.end.toFixed(1)}s] ${s.origin} capture=${s.capture_id || 'none'}\n${s.text}\n`), '\nGHI CHÚ CỦA TRỢ LÝ — nhận định chưa xác minh', ...notes.map(n => { const p=JSON.parse(n.payload); return `${n.item_key} r${n.revision} · ${n.kind} · nguồn ${p.sourceIds.join(', ')}\n${p.text}\n`; })].join('\n');
   }
   history(id: string) {
     const session: any = this.db.prepare('SELECT id,title,created,ended,mode,context FROM sessions WHERE id=?').get(id);
@@ -229,16 +250,20 @@ export class MeetingRuntime extends EventEmitter {
     const device = this.devices.find(d => d.index === deviceIndex); if (!device) throw new Error('DEVICE_NOT_LISTED');
     this.armedDevice = { ...device, grantedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3 * 3600_000).toISOString() }; this.ping(); return this.armedDevice;
   }
-  async start(id: string, mic = true) {
+  // saveAudio: opt-in WAV copy of this listening on this machine only, deleted after keepDays (default 7).
+  async start(id: string, mic = true, save: { saveAudio?: boolean; keepDays?: number } = {}) {
     this.requireSession(id);
     if (this.stoppingCapture || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (this.capture && !this.warm()) return { state: this.captureState, info: this.captureInfo };
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select (or the panel)');
     if (Date.parse(this.armedDevice.expiresAt) <= Date.now()) throw new Error('SOURCE_GRANT_EXPIRED');
     const maxSeconds = Math.min(7200, Math.floor((Date.parse(this.armedDevice.expiresAt) - Date.now()) / 1000));
-    // Micro "Tôi" is on by default (owner, 30/10/2026); the worker uses it only while the Zoom mic button is on.
+    // Micro "Tôi" is always on (owner, 30/10/2026), on whatever platform: the worker takes the mic a meeting app is using,
+    // else the Windows default, and drops speaker sound that leaks into it.
     const own = !mic || process.env.PMA_MIC === '0' ? {} : this.armedMic && Date.parse(this.armedMic.expiresAt) > Date.now() ? { micDevice: this.armedMic.index, micName: this.armedMic.name } : { micAuto: true };
-    return this.launch(id, { device: this.armedDevice.index, deviceName: this.armedDevice.name, ...own }, maxSeconds);
+    let saveAudioDir: string | undefined;
+    if (save.saveAudio) { const marked = markAudioDir(this.dataDir, id, keepDaysOf(save.keepDays)); saveAudioDir = marked.dir; this.audioSave = { dir: marked.dir, keepDays: marked.keepDays, expiresAt: marked.expiresAt }; }
+    return this.launch(id, { device: this.armedDevice.index, deviceName: this.armedDevice.name, ...own, saveAudioDir }, maxSeconds);
   }
   // Replays a recording through the same worker, chunking and ASR as a live meeting. No device is opened.
   async replay(id: string, file: string, speed = 1) {
@@ -257,21 +282,24 @@ export class MeetingRuntime extends EventEmitter {
     try { this.spawnWorker(id, ['--wait-source', '--max-seconds', '7200']); this.captureInfo = { ...this.captureInfo, warmingSince: new Date().toISOString(), expectedLoadSeconds: this.profile.lastModelLoadSeconds }; }
     catch (error) { this.captureState = 'OFF'; this.lastError = String(error); }
   }
-  private launch(id: string, source: { device?: number; deviceName?: string; micDevice?: number; micName?: string; micAuto?: boolean; replay?: string; speed?: number }, maxSeconds: number) {
+  private launch(id: string, source: { device?: number; deviceName?: string; micDevice?: number; micName?: string; micAuto?: boolean; replay?: string; speed?: number; saveAudioDir?: string }, maxSeconds: number) {
     if (this.warm()) {
-      this.capture!.stdin!.write(JSON.stringify({ ...source, maxSeconds }) + '\n');
+      // The same worker listens again after a pause: a new capture ID keeps the restarted clock apart (and names the WAV files).
+      this.captureId = randomUUID(); this.captureInfo = { ...this.captureInfo, captureId: this.captureId };
+      this.capture!.stdin!.write(JSON.stringify({ ...source, maxSeconds, captureId: source.saveAudioDir ? this.captureId : undefined }) + '\n');
       this.captureState = this.captureState === 'WARM_READY' ? 'WAITING_FOR_SOURCE' : 'LOADING_ASR';
     } else {
       this.captureState = 'LOADING_ASR'; this.lastError = null;
-      const args = source.replay ? ['--replay', source.replay, '--speed', String(source.speed ?? 1)] : ['--device', String(source.device), '--device-name', String(source.deviceName), ...(source.micDevice !== undefined ? ['--mic-device', String(source.micDevice), '--mic-name', String(source.micName)] : source.micAuto ? ['--mic-auto'] : [])];
+      const args = source.replay ? ['--replay', source.replay, '--speed', String(source.speed ?? 1)] : ['--device', String(source.device), '--device-name', String(source.deviceName), ...(source.micDevice !== undefined ? ['--mic-device', String(source.micDevice), '--mic-name', String(source.micName)] : source.micAuto ? ['--mic-auto'] : []), ...(source.saveAudioDir ? ['--save-audio-dir', source.saveAudioDir] : [])];
       this.spawnWorker(id, [...args, '--max-seconds', String(maxSeconds)]);
     }
     this.captureDeadline = setTimeout(() => { this.lastError = 'Capture duration or source grant expired; source stopped.'; void this.stopCapture(); }, maxSeconds * 1000);
     this.ping(); return { state: this.captureState, instruction: 'Model loads locally; use session_status to verify LISTENING. Do not claim capture active while loading.' };
   }
   private spawnWorker(id: string, workerArgs: string[]) {
-    const captureId = randomUUID(); this.captureInfo = { captureId };
-    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', ...workerArgs, '--parent', String(process.pid), '--languages', (this.session.languages || ['vi']).join(','), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const captureId = randomUUID(); this.captureId = captureId; this.captureInfo = { captureId };
+    this.resumable = workerArgs.includes('--wait-source');
+    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), '--capture', ...workerArgs, '--capture-id', captureId, '--parent', String(process.pid), '--languages', (this.session.languages || ['vi']).join(','), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.capture = child;
     const lines = createInterface({ input: child.stdout! });
     let error = '';
@@ -280,12 +308,16 @@ export class MeetingRuntime extends EventEmitter {
       if (line.length > 100000 || this.capture !== child || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState) || this.session?.id !== id || this.session.ended) return;
       try {
         const event = JSON.parse(line);
+        // `warm` is also sent after a pause (resumed): that is not a model load, so the saved load time stays as it was.
         if (event.type === 'warm' && this.captureState === 'WARMING') { this.captureState = 'WARM_READY'; this.captureInfo = { ...this.captureInfo, modelLoadSeconds: event.modelLoadSeconds, asr: event.asr }; this.saveProfile({ lastModelLoadSeconds: event.modelLoadSeconds }); }
-        if (event.type === 'prepared') { this.captureState = 'WAITING_FOR_SOURCE'; this.captureInfo = { ...event, captureId }; }
-        if (event.type === 'ready') { this.captureState = 'LISTENING'; this.captureInfo = { ...event, captureId, listeningSince: new Date().toISOString() }; }
+        if (event.type === 'warm' && this.captureState === 'PAUSING') { this.captureState = 'WARM_READY'; this.captureInfo = { captureId: this.captureId, modelLoadSeconds: event.modelLoadSeconds, asr: event.asr, pausedAt: new Date().toISOString() }; }
+        // The load time is the worker's own measurement from `warm`; neither `prepared` nor `ready` may replace it.
+        const loaded = { modelLoadSeconds: this.captureInfo.modelLoadSeconds, asr: this.captureInfo.asr };
+        if (event.type === 'prepared') { this.captureState = 'WAITING_FOR_SOURCE'; this.captureInfo = { ...loaded, ...event, captureId: this.captureId }; }
+        if (event.type === 'ready') { this.captureState = 'LISTENING'; this.captureInfo = { ...event, ...Object.fromEntries(Object.entries(loaded).filter(([, value]) => value !== undefined)), captureId: this.captureId, listeningSince: new Date().toISOString() }; }
         if (event.type === 'status') this.captureInfo = { ...this.captureInfo, ...event };
-        if (event.type === 'gap') this.ingest(`[Khoảng trống ${Math.round(event.end - event.start)} giây: ASR không theo kịp, âm thanh đoạn này không được nhận dạng]`, 'system_gap', event.start, event.end, event.reason || 'GAP', captureId);
-        if (event.type === 'source') this.ingest(event.text, 'local_asr_unverified', event.start, event.end, event.boundary || '', captureId, event.language || '');
+        if (event.type === 'gap') this.ingest(`[Khoảng trống ${Math.round(event.end - event.start)} giây: ASR không theo kịp, âm thanh đoạn này không được nhận dạng]`, 'system_gap', event.start, event.end, event.reason || 'GAP', this.captureId);
+        if (event.type === 'source') this.ingest(event.text, 'local_asr_unverified', event.start, event.end, event.boundary || '', this.captureId, event.language || '');
         if (event.type === 'error') { this.lastError = event.message; this.captureState = 'ERROR'; void this.stopCapture(); }
         this.ping();
       } catch (e) { this.lastError = String(e); this.captureState = 'ERROR'; void this.stopCapture(); }
@@ -295,6 +327,22 @@ export class MeetingRuntime extends EventEmitter {
       lines.close(); if (this.capture === child) { this.capture = null; if (this.captureDeadline) clearTimeout(this.captureDeadline); this.captureDeadline = null; this.captureState = code === 0 ? 'OFF' : 'ERROR'; if (code !== 0) this.lastError ||= 'Audio worker stopped: ' + error; this.ping(); }
     });
     return child;
+  }
+  // Pause keeps the loaded models: the worker flushes what was said, closes the devices and goes back to WARM_READY, so
+  // the next `listen` has text at once (audit 30/10, A9: stop + reload left a ~55 s gap). A worker that cannot pause,
+  // or does not answer in time, is stopped the old way.
+  async pause(timeoutMs = 30000) {
+    const child = this.capture;
+    if (!child || this.warm()) return;
+    if (this.captureState !== 'LISTENING' || !this.resumable || this.stoppingCapture) return this.stopCapture();
+    this.captureState = 'PAUSING'; if (this.captureDeadline) clearTimeout(this.captureDeadline); this.captureDeadline = null; this.ping();
+    try { child.stdin!.write('pause\n'); } catch { return this.stopCapture(); }
+    const paused = await new Promise<boolean>(resolve => {
+      const done = (value: boolean) => { clearTimeout(timer); this.off('change', check); resolve(value); };
+      const check = () => { if (this.captureState !== 'PAUSING') done(true); };
+      const timer = setTimeout(() => done(false), timeoutMs); this.on('change', check); check();
+    });
+    if (!paused) await this.stopCapture();
   }
   async stopCapture() {
     if (this.stoppingCapture) return this.stoppingCapture;
@@ -365,7 +413,7 @@ export class MeetingRuntime extends EventEmitter {
     const session = this.sessionRow(id);
     const rows: any[] = this.db.prepare('SELECT id,text,origin,created,capture_id,language,boundary FROM sources WHERE session_id=? ORDER BY id').all(id);
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
-    const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. Không có audio lưu lại.', ''];
+    const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. ' + this.audioNote(id), ''];
     const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${row.boundary.includes('CHANNEL_MIC') ? ` · Tôi${session.context?.me ? ' — ' + session.context.me : ''} (micro)` : ''}`;
     // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
     const ghosts = rows.filter(isHallucination);

@@ -43,9 +43,10 @@ const methods: Record<string, (input: any) => any> = {
   sources: async input => { const devices = await runtime.listDevices(z.object({ levels: z.boolean().default(true) }).parse(input).levels); return { devices, suggested: runtime.suggest(devices) }; },
   select: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative() }).parse(input); const armed = await runtime.select(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, expiresAt: armed.expiresAt }; },
   selectMic: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), consent: z.literal(true) }).parse(input); const armed = await runtime.selectMic(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, channel: 'Tôi', expiresAt: armed.expiresAt }; },
-  listen: input => { const a = z.object({ sessionId: sid.optional(), mic: z.boolean().default(true) }).parse(input); return runtime.start(current(a.sessionId), a.mic); },
+  listen: input => { const a = z.object({ sessionId: sid.optional(), mic: z.boolean().default(true), saveAudio: z.boolean().default(false), keepDays: z.number().int().min(1).max(90).default(7) }).parse(input); return runtime.start(current(a.sessionId), a.mic, { saveAudio: a.saveAudio, keepDays: a.keepDays }); },
   replay: input => { const a = z.object({ sessionId: sid.optional(), file: z.string().min(1).max(1000), speed: z.number().min(0.5).max(20).default(1) }).parse(input); return runtime.replay(current(a.sessionId), a.file, a.speed); },
-  pause: async input => { runtime.requireSession(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)); await runtime.stopCapture(); return runtime.compact(); },
+  pause: async input => { runtime.requireSession(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)); await runtime.pause(); return runtime.compact(); },
+  audio: input => { const a = z.object({ action: z.enum(['list', 'purge']).default('list'), olderThanDays: z.number().min(0).max(3650).optional() }).parse(input); return a.action === 'purge' ? runtime.purgeAudio(a.olderThanDays) : runtime.audioList(); },
   next: input => { const a = z.object({ sessionId: sid.optional(), after: z.number().int().nonnegative().default(0), waitMs: z.number().int().min(0).max(25000).default(20000), limit: z.number().int().min(1).max(100).default(12), follower: z.boolean().default(false) }).parse(input); return runtime.next(current(a.sessionId), a.after, a.waitMs, a.limit, a.follower); },
   read: input => { const a = z.object({ sessionId: sid.optional(), after: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(100).default(100) }).parse(input); const items = runtime.sources(current(a.sessionId), a.after, a.limit); return { items, nextCursor: items.at(-1)?.id ?? a.after, done: items.length < a.limit }; },
   context: () => ({ agenda: runtime.session?.context ?? null, session: runtime.compact().session }),
@@ -101,7 +102,7 @@ const http = createServer(async (request, response) => {
     if (path === '/api/prepare') return json(response, 200, runtime.prepare());
     if (path === '/api/arm') return json(response, 200, runtime.arm(input.sessionId, input.deviceIndex));
     if (path === '/api/start') return json(response, 200, await runtime.start(input.sessionId));
-    if (path === '/api/pause') { runtime.requireSession(input.sessionId); await runtime.stopCapture(); return json(response, 200, runtime.snapshot()); }
+    if (path === '/api/pause') { runtime.requireSession(input.sessionId); await runtime.pause(); return json(response, 200, runtime.snapshot()); }
     if (path === '/api/finish') { await runtime.finish(input.sessionId); return json(response, 200, runtime.snapshot()); }
     if (path === '/api/manual') { runtime.requireSession(input.sessionId); return json(response, 200, { id: runtime.ingest(String(input.text || ''), 'operator_text') }); }
     return json(response, 404, { error: 'NOT_FOUND' });
@@ -119,6 +120,10 @@ const startedAt = new Date().toISOString();
 writeFileSync(join(dataDir, 'daemon.json'), JSON.stringify({ url: origin, pid: process.pid, token, version: VERSION, startedAt }));
 writeFileSync(join(dataDir, 'panel.json'), JSON.stringify({ url: origin, pid: process.pid, startedAt }));
 console.error(`Meeting runtime ${VERSION}: ${origin} (capture OFF)`);
+
+// Saved audio is deleted when it expires: at start and then every hour.
+const purgeExpiredAudio = () => { try { runtime.purgeAudio(); } catch (error) { console.error('Audio purge failed:', error); } };
+purgeExpiredAudio(); setInterval(purgeExpiredAudio, 3600_000).unref();
 
 // Exit when nobody has used it for a while and no meeting is open; the CLI starts it again on demand.
 setInterval(() => { if ((!runtime.session || runtime.session.ended) && !runtime.capture && Date.now() - lastActivity > idleMinutes * 60000) void shutdown(); }, 30000).unref();

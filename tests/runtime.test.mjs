@@ -150,7 +150,7 @@ test('warm worker gets its source on listen; the user microphone joins only as a
 test('a session left open by a crash ends at its last source, not at the next start', async () => {
   await withRuntime(async (r, directory) => { r.prepare('Họp'); const id = r.session.id; r.ingest('Đoạn cuối.', 'operator_text'); const last = r.sources(id).at(-1).createdAt; r.closing = true; r.db.close(); await new Promise(res => setTimeout(res, 30)); const reopened = new MeetingRuntime(resolve('.'), directory, true); try { assert.equal(reopened.history(id).session.ended, last); } finally { await reopened.close(); } });
 });
-test('micro "Tôi" is on by default and follows Zoom in the worker; --no-mic leaves it out', async () => {
+test('micro "Tôi" is on by default whatever the meeting platform; --no-mic leaves it out', async () => {
   await withRuntime(async r => {
     r.prepare(); const id = r.session.id;
     r.devices = [{ index: 13, name: 'Realtek [Loopback]', kind: 'speaker_loopback_all_device_audio' }];

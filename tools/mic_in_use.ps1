@@ -1,12 +1,10 @@
-param([int]$ParentPid = 0, [double]$IntervalSeconds = 1, [switch]$Once)
-# Reports, once per interval, whether the user's Zoom microphone is on, as one JSON line:
-#   {"meeting":true,"muted":false,"device":"Microphone (Realtek(R) Audio)"}
-# muted: from the meeting toolbar button name read through Windows UI Automation ("Mute my audio" = mic on,
-# "Unmute my audio" = mic off); null when no meeting window or the button cannot be read. The caller treats null as off.
-# device: the capture endpoint where Zoom.exe holds an active audio session (Windows Core Audio), or null.
-# Reads only; never clicks, never changes Zoom or the audio devices.
+param([int]$ParentPid = 0, [double]$IntervalSeconds = 30, [string]$Apps = 'zoom,chrome,msedge,firefox,brave,opera,ms-teams,teams,slack', [switch]$Once)
+# Reports, once per interval, which microphone each meeting app is using, as one JSON line:
+#   {"devices":[{"device":"Mic in at front panel (Pink) (Realtek(R) Audio)","apps":["chrome"]}]}
+# $Apps: comma-separated process names (without .exe). A capture endpoint is listed when one of their processes holds an
+# active audio session on it (Windows Core Audio). Works for any meeting platform, in the app or in a browser tab.
+# Reads only; never touches the apps or the audio devices.
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 Add-Type -Language CSharp -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -56,8 +54,9 @@ namespace Pma {
   [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator { }
 
   public static class CoreAudio {
-    // Capture endpoints (eCapture = 1, DEVICE_STATE_ACTIVE = 1) on which one of the given processes has an active session.
-    public static string[] CaptureDevicesUsedBy(int[] pids) {
+    // "device name<TAB>pid" for every active session of the given processes on a capture endpoint
+    // (eCapture = 1, DEVICE_STATE_ACTIVE = 1).
+    public static string[] CaptureSessionsOf(int[] pids) {
       var found = new List<string>();
       var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
       IMMDeviceCollection devices; enumerator.EnumAudioEndpoints(1, 1, out devices);
@@ -68,10 +67,11 @@ namespace Pma {
         object instance; if (device.Activate(ref manager, 23, IntPtr.Zero, out instance) != 0) continue;
         IAudioSessionEnumerator sessions; ((IAudioSessionManager2)instance).GetSessionEnumerator(out sessions);
         int n; sessions.GetCount(out n);
+        string name = null;
         for (int j = 0; j < n; j++) {
           IAudioSessionControl2 session; sessions.GetSession(j, out session);
           int pid, state; session.GetProcessId(out pid); session.GetState(out state);
-          if (state == 1 && Array.IndexOf(pids, pid) >= 0) { found.Add(Name(device)); break; }
+          if (state == 1 && Array.IndexOf(pids, pid) >= 0) { if (name == null) name = Name(device); found.Add(name + "\t" + pid); }
         }
       }
       return found.ToArray();
@@ -86,30 +86,26 @@ namespace Pma {
 }
 '@
 
-$button = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
-$all = [System.Windows.Automation.Condition]::TrueCondition
-$root = [System.Windows.Automation.AutomationElement]::RootElement
-
 function Read-State {
-  $zoom = @(Get-Process Zoom -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
-  $state = [ordered]@{ meeting = $false; muted = $null; device = $null }
-  if (-not $zoom.Count) { return $state }
-  try { $state.device = @([Pma.CoreAudio]::CaptureDevicesUsedBy([int[]]$zoom))[0] } catch { }
-  foreach ($window in $root.FindAll([System.Windows.Automation.TreeScope]::Children, $all)) {
-    if ($zoom -notcontains $window.Current.ProcessId) { continue }
-    foreach ($b in $window.FindAll([System.Windows.Automation.TreeScope]::Descendants, $button)) {
-      $name = $b.Current.Name
-      # The button offers the opposite action: "Unmute…" while muted, "Mute…" while the mic is on.
-      if ($name -match '^(?i)(unmute|bật tiếng|join audio|tham gia âm thanh)') { $state.meeting = $true; $state.muted = $true; return $state }
-      if ($name -match '^(?i)(mute|tắt tiếng)') { $state.meeting = $true; $state.muted = $false; return $state }
+  $names = @($Apps -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+  $owners = @{}
+  foreach ($p in @(Get-Process -Name $names -ErrorAction SilentlyContinue)) { $owners[[int]$p.Id] = $p.ProcessName }
+  $devices = [ordered]@{}
+  if ($owners.Count) {
+    foreach ($row in [Pma.CoreAudio]::CaptureSessionsOf([int[]]@($owners.Keys))) {
+      $name, $id = $row -split "`t"
+      if (-not $name) { continue }
+      if (-not $devices.Contains($name)) { $devices[$name] = New-Object System.Collections.Generic.List[string] }
+      $app = $owners[[int]$id]
+      if ($devices[$name] -notcontains $app) { $devices[$name].Add($app) }
     }
   }
-  return $state
+  return @{ devices = @($devices.Keys | ForEach-Object { @{ device = $_; apps = @($devices[$_]) } }) }
 }
 
 do {
   if ($ParentPid -and -not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) { break }
-  try { $line = Read-State | ConvertTo-Json -Compress } catch { $line = (@{ meeting = $false; muted = $null; device = $null; error = $_.Exception.Message } | ConvertTo-Json -Compress) }
+  try { $line = Read-State | ConvertTo-Json -Compress -Depth 5 } catch { $line = (@{ devices = @(); error = $_.Exception.Message } | ConvertTo-Json -Compress) }
   [Console]::Out.WriteLine($line); [Console]::Out.Flush()
   if (-not $Once) { Start-Sleep -Milliseconds ([int]($IntervalSeconds * 1000)) }
 } while (-not $Once)

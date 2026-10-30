@@ -9,10 +9,13 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
   pma sources                      nguồn loa đang có tiếng (suggested)
   pma select <index>               cấp quyền nguồn loa (sau khi người dùng đồng ý)
-  pma select-mic <index>           đổi micro kênh "Tôi" (mặc định: micro Zoom đang dùng, hoặc micro mặc định của Windows)
-  pma listen [--no-mic]            bật nghe, chờ tới LISTENING. Micro "Tôi" bật sẵn, chỉ lấy tiếng khi nút micro Zoom đang bật
+  pma select-mic <index>           đổi micro kênh "Tôi" (mặc định: micro mà ứng dụng họp đang dùng, hoặc micro mặc định của Windows)
+  pma listen [--no-mic] [--save-audio [--keep-days 7]]
+                                   bật nghe, chờ tới LISTENING. Micro "Tôi" luôn mở, mọi nền tảng họp (tiếng loa lọt vào micro bị bỏ)
+                                   --save-audio: lưu thêm file WAV trên máy này (không gửi đi), tự xoá sau --keep-days ngày (1–90, mặc định 7)
   pma follow [--batch 60] [--max 40] [--after N]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
-  pma status | pause | stop        trạng thái / tạm dừng / kết thúc (ghi RAW.md)
+  pma status | pause | stop        trạng thái / tạm dừng (giữ mô hình, pma listen lại có chữ ngay) / kết thúc (ghi RAW.md)
+  pma audio [list | purge [--older-than N]]   xem / xoá âm thanh đã lưu: purge xoá file hết hạn, --older-than N xoá file cũ hơn N ngày (0 = tất cả)
   pma read [--after N] [--limit 100] [--session ID]
   pma note --text T --sources 1,2 [--kind observation]
   pma summary --file SUMMARY.md --sources 1,2,3 [--session ID]
@@ -35,7 +38,8 @@ const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
 const FLAG_LABELS: Record<string, string> = { LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém' };
 const NOTE_EVERY_MS = 10 * 60000; const LAG_WARN_SECONDS = 10;
-const MIC_GATE: Record<string, string> = { ON: 'đang lấy tiếng (micro Zoom đang bật)', MUTED: 'tạm bỏ tiếng (micro Zoom đang tắt)', NO_MEETING: 'tạm bỏ tiếng (chưa thấy cửa sổ họp Zoom)', UNKNOWN: 'tạm bỏ tiếng (không đọc được trạng thái micro Zoom)' };
+const micWhy = (by?: string) => !by ? '' : by.startsWith('meeting_app:') ? `micro ${by.slice(12)} đang dùng` : ({ windows_default: 'micro mặc định của Windows', selected: 'micro đã chọn', NO_MICROPHONE_FOUND: 'không thấy micro nào' } as Record<string, string>)[by] ?? by;
+const megabytes = (bytes: number) => Math.round(bytes / 1048576);
 const GLOSSARY_HELP = `pma glossary                      xem bảng tên
 pma glossary add <Tên đúng> --variants "nghe sai 1,nghe sai 2"   thêm cách ASR hay nghe sai một tên
 pma glossary remove <Tên đúng>    xoá tên khỏi bảng
@@ -70,12 +74,15 @@ async function follow(flags: Record<string, string>) {
     batch = [];
   };
   // Sau mỗi lô: báo khi chữ ra chậm hơn lời nói, và nhắc ghi chú cuốn chiếu mỗi 10 phút nghe.
-  let lastReminder = 0; let lastCheck = 0; let micGate: string | undefined;
+  let lastReminder = 0; let lastCheck = 0; let micDevice: string | undefined; let micChanged: string | undefined; let micError: string | undefined;
   const checkHealth = async () => {
     lastCheck = Date.now();
     const s = await call('status').catch(() => null); if (!s || s.captureState !== 'LISTENING') return;
-    const gate = s.captureInfo?.micGate;
-    if (gate && gate !== micGate) { micGate = gate; console.log(`MICRO TÔI: ${MIC_GATE[gate] ?? gate}${s.captureInfo?.micDevice ? ' · ' + s.captureInfo.micDevice : ''}`); }
+    const info = s.captureInfo ?? {};
+    if (info.micDevice && info.micDevice !== micDevice) { micDevice = info.micDevice; console.log(`MICRO TÔI: đang thu ${info.micDevice} (${micWhy(info.micSelectedBy)})`); }
+    if (info.micError && info.micError !== micError) { micError = info.micError; console.log(`MICRO TÔI: không mở được micro, chỉ nghe loa (${info.micError})`); }
+    if (info.micDeviceChanged && info.micDeviceChanged.to !== micChanged) { micChanged = info.micDeviceChanged.to; console.log(`MICRO TÔI ĐỔI: ứng dụng họp (${info.micDeviceChanged.app}) đang dùng "${info.micDeviceChanged.to}", máy vẫn thu "${info.micDeviceChanged.from ?? micDevice}". Muốn theo micro mới: pma pause rồi pma listen.`); }
+    if (info.audioSaveError) console.log(`LƯU ÂM THANH LỖI: ${info.audioSaveError}`);
     const lag = s.captureInfo?.lagSeconds;
     if (typeof lag === 'number' && lag > LAG_WARN_SECONDS) console.log(`CẢNH BÁO TRỄ: chữ đang ra chậm ${Math.round(lag)} giây so với lời nói. Dừng việc nặng đang chạy trên máy.`);
     const since = Math.max(Date.parse(s.lastNoteAt ?? '') || 0, Date.parse(s.captureInfo?.listeningSince ?? '') || 0);
@@ -109,22 +116,33 @@ async function main() {
       const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at });
       const opened = flags.link ? await call('open', { url: flags.link }) : undefined;
       const load = status.expectedLoadSeconds ? `, lần trước mất khoảng ${Math.round(status.expectedLoadSeconds)} giây` : '';
-      return out({ ...status, opened, next: `Mô hình đang nạp sẵn (WARMING${load}). pma sources → hỏi người dùng → pma select <index> → pma listen (micro "Tôi" bật sẵn, theo nút micro Zoom) → Monitor "pma follow"` + (status.me ? '' : '. Chưa biết tên người dùng: thêm --me "Tên" ở lần start sau.') });
+      return out({ ...status, opened, next: `Mô hình đang nạp sẵn (WARMING${load}). pma sources → hỏi người dùng → pma select <index> → pma listen (micro "Tôi" luôn mở) → Monitor "pma follow"` + (status.me ? '' : '. Chưa biết tên người dùng: thêm --me "Tên" ở lần start sau.') });
     }
     case 'sources': { const r = await call('sources', { levels: flags.levels !== 'false' }); return out({ suggested: r.suggested, devices: r.devices.map((d: any) => ({ index: d.index, name: d.name, kind: d.kind === 'microphone' ? 'mic' : 'speaker', default: d.isDefaultOutput || undefined, frames: d.level?.framesReceived, peak: d.level?.peak })) }); }
     case 'select': return out(await call('select', { ...session, deviceIndex: Number(positional[0]) }));
     // Micro "Tôi" is on by default (owner, 30/10/2026); select-mic only picks a different microphone.
     case 'select-mic': return out(await call('selectMic', { ...session, deviceIndex: Number(positional[0]), consent: true }));
     case 'listen': {
-      await call('listen', { ...session, mic: flags['no-mic'] !== 'true' });
+      const keepDays = flags['keep-days'] ? Number(flags['keep-days']) : undefined;
+      if (keepDays !== undefined && !(Number.isInteger(keepDays) && keepDays >= 1 && keepDays <= 90)) throw new Error('--keep-days phải là số nguyên từ 1 đến 90');
+      await call('listen', { ...session, mic: flags['no-mic'] !== 'true', saveAudio: flags['save-audio'] === 'true', ...(keepDays ? { keepDays } : {}) });
       // Model load took up to ~3 minutes on 30/10; wait for it instead of reporting a failure.
       const deadline = Date.now() + 300000; let status = await call('status');
       while (['WARMING', 'WARM_READY', 'LOADING_ASR', 'WAITING_FOR_SOURCE'].includes(status.captureState) && Date.now() < deadline) { await new Promise(r => setTimeout(r, 1500)); status = await call('status'); }
-      return out({ captureState: status.captureState, lastError: status.lastError, device: status.captureInfo?.device, mic: status.captureInfo?.micDevice ?? undefined, micGate: status.captureInfo?.micGate ? MIC_GATE[status.captureInfo.micGate] ?? status.captureInfo.micGate : undefined, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, rms: status.captureInfo?.rms, next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
+      return out({ captureState: status.captureState, lastError: status.lastError, device: status.captureInfo?.device, mic: status.captureInfo?.micDevice ?? undefined, micWhy: status.captureInfo?.micDevice ? micWhy(status.captureInfo.micSelectedBy) : status.captureInfo?.micError, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, waitedForSourceSeconds: status.captureInfo?.waitedForSourceSeconds, rms: status.captureInfo?.rms, audio: status.audio ? { dir: status.audio.dir, expiresAt: status.audio.expiresAt, note: 'WAV ~0,7 GB/giờ cho cả loa và micro; tự xoá khi hết hạn hoặc pma audio purge' } : undefined, next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
     }
     case 'follow': return follow(flags);
     case 'status': return out(await call('status'));
     case 'pause': return out(await call('pause', session));
+    case 'audio': {
+      const action = positional[0] || 'list';
+      if (action !== 'list' && action !== 'purge') throw new Error('pma audio [list | purge [--older-than N]]');
+      const olderThanDays = flags['older-than'] !== undefined ? Number(flags['older-than']) : undefined;
+      if (olderThanDays !== undefined && !(olderThanDays >= 0)) throw new Error('--older-than phải là số ngày (0 trở lên)');
+      const r = await call('audio', { action, olderThanDays });
+      if (action === 'list') return out(r.map((item: any) => ({ session: item.sessionId, title: item.title, dir: item.dir, files: item.files, mb: megabytes(item.bytes), expiresAt: item.expiresAt })));
+      return out({ removed: r.removed.length, kept: r.kept, freedMb: megabytes(r.freedBytes) });
+    }
     case 'stop': { const r = await call('finish', session); return out({ session: r.session, raw: r.raw, next: 'pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }
     case 'read': {
       const r = await call('read', { ...session, after: Number(flags.after || 0), limit: Number(flags.limit || 100) });
