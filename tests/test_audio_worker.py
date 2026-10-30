@@ -147,6 +147,192 @@ class LanguageRoutingTests(unittest.TestCase):
         self.assertEqual((segments, language, main.calls), (['lao:lo'], 'lo', []))
 
 
+class LaoLanguageTokenTests(unittest.TestCase):
+    """CTranslate2 flags BuzzASR English-only; the proxy and its checks make faster-whisper decode with <|lo|>."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        self.worker = audio_worker
+
+    def whisper(self, multilingual=False, reported='lo', tokens=None):
+        ids = {'<|startoftranscript|>': 10, '<|lo|>': 21, '<|vi|>': 22, '<|transcribe|>': 30, '<|translate|>': 31}
+        ids.update(tokens or {})
+
+        class Inner:
+            device = 'cuda'
+
+            def __init__(self):
+                self.is_multilingual = multilingual
+
+            def generate(self, *args):
+                return 'generated'
+
+        class Tokenizer:
+            def token_to_id(self, name):
+                return ids.get(name)
+
+        class Info:
+            language = reported
+
+        class Whisper:
+            model = Inner()
+            hf_tokenizer = Tokenizer()
+
+            def transcribe(self, audio, language=None):
+                return [], Info()
+        return Whisper()
+
+    def config(self, lang_ids):
+        import json
+        import tempfile
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        (Path(folder.name) / 'config.json').write_text(json.dumps({'lang_ids': lang_ids}), encoding='utf-8')
+        return folder.name
+
+    def test_proxy_reports_multilingual_and_forwards_everything_else(self):
+        whisper = self.whisper()
+        proxy = self.worker.MultilingualCT2(whisper.model)
+        self.assertTrue(proxy.is_multilingual)
+        self.assertFalse(whisper.model.is_multilingual)  # the real model is untouched
+        self.assertEqual((proxy.device, proxy.generate()), ('cuda', 'generated'))
+
+    def test_token_is_enabled_only_when_it_is_in_lang_ids_and_the_start_sequence(self):
+        whisper = self.whisper()
+        self.assertTrue(self.worker.enable_language_tokens(whisper, self.config([20, 21, 22]), 'lo'))
+        self.assertTrue(whisper.model.is_multilingual)
+
+    def test_a_token_missing_from_lang_ids_or_the_vocabulary_leaves_the_model_alone(self):
+        whisper = self.whisper()
+        original = whisper.model
+        self.assertFalse(self.worker.enable_language_tokens(whisper, self.config([20, 22]), 'lo'))
+        self.assertIs(whisper.model, original)
+        no_token = self.whisper(tokens={'<|lo|>': None})
+        self.assertFalse(self.worker.enable_language_tokens(no_token, self.config([21]), 'lo'))
+        self.assertFalse(self.worker.enable_language_tokens(self.whisper(), '.', 'lo'))  # no config.json
+
+    def test_a_model_that_still_reports_another_language_is_reverted(self):
+        whisper = self.whisper(reported='en')
+        original = whisper.model
+        self.assertFalse(self.worker.enable_language_tokens(whisper, self.config([21]), 'lo'))
+        self.assertIs(whisper.model, original)
+
+    def test_an_already_multilingual_model_is_not_wrapped(self):
+        whisper = self.whisper(multilingual=True)
+        original = whisper.model
+        self.assertTrue(self.worker.enable_language_tokens(whisper, '.', 'lo'))
+        self.assertIs(whisper.model, original)
+
+    def test_real_buzzasr_start_sequence_carries_the_lao_token(self):
+        folder = Path(__file__).resolve().parents[1] / '.local' / 'models' / 'buzzasr-lao-ct2'
+        if not (folder / 'tokenizer.json').is_file():
+            self.skipTest('BuzzASR not installed')
+        import json
+        import tokenizers
+        from faster_whisper.tokenizer import Tokenizer
+        hf = tokenizers.Tokenizer.from_file(str(folder / 'tokenizer.json'))
+        lo = hf.token_to_id('<|lo|>')
+        self.assertIn(lo, json.loads((folder / 'config.json').read_text(encoding='utf-8'))['lang_ids'])
+        self.assertIn(lo, Tokenizer(hf, True, task='transcribe', language='lo').sot_sequence)
+
+
+class LanguagePickTests(unittest.TestCase):
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        self.worker = audio_worker
+
+    def segment(self, text, logprob, tokens=10):
+        return type('Segment', (), {'text': text, 'avg_logprob': logprob, 'tokens': list(range(tokens))})()
+
+    def test_score_is_the_token_weighted_mean_and_empty_text_is_worst(self):
+        score = self.worker.segments_score
+        self.assertAlmostEqual(score([self.segment('a', -0.2, 10), self.segment('b', -0.8, 30)]), -0.65)
+        self.assertEqual(score([]), float('-inf'))
+
+    def test_the_second_decoder_runs_only_when_vietnamese_is_not_clearly_heard(self):
+        should = self.worker.should_pick_language
+        self.assertFalse(should('vi', 0.95, 0.95, 2.0))  # a clear Vietnamese reading is trusted, even when short
+        self.assertTrue(should('vi', 0.5, 0.5, 8.0))
+        self.assertTrue(should('vi', 1.0, 0.05, 2.0))  # detector heard "something else": short Lao often looks like this
+        self.assertTrue(should('lo', 0.9, 0.05, 2.0))  # confident Lao but too short to trust
+        self.assertFalse(should('lo', 0.9, 0.05, 8.0))  # confident and long
+        self.assertFalse(should('lo', 0.9, 0.05, None))  # unknown length counts as long
+        self.assertTrue(should('lo', 0.6, 0.3, 8.0))
+        self.assertTrue(should('vi', None, None, 8.0))
+
+    def test_the_more_confident_decoder_wins_and_ties_go_to_vietnamese(self):
+        pick = self.worker.pick_by_score
+        vi, lo = [self.segment('xin chào các bạn', -0.3)], [self.segment('ສະບາຍດີ', -0.9)]
+        self.assertEqual(pick(vi, lo), 'vi')
+        self.assertEqual(pick([self.segment('chào', -0.8)], [self.segment('ສະບາຍດີ', -0.3)]), 'lo')
+        self.assertEqual(pick([self.segment('chào', -0.5)], [self.segment('ສະບາຍດີ', -0.5)], 0.0), 'vi')
+
+    def test_a_bias_helps_lao_only_inside_its_margin(self):
+        vi, lo = [self.segment('chào', -0.45)], [self.segment('ສະບາຍດີ', -0.5)]
+        self.assertEqual(self.worker.pick_by_score(vi, lo, 0.0), 'vi')
+        self.assertEqual(self.worker.pick_by_score(vi, lo, 0.1), 'lo')
+
+    def test_an_invented_stock_phrase_never_beats_lao_text(self):
+        invented = [self.segment('Hãy subscribe cho kênh Ghiền Mì Gõ', -0.1)]
+        self.assertEqual(self.worker.pick_by_score(invented, [self.segment('ສະບາຍດີ', -0.9)]), 'lo')
+        self.assertEqual(self.worker.pick_by_score(invented, []), 'vi')  # nothing better to offer
+
+    def fake(self, name, detected=None, probs=(), score=-0.5, text=None, device='cuda'):
+        calls, options_seen = [], []
+
+        class Inner:
+            pass
+        Inner.device = device
+
+        class Model:
+            model = Inner()
+
+            def transcribe(self, audio, language=None, **options):
+                calls.append(language)
+                options_seen.append(options)
+                info = type('Info', (), {'language': detected if language is None else language, 'all_language_probs': list(probs)})()
+                segments = [type('Segment', (), {'text': text or f'{name}:{language}', 'avg_logprob': score, 'tokens': list(range(10))})()]
+                return segments, info
+        model = Model()
+        model.calls, model.options = calls, options_seen
+        return model
+
+    def test_a_short_chunk_the_detector_called_vietnamese_but_lao_decodes_better_goes_to_lao(self):
+        import numpy as np
+        main = self.fake('main', 'vi', [('vi', 0.05), ('th', 0.0)], score=-1.2)
+        lao = self.fake('lao', score=-0.4)
+        segments, language, probability = self.worker.transcribe_chunk(main, np.zeros(32000, dtype=np.float32), ['vi', 'lo'], lao)
+        self.assertEqual((language, [s.text for s in segments]), ('lo', ['lao:lo']))
+        self.assertEqual((main.calls, lao.calls), ([None], ['lo']))  # the detection pass is reused as the Vietnamese decode
+        self.assertEqual(probability, 0.0)  # the detector disagreed; the result stays flaggable as LANG_UNSURE
+
+    def test_the_vietnamese_decode_wins_when_it_is_more_confident(self):
+        main = self.fake('main', 'vi', [('vi', 0.3)], score=-0.2)
+        lao = self.fake('lao', score=-0.9)
+        segments, language, _ = self.worker.transcribe_chunk(main, None, ['vi', 'lo'], lao)
+        self.assertEqual((language, [s.text for s in segments]), ('vi', ['main:None']))
+
+    def test_clear_vietnamese_costs_no_second_decode_and_pick_can_be_switched_off(self):
+        main, lao = self.fake('main', 'vi', [('vi', 0.97)]), self.fake('lao')
+        self.worker.transcribe_chunk(main, None, ['vi', 'lo'], lao)
+        self.assertEqual((main.calls, lao.calls), ([None], []))
+        main, lao = self.fake('main', 'vi', [('vi', 0.05)]), self.fake('lao')
+        self.worker.transcribe_chunk(main, None, ['vi', 'lo'], lao, pick=False)
+        self.assertEqual(lao.calls, [])
+
+    def test_beam_is_wide_on_cuda_and_one_elsewhere(self):
+        beam = self.worker.beam_for
+        self.assertEqual(beam(self.fake('m', device='cuda')), self.worker.ASR_BEAM_CUDA)
+        self.assertEqual(beam(self.fake('m', device='cpu')), 1)
+        self.assertEqual(beam(object()), 1)
+        self.assertEqual(beam(self.fake('m', device='cuda'), 2), 2)
+        main = self.fake('main', 'vi', [('vi', 0.97)], device='cuda')
+        self.worker.transcribe_chunk(main, None, ['vi', 'lo'], self.fake('lao'))
+        self.assertEqual(main.options[0]['beam_size'], self.worker.ASR_BEAM_CUDA)
+
+
 class AudioInfrastructureTests(unittest.TestCase):
     def test_resample_lengths(self):
         import av

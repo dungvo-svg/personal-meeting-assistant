@@ -121,6 +121,15 @@ MAX_CHUNK_SECONDS = 20
 GROWTH_LIMIT_SECONDS = MAX_CHUNK_SECONDS + 10
 LANG_UNSURE_BELOW = 0.65
 LAO_LOW_LOGPROB = -1.0
+# Mixed sessions: when the detector does not hear Vietnamese (probability below LANG_VI_SURE) the chunk is decoded by both
+# the main and the Lao model and the more confident transcript wins. Measured on FLEURS cut to 1.5-3 s, the detector alone
+# calls ~22% of Lao clips Vietnamese (the main model then invents "Hãy subscribe cho kênh..."); its Vietnamese side is
+# reliable, so a clear Vietnamese reading is never second-guessed. A Lao reading that is already confident and long is kept.
+LANG_VI_SURE = 0.6
+LANG_LAO_SURE_SHARE = 0.85
+LANG_LAO_SURE_SECONDS = 4.0
+LANG_PICK_BIAS = 0.1  # added to the Lao score: its log-probs run a little lower than the main model's on the same speech
+LANG_PICK_DEFAULT = True
 
 
 def split_point(block_rms, block_sizes, rate, window_seconds=3):
@@ -159,11 +168,50 @@ def collapse_repeats(text):
 
 
 LAO_OPTIONS = {'no_repeat_ngram_size': 3, 'repetition_penalty': 1.2}
+ASR_BEAM_CUDA = 5  # GPU beam width (FLEURS 30/10: Lao CER 22.6 -> 21.3%, vi 4.3 -> 4.1%, ~7% slower); the CPU keeps 1 to stay real time
 
 
-def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None):
+def beam_for(model, beam=None):
+    # An explicit beam wins; otherwise the GPU width for a CUDA model and 1 for anything else (CPU, test doubles).
+    if beam is not None:
+        return beam
+    try:
+        return ASR_BEAM_CUDA if 'cuda' in str(model.model.device) else 1
+    except AttributeError:
+        return 1
+
+
+def segments_score(segments):
+    # Mean token log-probability of a transcript, weighted by segment length; the more confident decoder has the
+    # higher (less negative) value. No text at all scores worst.
+    weight = total = 0.0
+    for segment in segments:
+        tokens = max(1, len(getattr(segment, 'tokens', None) or ()))
+        total += getattr(segment, 'avg_logprob', -10.0) * tokens
+        weight += tokens
+    return total / weight if weight else float('-inf')
+
+
+def should_pick_language(language, share, vi_probability, seconds):
+    # Only a chunk the detector does not hear as Vietnamese pays for a second decoder, unless it is already a long,
+    # confident Lao one (an unknown length counts as long). Unknown probabilities (None) count as unsure.
+    if vi_probability is not None and vi_probability >= LANG_VI_SURE:
+        return False
+    confident_lao = language == 'lo' and share is not None and share >= LANG_LAO_SURE_SHARE and (seconds is None or seconds >= LANG_LAO_SURE_SECONDS)
+    return not confident_lao
+
+
+def pick_by_score(vi_segments, lo_segments, lao_bias=LANG_PICK_BIAS):
+    # Returns 'vi' or 'lo', whichever transcript the decoders were more sure of; ties go to Vietnamese. A Vietnamese
+    # decode that is only a stock phrase Whisper invents over non-Vietnamese audio counts for nothing.
+    vi_text = ' '.join(getattr(segment, 'text', '') for segment in vi_segments).lower()
+    vi_score = float('-inf') if any(phrase in vi_text for phrase in SILENCE_PHRASES) else segments_score(vi_segments)
+    return 'lo' if segments_score(lo_segments) + lao_bias > vi_score else 'vi'
+
+
+def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None, pick=None, beam=None):
     # max_new_tokens stops repetition loops on noisy or misdetected chunks.
-    options = {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': 1, 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
+    options = {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': beam_for(model, beam), 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
     if languages == ['lo'] and lao_model:
         segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
         return segments, 'lo', None
@@ -179,6 +227,15 @@ def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None
     probabilities = dict(info.all_language_probs or [])
     scores = {'vi': probabilities.get('vi', 0.0), 'lo': probabilities.get('lo', 0.0) + probabilities.get('th', 0.0)}
     language = max(languages, key=lambda code: scores[code])
+    total = scores['vi'] + scores['lo']
+    share = scores[language] / total if total else None
+    seconds = len(waveform16) / 16000 if waveform16 is not None else None
+    if (LANG_PICK_DEFAULT if pick is None else pick) and lao_model and should_pick_language(language, share, probabilities.get('vi'), seconds):
+        # Reuse the detection pass when it already decoded Vietnamese with the main model.
+        vi_segments = list(segments) if language == 'vi' and not vi_model and info.language == 'vi' else list((vi_model or model).transcribe(waveform16, language='vi', **options)[0])
+        lo_segments = list(lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)[0])
+        language = pick_by_score(vi_segments, lo_segments)
+        return (lo_segments if language == 'lo' else vi_segments), language, round(scores[language] / total, 3) if total else None
     if language == 'lo' and lao_model:
         # Lao goes to the Lao model (Lao script); the multilingual model would write Thai script.
         segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
@@ -187,7 +244,6 @@ def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None
         segments, _ = vi_model.transcribe(waveform16, language='vi', **options)
     elif language != info.language:
         segments, _ = model.transcribe(waveform16, language=language, **options)
-    total = scores['vi'] + scores['lo']
     return segments, language, round(scores[language] / total, 3) if total else None
 
 
@@ -208,7 +264,44 @@ def asr_profile():
     return {'main': path(profile.get('main')) or MODELS / 'small', 'vi': path(profile.get('vi')), 'lo': path(profile.get('lo', 'buzzasr-lao-ct2'))}
 
 
-def load_models(model_path, lao_model_path, device_choice, threads, vi_model_path=None):
+class MultilingualCT2:
+    # CTranslate2 calls BuzzASR (53,474-entry vocabulary) English-only, so faster-whisper drops the language and task
+    # tokens and ignores language='lo'. The model does carry <|lo|>; this reports it as multilingual and forwards the rest.
+    is_multilingual = True
+
+    def __init__(self, model):
+        self._model = model
+
+    def __getattr__(self, name):
+        return getattr(self._model, name)
+
+
+def enable_language_tokens(whisper_model, model_dir, language='lo'):
+    """Make faster-whisper decode with <|language|> for an English-flagged model. Returns whether it is in effect;
+    it is left untouched (and False) unless the token exists in lang_ids, lands in the start sequence and the
+    wrapped model really reports that language."""
+    import numpy as np
+    from faster_whisper.tokenizer import Tokenizer
+    if whisper_model.model.is_multilingual:
+        return True
+    token_id = whisper_model.hf_tokenizer.token_to_id(f'<|{language}|>')
+    try:
+        lang_ids = json.loads((Path(model_dir) / 'config.json').read_text(encoding='utf-8')).get('lang_ids') or []
+    except (OSError, ValueError):
+        lang_ids = []
+    if token_id is None or token_id not in lang_ids:
+        return False
+    if token_id not in Tokenizer(whisper_model.hf_tokenizer, True, task='transcribe', language=language).sot_sequence:
+        return False
+    original = whisper_model.model
+    whisper_model.model = MultilingualCT2(original)
+    if whisper_model.transcribe(np.zeros(16000, dtype=np.float32), language=language)[1].language != language:
+        whisper_model.model = original
+        return False
+    return True
+
+
+def load_models(model_path, lao_model_path, device_choice, threads, vi_model_path=None, lao_token=True):
     """Main model on CUDA when it works (pip NVIDIA libraries), else CPU. The Lao and Vietnamese models are
     Whisper large size: they load only on CUDA, on CPU they cannot keep up with a live meeting."""
     import numpy as np
@@ -221,7 +314,8 @@ def load_models(model_path, lao_model_path, device_choice, threads, vi_model_pat
             list(model.transcribe(np.zeros(16000, dtype=np.float32), language='vi')[0])
             lao = gpu(lao_model_path) if lao_model_path and Path(lao_model_path).is_dir() else None
             vi = gpu(vi_model_path) if vi_model_path and Path(vi_model_path).is_dir() else None
-            return model, lao, vi, {'device': 'cuda', 'mainModel': Path(model_path).name, 'laoModel': Path(lao_model_path).name if lao else None, 'viModel': Path(vi_model_path).name if vi else None}
+            forced = bool(lao) and lao_token and enable_language_tokens(lao, lao_model_path, 'lo')
+            return model, lao, vi, {'device': 'cuda', 'mainModel': Path(model_path).name, 'laoModel': Path(lao_model_path).name if lao else None, 'viModel': Path(vi_model_path).name if vi else None, 'laoLanguageToken': forced}
         except Exception as exc:
             if device_choice == 'cuda':
                 raise
@@ -231,7 +325,7 @@ def load_models(model_path, lao_model_path, device_choice, threads, vi_model_pat
     # CPU: only a small main model keeps up in real time.
     cpu_model = model_path if any(size in Path(model_path).name for size in ('small', 'base', 'tiny')) else MODELS / 'small'
     model = WhisperModel(str(cpu_model), device='cpu', compute_type='int8', cpu_threads=threads, num_workers=1, local_files_only=True)
-    return model, None, None, {'device': 'cpu', 'mainModel': Path(cpu_model).name, 'laoModel': None, 'viModel': None, 'cudaFallback': fallback}
+    return model, None, None, {'device': 'cpu', 'mainModel': Path(cpu_model).name, 'laoModel': None, 'viModel': None, 'laoLanguageToken': False, 'cudaFallback': fallback}
 
 
 def load_recording(path):
