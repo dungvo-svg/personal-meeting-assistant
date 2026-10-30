@@ -1,7 +1,7 @@
 // `pma`: how Claude (or a person) drives the meeting runtime. Replies are compact JSON, except
 // `follow` and `read`, which print transcript lines for Claude to read.
 import { readFileSync } from 'node:fs';
-import { call } from './client.js';
+import { call, daemonInfo } from './client.js';
 import { foldRuns, isHallucination, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
@@ -12,6 +12,8 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma select-mic <index>           đổi micro kênh "Tôi" (mặc định: micro Zoom đang dùng, hoặc micro mặc định của Windows)
   pma listen [--no-mic]            bật nghe, chờ tới LISTENING. Micro "Tôi" bật sẵn, chỉ lấy tiếng khi nút micro Zoom đang bật
   pma follow [--batch 60] [--max 40] [--after N]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
+  pma live                         đường dẫn màn hình chung (chữ gốc + bản dịch Lào→Việt) để chia sẻ cửa sổ trong Zoom/Meet
+  pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
   pma status | pause | stop        trạng thái / tạm dừng / kết thúc (ghi RAW.md)
   pma read [--after N] [--limit 100] [--session ID]
   pma note --text T --sources 1,2 [--kind observation]
@@ -123,6 +125,14 @@ async function main() {
       return out({ captureState: status.captureState, lastError: status.lastError, device: status.captureInfo?.device, mic: status.captureInfo?.micDevice ?? undefined, micGate: status.captureInfo?.micGate ? MIC_GATE[status.captureInfo.micGate] ?? status.captureInfo.micGate : undefined, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, rms: status.captureInfo?.rms, next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
     }
     case 'follow': return follow(flags);
+    case 'live': {
+      await call('ping'); const url = daemonInfo()!.url + '/live';
+      return out({ url, how: 'Mở đường dẫn này trong trình duyệt, rồi chia sẻ CỬA SỔ trình duyệt đó trong Zoom/Meet (Share screen → Window). Dịch vụ chỉ nghe trên máy này; người dự chỉ thấy cửa sổ bạn chia sẻ.', next: 'Chạy Monitor "pma follow --batch 15"; dịch các đoạn lo rồi pma translate --file t.json. Chỉ chia sẻ cửa sổ này, không chia sẻ cả màn hình.' });
+    }
+    case 'translate': {
+      const items = flags.file ? JSON.parse(readFileSync(flags.file, 'utf8')) : [{ sourceId: Number(flags.source), text: flags.text }];
+      return out(await call('translate', { ...session, items }));
+    }
     case 'status': return out(await call('status'));
     case 'pause': return out(await call('pause', session));
     case 'stop': { const r = await call('finish', session); return out({ session: r.session, raw: r.raw, next: 'pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }

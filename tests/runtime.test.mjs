@@ -193,3 +193,40 @@ test('follow prints long segments on continuation lines that Monitor will not cu
   assert.ok(parts.length > 1 && parts.every(p => p.length <= 455) && parts[1].startsWith('  ↳ '));
   assert.deepEqual(wrapLine('#2 vi: ngắn'), ['#2 vi: ngắn']);
 });
+test('translations: saved for Lao segments, replaced on retry, rejected for other languages or sessions; RAW and live state carry them', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp Việt Lào'); const id = r.session.id;
+    const vi = r.ingest('Kho số hai đủ hàng.', 'local_asr_unverified', 0, 3, '', 'cap', 'vi');
+    const lo = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 3, 6, '', 'cap', 'lo');
+    const mic = r.ingest('ສະບາຍດີ ທຸກຄົນ', 'local_asr_unverified', 6, 9, 'CHANNEL_MIC', 'cap', 'lo');
+    const ghost = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 9, 12, 'LIKELY_HALLUCINATION', 'cap', 'lo');
+    assert.throws(() => r.translate(id, [{ sourceId: vi, text: 'Kho số hai đủ hàng.' }]), /TRANSLATE_ONLY_LAO/);
+    assert.throws(() => r.translate(id, [{ sourceId: ghost + 99, text: 'x' }]), /SOURCE_OUTSIDE_SESSION/);
+    assert.throws(() => r.translate(id, [{ sourceId: lo, text: '   ' }]), /INVALID_TRANSLATION/);
+    assert.throws(() => r.translate(id, [{ sourceId: lo, text: 'x'.repeat(2001) }]), /INVALID_TRANSLATION/);
+    assert.throws(() => r.translate(id, [{ sourceId: lo, text: 'Chào bạn.' }, { sourceId: vi, text: 'x' }]), /TRANSLATE_ONLY_LAO/);
+    assert.equal(r.liveState().segments.find(s => s.id === lo).translation, null, 'a rejected batch saves nothing');
+    assert.deepEqual(r.translate(id, [{ sourceId: lo, text: 'Xin chào.' }]), { saved: 1, replaced: 0, label: 'Claude dịch' });
+    assert.equal(r.translate(id, [{ sourceId: lo, text: 'Xin chào bạn.' }, { sourceId: mic, text: 'Xin chào mọi người.' }]).replaced, 1);
+    const live = r.liveState();
+    assert.deepEqual(live.segments.map(s => s.id), [vi, lo, mic]); // silence phrase hidden
+    assert.equal(live.segments[1].translation, 'Xin chào bạn.'); assert.equal(live.segments[2].mic, true); assert.equal(live.segments[0].mic, false);
+    const raw = readFileSync(r.writeRaw(id).path, 'utf8');
+    assert.ok(raw.includes(`#${lo} (nghe · lo) ສະບາຍດີ\n  → (Claude dịch) Xin chào bạn.`));
+    assert.ok(raw.includes('  → (Claude dịch) Xin chào mọi người.') && !raw.includes('Xin chào.\n'));
+    await r.finish(id);
+    r.prepare('Họp khác'); const other = r.session.id; const foreign = r.ingest('ລາວ', 'local_asr_unverified', 0, 1, '', 'cap', 'lo');
+    assert.throws(() => r.translate(id, [{ sourceId: foreign, text: 'x' }]), /SESSION_NOT_ACTIVE/);
+    assert.throws(() => r.translate(other, [{ sourceId: lo, text: 'x' }]), /SOURCE_OUTSIDE_SESSION/);
+  });
+});
+test('live state shows glossary names and folds runs like RAW', async () => {
+  await withRuntime(async r => {
+    assert.equal(r.liveState().session, null);
+    r.prepare('Họp'); r.glossaryAdd('Namfon', ['Nam Phủ']);
+    r.ingest('Nam Phủ gửi giá', 'local_asr_unverified', 0, 3, '', 'cap', 'vi');
+    for (let i = 0; i < 4; i++) r.ingest('cái', 'local_asr_unverified', 3 + i, 4 + i, 'REPETITION', 'cap', 'vi');
+    const { segments } = r.liveState();
+    assert.equal(segments[0].text, 'Namfon (nghe: Nam Phủ) gửi giá'); assert.equal(segments.length, 2); assert.equal(segments[1].repeat, 4);
+  });
+});

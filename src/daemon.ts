@@ -24,6 +24,7 @@ const origin = `http://127.0.0.1:${port}`;
 const cookie = randomBytes(32).toString('hex');
 const token = randomBytes(32).toString('hex');
 const panel = readFileSync(join(root, 'web', 'index.html'));
+const livePage = readFileSync(join(root, 'web', 'live.html'));
 const events = new Set<import('node:http').ServerResponse>();
 // Constructed only after this process owns the port: a second instance must not touch the shared history.
 let runtime: MeetingRuntime;
@@ -61,7 +62,9 @@ const methods: Record<string, (input: any) => any> = {
     if (a.action === 'remove') return runtime.glossaryRemove(a.name ?? '');
     return runtime.glossary;
   },
-  fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); return { id: runtime.ingest(z.object({ text: z.string().min(1).max(8000) }).parse(input).text, 'synthetic_fixture') }; },
+  fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); const a = z.object({ text: z.string().min(1).max(8000), language: z.enum(['vi', 'lo']).optional() }).parse(input); return { id: runtime.ingest(a.text, 'synthetic_fixture', 0, 0, '', '', a.language) }; },
+  // Vietnamese lines for Lao segments, written by the Claude session following the meeting.
+  translate: input => { const a = z.object({ sessionId: sid.optional(), items: z.array(z.object({ sourceId: z.number().int().positive(), text: z.string().min(1).max(2000) })).min(1).max(100) }).parse(input); return runtime.translate(current(a.sessionId), a.items); },
   shutdown: () => { setTimeout(() => void shutdown(), 50); return { stopping: true }; },
 };
 
@@ -82,8 +85,9 @@ const http = createServer(async (request, response) => {
       try { return json(response, 200, { ok: true, result: await methods[method](args ?? {}) }); }
       catch (error: any) { return json(response, 200, { ok: false, error: error instanceof z.ZodError ? 'INVALID_INPUT: ' + error.issues.map(i => `${i.path.join('.')} ${i.message}`).join('; ') : String(error?.message ?? error) }); }
     }
-    if (request.method === 'GET' && path === '/') {
-      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Set-Cookie': `pma=${cookie}; HttpOnly; SameSite=Strict; Path=/`, 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'" }); return response.end(panel);
+    // `/live` is the read-only shared screen: the user shares this browser window in the meeting.
+    if (request.method === 'GET' && (path === '/' || path === '/live')) {
+      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Set-Cookie': `pma=${cookie}; HttpOnly; SameSite=Strict; Path=/`, 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'" }); return response.end(path === '/' ? panel : livePage);
     }
     if (!request.headers.cookie?.split(';').some(c => c.trim() === `pma=${cookie}`)) return json(response, 403, { error: 'OPEN_PERSONAL_PANEL_FIRST' });
     if (request.method === 'GET' && path === '/api/state') return json(response, 200, runtime.snapshot());
@@ -92,7 +96,8 @@ const http = createServer(async (request, response) => {
     if (request.method === 'GET' && path === '/api/export') { const id = sid.parse(new URL(request.url!, origin).searchParams.get('id')); const content = runtime.exportText(id); response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="meeting-${id}.txt"`, 'Cache-Control': 'no-store' }); return response.end(content); }
     if (request.method === 'GET' && path === '/api/devices') return json(response, 200, await runtime.listDevices(true));
     if (request.method === 'GET' && path === '/api/report') { const params = new URL(request.url!, origin).searchParams; const report = runtime.reportFile(sid.parse(params.get('id')), params.get('kind') || ''); response.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${report.name}"`, 'Cache-Control': 'no-store' }); return response.end(report.content); }
-    if (request.method === 'GET' && path === '/api/events') {
+    if (request.method === 'GET' && path === '/api/live') return json(response, 200, runtime.liveState());
+    if (request.method === 'GET' && (path === '/api/events' || path === '/api/live-events')) {
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' }); response.write('event: update\ndata: {}\n\n'); events.add(response);
       const keepAlive = setInterval(() => response.write(': keepalive\n\n'), 15000); request.on('close', () => { clearInterval(keepAlive); events.delete(response); }); return;
     }
