@@ -68,6 +68,38 @@ class TranscriptFilterTests(unittest.TestCase):
         self.assertEqual(self.worker.collapse_repeats('ok dạ dạ dạ dạ dạ dạ dạ xong'), 'ok dạ [×7] xong')
         self.assertEqual(self.worker.collapse_repeats('ba ba xe'), 'ba ba xe')
 
+    def test_collapse_repeats_folds_phrase_loops(self):
+        collapse = self.worker.collapse_repeats
+        self.assertEqual(collapse('Kho nhận Mai của Mai của Mai của Mai của Mai của Mai của Mai của Mai của rồi'), 'Kho nhận Mai của [×8] rồi')
+        self.assertEqual(collapse('a b a b a b a b'), 'a b [×4]')
+        self.assertEqual(collapse('a b c a b c a b c a b c'), 'a b c [×4]')
+        self.assertEqual(collapse('a b c d a b c d a b c d a b c d'), 'a b c d [×4]')
+        self.assertEqual(collapse('Mai của, Mai của, Mai của, Mai của.'), 'Mai của [×4].')
+        # three repeats of a phrase, or four of a single word, are ordinary speech
+        self.assertEqual(collapse('Mai của Mai của Mai của'), 'Mai của Mai của Mai của')
+        self.assertEqual(collapse('có có có có anh'), 'có có có có anh')
+        # a phrase is matched on whole words only
+        self.assertEqual(collapse('xa b xa b xa b xa b'), 'xa b [×4]')
+        self.assertEqual(collapse('a b a b a b a bc'), 'a b a b a b a bc')
+
+    def test_phrase_loops_are_flagged_as_repetition(self):
+        flags = self.worker.segment_flags
+        self.assertIn('REPETITION', flags('Mai của Mai của Mai của Mai của', self.segment(), 'vi'))
+        self.assertNotIn('REPETITION', flags('Mai của Mai của Mai của', self.segment(), 'vi'))
+
+    def test_invented_channel_pitch_is_flagged(self):
+        flags = self.worker.segment_flags
+        self.assertIn('LIKELY_HALLUCINATION', flags('Để không bỏ lỡ những video hấp dẫn', self.segment(), 'vi'))
+        self.assertIn('LIKELY_HALLUCINATION', flags('Nhấn chuông để nhận thông báo', self.segment(), 'vi'))
+        self.assertNotIn('LIKELY_HALLUCINATION', flags('Để không bỏ lỡ hạn giao hàng, anh nhắc kho', self.segment(), 'vi'))
+
+    def test_thanks_alone_is_flagged_only_when_the_model_doubts_speech(self):
+        flags = self.worker.segment_flags
+        self.assertNotIn('LIKELY_HALLUCINATION', flags('Cảm ơn.', self.segment(no_speech=0.1, logprob=-0.3), 'vi'))
+        self.assertIn('LIKELY_HALLUCINATION', flags('Cảm ơn.', self.segment(no_speech=0.35, logprob=-0.3), 'vi'))
+        self.assertIn('LIKELY_HALLUCINATION', flags('Cảm ơn.', self.segment(no_speech=0.1, logprob=-0.9), 'vi'))
+        self.assertNotIn('LIKELY_HALLUCINATION', flags('Cảm ơn anh đã gửi báo giá', self.segment(no_speech=0.35, logprob=-0.9), 'vi'))
+
 
 class SplitPointTests(unittest.TestCase):
     def setUp(self):
