@@ -82,7 +82,8 @@ export class MeetingRuntime extends EventEmitter {
       CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL, created TEXT NOT NULL, ended TEXT, mode TEXT NOT NULL, context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, text TEXT NOT NULL, origin TEXT NOT NULL, start REAL NOT NULL, end REAL NOT NULL, created TEXT NOT NULL, boundary TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, item_key TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, created TEXT NOT NULL, UNIQUE(session_id,item_key,revision));
-      CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, source_ids TEXT NOT NULL, created TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, source_ids TEXT NOT NULL, created TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS translations(source_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL);`);
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
     if (!columns.includes('capture_id')) this.db.exec("ALTER TABLE sources ADD COLUMN capture_id TEXT NOT NULL DEFAULT ''");
     if (!columns.includes('language')) this.db.exec("ALTER TABLE sources ADD COLUMN language TEXT NOT NULL DEFAULT ''");
@@ -444,9 +445,10 @@ export class MeetingRuntime extends EventEmitter {
   }
   writeRaw(id: string) {
     const session = this.sessionRow(id);
-    const rows: any[] = this.db.prepare('SELECT id,text,origin,created,capture_id,language,boundary FROM sources WHERE session_id=? ORDER BY id').all(id);
+    const rows: any[] = this.db.prepare('SELECT s.id,s.text,s.origin,s.created,s.capture_id,s.language,s.boundary,t.text AS translation FROM sources s LEFT JOIN translations t ON t.source_id=s.id WHERE s.session_id=? ORDER BY s.id').all(id);
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
     const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. ' + this.audioNote(id), ''];
+    if (rows.some(row => row.translation)) lines.push('> Dòng "→ (Claude dịch)" là bản dịch tiếng Việt do Claude viết cho đoạn tiếng Lào, chưa ai kiểm; chữ Lào ở trên mới là nguồn.', '');
     const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${row.boundary.includes('CHANNEL_MIC') ? ` · Tôi${session.context?.me ? ' — ' + session.context.me : ''} (micro)` : ''}`;
     // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
     const ghosts = rows.filter(isHallucination);
@@ -457,6 +459,7 @@ export class MeetingRuntime extends EventEmitter {
       lines.push(group.count > 1
         ? `[${localTime(row.created)}] #${row.id}–#${group.last.id} (${label(row)} · lặp ${group.count} đoạn liền) ${this.shown(row.text)} [×${group.count}]`
         : `[${localTime(row.created)}] #${row.id} (${label(row)}) ${this.shown(row.text)}`);
+      const translation = row.translation ?? group.last.translation; if (translation) lines.push(`  → (Claude dịch) ${translation.replace(/\r?\n/g, ' ')}`);
     }
     if (!rows.length) lines.push('_Chưa có đoạn nào được ghi nhận._');
     if (ghosts.length) lines.push('', '## Phụ lục — đoạn nghi câu ảo (thường do im lặng hoặc nhạc), không dùng làm nội dung họp', '', ...ghosts.map(row => `[${localTime(row.created)}] #${row.id} ${row.text}`));
@@ -505,6 +508,41 @@ export class MeetingRuntime extends EventEmitter {
     const file = ({ raw: 'RAW.md', summary: 'SUMMARY.md', tasks: 'TASKS.md' } as Record<string, string>)[kind]; if (!file) throw new Error('UNKNOWN_REPORT');
     if (kind === 'raw') this.writeRaw(id);
     try { return { name: file, content: readFileSync(join(this.reportDir(id), file), 'utf8') }; } catch { throw new Error('REPORT_NOT_CREATED_YET'); }
+  }
+  // Vietnamese lines for Lao segments, written by the Claude session that follows the meeting (no other translator exists here).
+  // A second call for the same segment replaces the first. All-or-nothing, so a bad line in a batch saves none.
+  translate(id: string, items: { sourceId: number; text: string }[]) {
+    this.requireSession(id);
+    if (!Array.isArray(items) || !items.length || items.length > 100) throw new Error('INVALID_TRANSLATIONS');
+    const checked = items.map(item => {
+      const text = String(item?.text ?? '').trim();
+      if (!Number.isSafeInteger(item?.sourceId) || !text || text.length > 2000) throw new Error('INVALID_TRANSLATION: #' + item?.sourceId);
+      const row: any = this.db.prepare('SELECT language FROM sources WHERE session_id=? AND id=?').get(id, item.sourceId);
+      if (!row) throw new Error('SOURCE_OUTSIDE_SESSION: ' + item.sourceId);
+      if (row.language !== 'lo') throw new Error('TRANSLATE_ONLY_LAO: #' + item.sourceId + ' không phải đoạn tiếng Lào');
+      return { sourceId: item.sourceId, text };
+    });
+    const now = new Date().toISOString(); let replaced = 0;
+    this.db.exec('BEGIN');
+    try {
+      for (const { sourceId, text } of checked) {
+        if (this.db.prepare('SELECT 1 FROM translations WHERE source_id=?').get(sourceId)) replaced++;
+        this.db.prepare('INSERT OR REPLACE INTO translations(source_id,session_id,text,created) VALUES(?,?,?,?)').run(sourceId, id, text, now);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+    this.ping(); return { saved: checked.length, replaced, label: 'Claude dịch' };
+  }
+  // What the shared screen (web/live.html) shows: the latest segments as `follow` and RAW show them, with Claude's translation.
+  liveState(limit = 40) {
+    const s = this.session;
+    if (!s) return { session: null, captureState: this.captureState, segments: [] };
+    const rows = this.db.prepare('SELECT s.id,s.text,s.origin,s.created,s.boundary,s.language,t.text AS translation FROM sources s LEFT JOIN translations t ON t.source_id=s.id WHERE s.session_id=? ORDER BY s.id DESC LIMIT ?').all(s.id, limit * 3).reverse() as any[];
+    const segments = foldRuns(rows.filter(row => !isHallucination(row))).slice(-limit).map(group => {
+      const row = group.first;
+      return { id: row.id, lastId: group.last.id, at: row.created, language: row.language, mic: row.boundary.includes('CHANNEL_MIC'), gap: row.origin === 'system_gap', unreliable: /LAO_WRITTEN_IN_THAI_SCRIPT|LAO_LOW_CONFIDENCE/.test(row.boundary), text: this.shown(row.text), repeat: group.count > 1 ? group.count : undefined, translation: row.translation ?? group.last.translation ?? null };
+    });
+    return { session: { title: s.title, ended: !!s.ended }, captureState: this.captureState, segments };
   }
   async close() { if (this.closing) return; this.closing = true; if (this.session) await this.finish(this.session.id); this.ping(); this.db.close(); }
 }

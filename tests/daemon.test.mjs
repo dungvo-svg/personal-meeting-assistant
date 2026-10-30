@@ -87,3 +87,28 @@ test('Stop hook: blocks a following session while text is unread, ignores sessio
   assert.equal(await runHook(follower), '');
   await call('finish');
 });
+
+test('shared screen: /live is served read-only with the cookie; /api/live needs it and returns segments with Claude translations', async () => {
+  const { url } = daemonInfo();
+  await call('prepare', { title: 'Phiên màn hình chung', fixture: true });
+  const vi = (await call('fixture', { text: 'Kho số hai đủ hàng.', language: 'vi' })).id;
+  const lo = (await call('fixture', { text: 'ສະບາຍດີທຸກຄົນ', language: 'lo' })).id;
+  const page = await fetch(url + '/live');
+  assert.equal(page.status, 200); assert.match(page.headers.get('content-type'), /text\/html/);
+  const cookie = page.headers.get('set-cookie').split(';')[0]; assert.match(cookie, /^pma=/);
+  assert.match(page.headers.get('set-cookie'), /HttpOnly/); assert.match(page.headers.get('content-security-policy'), /default-src 'self'/);
+  assert.match(await page.text(), /Claude dịch/);
+  assert.equal((await fetch(url + '/api/live')).status, 403);
+  assert.equal((await fetch(url + '/api/live-events')).status, 403);
+  const before = await (await fetch(url + '/api/live', { headers: { cookie } })).json();
+  assert.deepEqual(before.segments.map(s => [s.id, s.language, s.translation]), [[vi, 'vi', null], [lo, 'lo', null]]);
+  assert.match(await pma('translate', '--source', String(lo), '--text', 'Xin chào mọi người.'), /"saved":1/);
+  const after = await (await fetch(url + '/api/live', { headers: { cookie } })).json();
+  assert.equal(after.session.title, 'Phiên màn hình chung'); assert.equal(after.segments[1].translation, 'Xin chào mọi người.'); assert.equal(after.segments[0].translation, null);
+  const stream = await fetch(url + '/api/live-events', { headers: { cookie } });
+  assert.match(stream.headers.get('content-type'), /text\/event-stream/); await stream.body.cancel();
+  assert.match(await pma('live'), /\/live"/);
+  const bad = await run(process.execPath, [resolve('dist/cli.js'), 'translate', '--source', String(vi), '--text', 'x'], { env }).catch(e => e);
+  assert.match(bad.stdout, /TRANSLATE_ONLY_LAO/);
+  await call('finish');
+});
