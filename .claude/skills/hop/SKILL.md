@@ -28,10 +28,10 @@ Mọi lệnh chạy ở thư mục gốc dự án `personal-meeting-assistant` b
    - Nếu không nguồn nào có tiếng, nhờ người dùng kiểm tra loa trong Zoom rồi đo lại.
 5. **Bật nghe:** `./pma listen`, chờ trạng thái `LISTENING` (lệnh tự chờ mô hình nạp xong, tối đa 5 phút). Kết quả có `mic` và `micWhy` (micro nào, vì sao chọn).
    - `./pma pause` giữ mô hình trong máy; `./pma listen` lại có chữ ngay.
-6. **Theo dõi:** bật Monitor (chạy lâu) với lệnh `./pma follow --batch 60` (`--batch 20` nếu người dùng cần dịch tiếng Lào sát hơn).
+6. **Theo dõi:** bật Monitor (chạy lâu) với lệnh `./pma follow` (lô 15 giây). Mỗi lượt trả lời ngắn để theo kịp cuộc họp.
    - Mỗi sự kiện là một lô text mới. Lượt của bạn được phép kết thúc giữa các lô; Monitor sẽ đánh thức bạn khi có text.
    - Mỗi đoạn in trên một dòng; đoạn dài nối tiếp bằng dòng `↳`.
-   - **Monitor tự dừng sau 30 phút** dù xin lâu hơn. Khi Monitor báo hết hạn, hoặc `follow` thoát mà phiên chưa kết thúc, bật lại ngay Monitor với `./pma follow --batch 60` (follow tiếp từ chỗ đã đọc). Stop hook của dự án sẽ chặn kết thúc lượt nếu cuộc họp đang chạy mà không có ai theo dõi.
+   - **Monitor tự dừng sau 30 phút** dù xin lâu hơn. Khi Monitor báo hết hạn, hoặc `follow` thoát mà phiên chưa kết thúc, bật lại ngay Monitor với `./pma follow` (follow tiếp từ chỗ đã đọc). Stop hook của dự án sẽ chặn kết thúc lượt nếu cuộc họp đang chạy mà không có ai theo dõi.
 7. **Trong lúc họp:**
    - Không tự kết thúc cuộc họp. Chỉ người dùng quyết định khi nào xong.
    - Khi follow in `NHẮC GHI CHÚ`, ghi ngay một ghi chú tóm tắt khúc vừa rồi: `./pma note --text "<tóm tắt>" --sources <id,id>`. Họp 20 phút nên có ít nhất 2 ghi chú.

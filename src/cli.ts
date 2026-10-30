@@ -15,7 +15,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma listen [--no-mic] [--save-audio [--keep-days 7]]
                                    bật nghe, chờ tới LISTENING. Micro "Tôi" luôn mở, mọi nền tảng họp (tiếng loa lọt vào micro bị bỏ)
                                    --save-audio: lưu thêm file WAV trên máy này (không gửi đi), tự xoá sau --keep-days ngày (1–90, mặc định 7)
-  pma follow [--batch 60] [--max 40] [--after N]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
+  pma follow [--batch 15] [--max 40] [--after N]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
   pma status | pause | stop        trạng thái / tạm dừng (giữ mô hình, pma listen lại có chữ ngay) / kết thúc (ghi RAW.md)
   pma audio [list | purge [--older-than N]]   xem / xoá âm thanh đã lưu: purge xoá file hết hạn, --older-than N xoá file cũ hơn N ngày (0 = tất cả)
@@ -64,7 +64,8 @@ function agenda(flags: Record<string, string>) { return flags['agenda-file'] ? r
 function languagesOf(flags: Record<string, string>) { return flags.languages ? flags.languages.split(',').map(v => v.trim()) : undefined; }
 
 async function follow(flags: Record<string, string>) {
-  const batchMs = Number(flags.batch || 60) * 1000; const maxLines = Number(flags.max || 40);
+  // 15 s by default: the 60 s batches of 29–30/10 made Claude's answers lag the meeting by a minute or more.
+  const batchMs = Number(flags.batch || 15) * 1000; const maxLines = Number(flags.max || 40);
   let status = await call('status');
   if (!status.session || status.session.ended) { out({ error: 'NO_ACTIVE_SESSION' }); process.exitCode = 1; return; }
   let after = flags.after ? Number(flags.after) : status.agentCursor;

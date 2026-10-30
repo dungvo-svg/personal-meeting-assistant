@@ -132,6 +132,7 @@ REPEAT_PATTERNS = tuple(
 
 # Longest chunk before a forced cut, and how long a backed-up queue may keep growing a chunk before audio is dropped.
 MAX_CHUNK_SECONDS = 20
+GPU_MIN_CHUNK_SECONDS = 3
 GROWTH_LIMIT_SECONDS = MAX_CHUNK_SECONDS + 10
 LANG_UNSURE_BELOW = 0.65
 LAO_LOW_LOGPROB = -1.0
@@ -455,7 +456,8 @@ def capture(args):
     languages = args.languages.split(',')
     if not languages or any(code not in ('vi', 'lo') for code in languages):
         raise ValueError('Languages must be vi, lo or vi,lo')
-    # Mixed sessions use longer chunks: detection is more reliable and per-chunk overhead stays below real time.
+    # Mixed sessions on CPU use longer chunks: detection is more reliable and per-chunk overhead stays below real time.
+    # On the GPU ASR takes ~0.3 s per chunk, so chunks end at the first pause after 3 s and text arrives sooner (30/10).
     min_chunk_seconds = 6 if len(languages) > 1 else 3
     stop = threading.Event()  # leave the worker
     pause = threading.Event()  # end this listening, keep the models
@@ -480,6 +482,8 @@ def capture(args):
     model_path = Path(args.model or profile['main']).resolve(strict=True)
     started = time.monotonic()
     model, lao_model, vi_model, asr = load_models(model_path, args.lao_model or profile['lo'], args.asr_device, 6, args.vi_model or profile['vi'])
+    if asr['device'] == 'cuda':
+        min_chunk_seconds = GPU_MIN_CHUNK_SECONDS
     # Model load only: in warm mode the wait for the source comes after this and is reported on its own (audit 30/10, A4).
     load_seconds = round(time.monotonic() - started, 3)
     mic_watch = [None]
