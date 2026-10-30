@@ -43,21 +43,74 @@ class TranscriptFilterTests(unittest.TestCase):
         self.assertNotIn('LAO_LOW_CONFIDENCE', flags('ສະບາຍດີ', self.segment(logprob=-0.5), 'lo'))
         self.assertNotIn('LAO_LOW_CONFIDENCE', flags('Kho số hai đủ hàng.', self.segment(logprob=-1.2), 'vi'))
 
-    def test_mic_follows_the_zoom_mic_button_and_unknown_means_off(self):
-        gate = self.worker.mic_gate
-        self.assertEqual(gate({'meeting': True, 'muted': False, 'device': 'Mic'}), 'ON')
-        self.assertEqual(gate({'meeting': True, 'muted': True}), 'MUTED')
-        self.assertEqual(gate({'meeting': True, 'muted': None}), 'MUTED')
-        self.assertEqual(gate({'meeting': False, 'muted': None}), 'NO_MEETING')
-        self.assertEqual(gate({'error': 'zoom_mic_state stopped'}), 'UNKNOWN')
-        self.assertEqual(gate(None), 'UNKNOWN')
+    MICS = [(12, 'Mic in at front panel (Pink) (Realtek(R) Audio)'), (15, 'Headset (Jabra)')]
 
-    def test_mic_is_the_one_zoom_uses_else_the_windows_default(self):
-        mics = [(12, 'Mic in at front panel (Pink) (Realtek(R) Audio)'), (15, 'Headset (Jabra)')]
-        self.assertEqual(self.worker.pick_mic(mics, 12, 'Headset (Jabra)'), (15, 'Headset (Jabra)'))
-        self.assertEqual(self.worker.pick_mic(mics, 12, None), mics[0])
-        self.assertEqual(self.worker.pick_mic(mics, 12, 'Unplugged device'), mics[0])
-        self.assertEqual(self.worker.pick_mic([], -1, None), (None, None))
+    def test_mic_is_the_one_a_meeting_app_holds_else_the_windows_default(self):
+        pick = self.worker.pick_mic
+        held = lambda device, *apps: [{'device': device, 'apps': list(apps)}]
+        self.assertEqual(pick(self.MICS, 12, held('Headset (Jabra)', 'chrome')), (15, 'Headset (Jabra)', 'meeting_app:chrome'))
+        self.assertEqual(pick(self.MICS, 12, []), (12, self.MICS[0][1], 'windows_default'))
+        self.assertEqual(pick(self.MICS, 12, held('Unplugged device', 'zoom')), (12, self.MICS[0][1], 'windows_default'))
+        self.assertEqual(pick([], -1, None), (None, None, None))
+
+    def test_zoom_wins_over_a_browser_and_unknown_apps_rank_last(self):
+        in_use = [{'device': 'Headset (Jabra)', 'apps': ['msedge']}, {'device': self.MICS[0][1], 'apps': ['python', 'Zoom']}]
+        self.assertEqual(self.worker.pick_mic(self.MICS, 15, in_use), (12, self.MICS[0][1], 'meeting_app:Zoom'))
+        self.assertEqual(self.worker.pick_mic(self.MICS, 12, [{'device': 'Headset (Jabra)', 'apps': ['notepad']}])[0:2], (15, 'Headset (Jabra)'))
+
+    def test_core_audio_and_portaudio_spellings_of_one_device_match(self):
+        match = self.worker.match_mic
+        self.assertEqual(match('Headset (Jabra)', self.MICS), self.MICS[1])
+        self.assertEqual(match('headset  (jabra)', self.MICS), self.MICS[1])
+        self.assertEqual(match('Mic in at front panel (Pink)', self.MICS), self.MICS[0])
+        self.assertIsNone(match('Other', self.MICS))
+        self.assertIsNone(match(None, self.MICS))
+
+    def test_device_change_is_reported_only_when_a_meeting_app_moves_to_another_mic(self):
+        change = self.worker.mic_device_change
+        self.assertIsNone(change(12, self.MICS, []))
+        self.assertIsNone(change(12, self.MICS, [{'device': self.MICS[0][1], 'apps': ['zoom']}]))
+        self.assertEqual(change(12, self.MICS, [{'device': 'Headset (Jabra)', 'apps': ['chrome']}]), {'from': self.MICS[0][1], 'to': 'Headset (Jabra)', 'app': 'chrome'})
+
+    def test_command_loop_pause_returns_to_waiting_and_stop_leaves(self):
+        script = iter(['{"n":1}', '{"n":2}', 'pause', '{"n":3}', 'stop'])
+        ran, warmed = [], []
+        outcomes = iter(['pause', 'pause', 'pause'])
+        result = self.worker.command_loop(lambda: next(script), lambda line: ran.append(line) or next(outcomes), lambda: warmed.append(1))
+        self.assertEqual(result, 'stop')
+        self.assertEqual(ran, ['{"n":1}', '{"n":2}', '{"n":3}'])
+        self.assertEqual(len(warmed), 3)
+
+    def test_command_loop_leaves_when_a_listening_ends_by_itself_or_input_closes(self):
+        self.assertEqual(self.worker.command_loop(iter(['{}', 'stop']).__next__, lambda line: 'ended', lambda: self.fail('no warm event after the end')), 'ended')
+        self.assertEqual(self.worker.command_loop(lambda: None, lambda line: self.fail('nothing to run'), lambda: None), 'stop')
+
+    def test_listening_request_carries_source_mic_and_audio_saving(self):
+        make = self.worker.listening_from_request
+        live = make({'device': 13, 'deviceName': 'Loop', 'micAuto': True, 'maxSeconds': 99, 'captureId': 'abc-1', 'saveAudioDir': 'D:/x/audio/s1'}, 7200)
+        self.assertEqual((live.device, live.device_name, live.mic_auto, live.mic_device, live.max_seconds, live.capture_id, live.save_dir), (13, 'Loop', True, None, 99, 'abc-1', Path('D:/x/audio/s1')))
+        mic = make({'device': 13, 'deviceName': 'Loop', 'micDevice': 12, 'micName': 'Mic'}, 7200)
+        self.assertEqual((mic.mic_device, mic.mic_name, mic.max_seconds, mic.save_dir), (12, 'Mic', 7200, None))
+        self.assertRegex(make({'device': 1, 'deviceName': 'x', 'captureId': '../evil'}, 60).capture_id, r'^[0-9a-f]{32}$')
+        replay = make({'replay': 'a.wav', 'speed': 2, 'saveAudioDir': 'D:/x'}, 60)
+        self.assertEqual((replay.replay, replay.speed, replay.device, replay.save_dir), ('a.wav', 2.0, None, None))
+
+    def test_wav_is_written_as_it_goes_and_is_playable_at_every_moment(self):
+        import numpy as np
+        import tempfile
+        import wave
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.worker.audio_path(directory, 'cap-1', 'mic')
+            self.assertEqual(path.name, 'cap-1-mic.wav')
+            writer = self.worker.WavWriter(path, 44100)
+            writer.write(np.full(4410, 0.5, dtype=np.float32))
+            with wave.open(str(path), 'rb') as reading:  # still open for writing
+                self.assertEqual((reading.getnchannels(), reading.getsampwidth(), reading.getframerate(), reading.getnframes()), (1, 2, 44100, 4410))
+            writer.write(np.array([2.0, -2.0], dtype=np.float32))  # clipped, not wrapped
+            writer.close()
+            with wave.open(str(path), 'rb') as reading:
+                frames = np.frombuffer(reading.readframes(reading.getnframes()), dtype='<i2')
+            self.assertEqual((len(frames), int(frames[0]), int(frames[-2]), int(frames[-1])), (4412, 16383, 32767, -32767))
 
     def test_greeting_alone_is_flagged_but_inside_a_sentence_is_not(self):
         flags = self.worker.segment_flags
