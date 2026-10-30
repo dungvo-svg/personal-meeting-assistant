@@ -15,7 +15,9 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma listen [--no-mic] [--save-audio [--keep-days 7]]
                                    bật nghe, chờ tới LISTENING. Micro "Tôi" luôn mở, mọi nền tảng họp (tiếng loa lọt vào micro bị bỏ)
                                    --save-audio: lưu thêm file WAV trên máy này (không gửi đi), tự xoá sau --keep-days ngày (1–90, mặc định 7)
-  pma follow [--batch 15] [--max 40] [--after N]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
+  pma follow [--batch 15] [--max 40] [--after N] [--as TÊN] [--no-notes]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
+                                   --as: tên người theo dõi (mặc định chinh; hai phiên cùng theo dõi thì mỗi phiên một tên, vd. dich), mỗi tên giữ con trỏ đọc riêng
+                                   --no-notes: bỏ nhắc ghi chú cuốn chiếu (phiên dịch không ghi chú); cảnh báo trễ và dòng micro vẫn giữ
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
   pma status | pause | stop        trạng thái / tạm dừng (giữ mô hình, pma listen lại có chữ ngay) / kết thúc (ghi RAW.md)
   pma audio [list | purge [--older-than N]]   xem / xoá âm thanh đã lưu: purge xoá file hết hạn, --older-than N xoá file cũ hơn N ngày (0 = tất cả)
@@ -68,9 +70,12 @@ async function follow(flags: Record<string, string>) {
   const batchMs = Number(flags.batch || 15) * 1000; const maxLines = Number(flags.max || 40);
   let status = await call('status');
   if (!status.session || status.session.ended) { out({ error: 'NO_ACTIVE_SESSION' }); process.exitCode = 1; return; }
-  let after = flags.after ? Number(flags.after) : status.agentCursor;
+  const name = flags.as ?? 'chinh';
+  if (!/^[a-z0-9-]{1,24}$/.test(name)) { out({ error: 'INVALID_FOLLOWER_NAME', hint: '--as chỉ gồm a-z, 0-9, dấu gạch ngang, tối đa 24 ký tự' }); process.exitCode = 1; return; }
+  // Resume where this follower stopped; a new one starts at the main cursor (what the main follower has read).
+  let after = flags.after ? Number(flags.after) : status.followers?.[name]?.cursor ?? status.agentCursor;
   let batch: any[] = []; let batchStarted = 0; let state = status.captureState; let failures = 0;
-  console.log(`FOLLOWING "${status.session.title}" từ #${after} · lô ${batchMs / 1000}s · trạng thái ${state}`);
+  console.log(`FOLLOWING ${name} "${status.session.title}" từ #${after} · lô ${batchMs / 1000}s · trạng thái ${state}`);
   const flush = () => {
     if (!batch.length) return;
     console.log(`LÔ #${batch[0].id}–#${batch.at(-1).id} (${batch.length} đoạn):`);
@@ -90,13 +95,13 @@ async function follow(flags: Record<string, string>) {
     const lag = s.captureInfo?.lagSeconds;
     if (typeof lag === 'number' && lag > LAG_WARN_SECONDS) console.log(`CẢNH BÁO TRỄ: chữ đang ra chậm ${Math.round(lag)} giây so với lời nói. Dừng việc nặng đang chạy trên máy.`);
     const since = Math.max(Date.parse(s.lastNoteAt ?? '') || 0, Date.parse(s.captureInfo?.listeningSince ?? '') || 0);
-    if (since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút chưa có ghi chú cuốn chiếu. Ghi tóm tắt khúc vừa rồi: pma note --text "..." --sources <id,...>`); }
+    if (flags['no-notes'] !== 'true' && since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút chưa có ghi chú cuốn chiếu. Ghi tóm tắt khúc vừa rồi: pma note --text "..." --sources <id,...>`); }
   };
   for (;;) {
     let reply: any;
     // With a batch pending, wait no longer than what is left of its window.
     const waitMs = batch.length ? Math.max(200, batchMs - (Date.now() - batchStarted)) : 20000;
-    try { reply = await call('next', { after, waitMs: Math.min(20000, waitMs), limit: 100, follower: true }, 40000); failures = 0; }
+    try { reply = await call('next', { after, waitMs: Math.min(20000, waitMs), limit: 100, follower: true, as: name }, 40000); failures = 0; }
     catch (error) { if (++failures >= 5) { flush(); console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return; } await new Promise(r => setTimeout(r, 3000)); continue; }
     // A state change is reported before the text that arrived with it.
     if (reply.captureState !== state) {

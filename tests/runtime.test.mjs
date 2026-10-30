@@ -251,6 +251,35 @@ test('follow prints long segments on continuation lines that Monitor will not cu
   assert.ok(parts.length > 1 && parts.every(p => p.length <= 455) && parts[1].startsWith('  ↳ '));
   assert.deepEqual(wrapLine('#2 vi: ngắn'), ['#2 vi: ngắn']);
 });
+test('named followers keep their own cursor and heartbeat; only "chinh" moves agentCursor and lastFollowAt', async () => {
+  await withRuntime(async r => {
+    r.prepare('Hai người theo dõi', true); const id = r.session.id;
+    for (const text of ['Một.', 'Hai.', 'Ba.', 'Bốn.']) r.ingest(text, 'synthetic_fixture');
+    assert.deepEqual(r.compact().followers, {});
+    await r.next(id, 0, 0, 100, true, 'dich');
+    const c0 = r.compact();
+    assert.equal(c0.agentCursor, 0); assert.equal(c0.lastFollowAt, null); assert.equal(c0.unread, 4);
+    assert.deepEqual(Object.keys(c0.followers), ['dich']); assert.equal(c0.followers.dich.unread, 4);
+    await r.next(id, 3, 0, 100, true, 'dich');
+    const main = await r.next(id, 1, 0, 100, true);
+    const c1 = r.compact();
+    assert.equal(c1.agentCursor, 1); assert.ok(c1.lastFollowAt); assert.equal(main.nextCursor, 4);
+    assert.equal(c1.followers.chinh.cursor, 1); assert.equal(c1.followers.chinh.unread, 3);
+    assert.equal(c1.followers.dich.cursor, 3); assert.equal(c1.followers.dich.unread, 1);
+    assert.equal(c1.unread, 3);
+    // Another named read leaves the main cursor and heartbeat alone; the heartbeats are separate.
+    const heartbeat = c1.lastFollowAt; await new Promise(res => setTimeout(res, 15));
+    await r.next(id, 4, 0, 100, true, 'dich');
+    const c2 = r.compact();
+    assert.equal(c2.agentCursor, 1); assert.equal(c2.lastFollowAt, heartbeat); assert.equal(c2.followers.chinh.at, heartbeat);
+    assert.ok(c2.followers.dich.at > heartbeat); assert.equal(c2.followers.dich.unread, 0);
+    // A plain read (MCP source_next) is the main one, as before; it does not create a heartbeat.
+    await r.next(id, 2, 0, 100);
+    assert.equal(r.compact().agentCursor, 2); assert.equal(r.compact().followers.chinh.cursor, 2); assert.equal(r.compact().lastFollowAt, heartbeat);
+    await r.finish(id);
+    r.prepare('Phiên sau', true); assert.deepEqual(r.compact().followers, {});
+  });
+});
 test('translations: saved for Lao segments, replaced on retry, rejected for other languages or sessions; RAW carries them', async () => {
   await withRuntime(async r => {
     r.prepare('Họp Việt Lào'); const id = r.session.id;

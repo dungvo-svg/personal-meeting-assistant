@@ -45,6 +45,8 @@ export function meetingLaunch(input: string) {
 }
 // "HH:MM" on the given day, in local time, as an ISO instant; undefined if it is not a clock time.
 const scheduledAt = (at: string | undefined, day = new Date()) => at && /^([01]?\d|2[0-3]):[0-5]\d$/.test(at) ? new Date(day.toDateString() + ' ' + at).toISOString() : undefined;
+// The follower that drives agentCursor/lastFollowAt (the synthesising session); `pma follow --as <name>` adds others.
+const MAIN_FOLLOWER = 'chinh';
 const localTime = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
 const localDate = (iso: string) => new Date(iso).toLocaleDateString('vi-VN');
 const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
@@ -64,6 +66,9 @@ export class MeetingRuntime extends EventEmitter {
   lastAgentReadAt: string | null = null;
   agentCursor = 0;
   lastFollowAt: string | null = null;
+  // Every named follower (`pma follow --as <name>`): what it has read up to and its last heartbeat. "chinh" is the
+  // main one and also drives agentCursor/lastFollowAt above; the others (e.g. "dich") must not move those.
+  followers: Record<string, { cursor: number; at: string }> = {};
   context: any;
   closing = false;
   // Set when `listen --save-audio` was asked for this session; the files themselves are described by audioInfo().
@@ -133,7 +138,7 @@ export class MeetingRuntime extends EventEmitter {
     const context = { ...base, me: this.profile.me, scheduledStart: scheduled };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
-    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.audioSave = null; this.captureState = 'OFF'; this.captureInfo = {};
+    this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.followers = {}; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.audioSave = null; this.captureState = 'OFF'; this.captureInfo = {};
     if (!fixture) this.warmUp(this.session.id);
     this.ping(); return this.snapshot();
   }
@@ -155,10 +160,15 @@ export class MeetingRuntime extends EventEmitter {
     const row = this.db.prepare('INSERT INTO sources(session_id,text,origin,start,end,created,boundary,capture_id,language) VALUES(?,?,?,?,?,?,?,?,?)').run(this.session.id, text, origin, start, end, new Date().toISOString(), boundary, captureId, language);
     this.ping(); return Number(row.lastInsertRowid);
   }
-  async next(id: string, after = 0, waitMs = 20000, limit = 12, follower = false) {
-    this.requireSession(id); this.lastAgentReadAt = new Date().toISOString(); this.agentCursor = after;
-    // `pma follow` heartbeat: a Monitor is reading, so the Stop hook may let the turn end.
-    if (follower) this.lastFollowAt = this.lastAgentReadAt;
+  async next(id: string, after = 0, waitMs = 20000, limit = 12, follower = false, name = MAIN_FOLLOWER) {
+    this.requireSession(id); this.lastAgentReadAt = new Date().toISOString();
+    // `pma follow` heartbeat: a Monitor is reading, so the Stop hook may let the turn end. A named follower
+    // keeps its own cursor and heartbeat; only the main one moves agentCursor/lastFollowAt (non-follower reads too, as before).
+    if (name === MAIN_FOLLOWER) {
+      this.agentCursor = after;
+      if (follower) { this.lastFollowAt = this.lastAgentReadAt; this.followers[name] = { cursor: after, at: this.lastAgentReadAt }; }
+      else if (this.followers[name]) this.followers[name].cursor = after;
+    } else this.followers[name] = { cursor: after, at: this.lastAgentReadAt };
     const until = Date.now() + Math.max(0, Math.min(waitMs, 25000));
     while (!this.sources(id, after, 1).length && !this.session.ended && !this.closing && Date.now() < until) {
       await new Promise<void>(resolve => {
@@ -198,7 +208,13 @@ export class MeetingRuntime extends EventEmitter {
     const counts: any = id ? this.db.prepare('SELECT (SELECT COUNT(*) FROM sources WHERE session_id=?) AS sources,(SELECT COUNT(*) FROM notes WHERE session_id=?) AS notes,(SELECT MAX(created) FROM notes WHERE session_id=?) AS lastNoteAt').get(id, id, id) : { sources: 0, notes: 0, lastNoteAt: null };
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0 };
     const { type, ...captureInfo } = this.captureInfo;
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id) };
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id) };
+  }
+  followersState(id?: string) {
+    return Object.fromEntries(Object.entries(this.followers).map(([name, f]) => {
+      const unread: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, f.cursor) : { count: 0 };
+      return [name, { cursor: f.cursor, at: f.at, unread: unread.count }];
+    }));
   }
   // Saved audio of a session: where it is, how big, and when it is deleted. Null when nothing was saved (RAM only).
   audioInfoOf(id?: string) {

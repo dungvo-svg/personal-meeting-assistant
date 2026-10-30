@@ -18,9 +18,12 @@ try { input = JSON.parse(readFileSync(0, 'utf8') || '{}'); } catch { allow(); }
 let transcript = '';
 try { transcript = readFileSync(input.transcript_path, 'utf8'); } catch { allow(); }
 const mcp = /"name":"mcp__personal-meeting-assistant__(hearing_start|source_next)"/.test(transcript);
-const shell = [...transcript.matchAll(/"name":"(?:Bash|PowerShell|Monitor)","input":\{[^}]*?"command":"((?:[^"\\]|\\.)*)"/g)]
-  .some(([, command]) => /\b(?:pma(?:\.cmd)?|cli\.js)(?:\\")?\s+(?:listen|follow|replay)\b/.test(command) && !/PMA_(?:PORT|DATA_DIR)/.test(command));
-if (!mcp && !shell) allow();
+const commands = [...transcript.matchAll(/"name":"(?:Bash|PowerShell|Monitor)","input":\{[^}]*?"command":"((?:[^"\\]|\\.)*)"/g)]
+  .map(([, command]) => command).filter(command => /\b(?:pma(?:\.cmd)?|cli\.js)(?:\\")?\s+(?:listen|follow|replay)\b/.test(command) && !/PMA_(?:PORT|DATA_DIR)/.test(command));
+if (!mcp && !commands.length) allow();
+// Two sessions can follow one meeting (`pma follow --as dich` next to the main "chinh"): this session answers for
+// the name in its own last `pma follow` command (--as X; without it, or with no follow at all, the main follower).
+const name = commands.filter(command => /\bfollow\b/.test(command)).map(command => command.match(/--as(?:\s+|=)\\?"?([a-z0-9-]{1,24})\b/)?.[1] ?? 'chinh').at(-1) ?? 'chinh';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
@@ -49,12 +52,19 @@ try {
 const session = state?.session;
 if (!session || session.ended) allow();
 const live = ['LOADING_ASR', 'WAITING_FOR_SOURCE', 'LISTENING'].includes(state.captureState);
-const unread = state.unread ?? 0;
+// This follower's own cursor and heartbeat. Without an entry (a runtime older than `followers`, or the main
+// follower reading over MCP) the main values apply; a named follower nobody has started is simply not followed.
+const own = state.followers?.[name] ?? (name === 'chinh' || !state.followers
+  ? { cursor: state.agentCursor, at: state.lastFollowAt, unread: state.unread ?? 0 }
+  : { cursor: state.agentCursor, at: null, unread: state.unread ?? 0 });
+const unread = own.unread ?? 0;
 if (!live && !unread) allow();
-const followed = state.lastFollowAt && Date.now() - Date.parse(state.lastFollowAt) < 90000;
+const followed = own.at && Date.now() - Date.parse(own.at) < 90000;
 if (live && followed) allow();
 
+const resume = name === 'chinh' ? './pma follow' : `./pma follow --as ${name}`;
+const who = name === 'chinh' ? '' : ` (người theo dõi "${name}")`;
 const reason = live
-  ? `Cuộc họp "${session.title}" đang diễn ra (${state.captureState}, ${unread} đoạn chưa đọc) mà không có ai theo dõi. Bật lại theo dõi: Monitor với lệnh \`./pma follow\` (Claude Code), hoặc gọi source_next tiếp (MCP). Chỉ dừng khi người dùng nói kết thúc/đóng — khi đó \`./pma stop\` (hoặc session_finish) rồi làm RAW/SUMMARY/TASKS.`
-  : `Bộ thu đã dừng (${state.captureState}${state.lastError ? ': ' + state.lastError : ''}) nhưng còn ${unread} đoạn chưa đọc. Đọc hết (\`./pma read --after ${state.agentCursor}\`), báo người dùng tình trạng bộ thu, rồi mới kết thúc lượt.`;
+  ? `Cuộc họp "${session.title}" đang diễn ra (${state.captureState}, ${unread} đoạn chưa đọc${who}) mà không có ai theo dõi. Bật lại theo dõi: Monitor với lệnh \`${resume}\` (Claude Code), hoặc gọi source_next tiếp (MCP). Chỉ dừng khi người dùng nói kết thúc/đóng — khi đó \`./pma stop\` (hoặc session_finish) rồi làm RAW/SUMMARY/TASKS.`
+  : `Bộ thu đã dừng (${state.captureState}${state.lastError ? ': ' + state.lastError : ''}) nhưng còn ${unread} đoạn chưa đọc${who}. Đọc hết (\`./pma read --after ${own.cursor}\`), báo người dùng tình trạng bộ thu, rồi mới kết thúc lượt.`;
 process.stdout.write(JSON.stringify({ decision: 'block', reason }));

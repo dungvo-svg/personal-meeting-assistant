@@ -46,7 +46,7 @@ test('follow prints batched lines with flags, marks the follower heartbeat and s
   await sleep(1500);
   for (const text of ['Tuần này kiểm kê kho số 2.', 'Anh Nam gửi báo cáo trước thứ Sáu.']) await call('fixture', { text });
   await sleep(2500);
-  assert.match(output, /FOLLOWING "Phiên thử"/);
+  assert.match(output, /FOLLOWING chinh "Phiên thử"/);
   assert.match(output, /LÔ #1–#2 \(2 đoạn\):\n#1 .*kiểm kê kho số 2\.\n#2 /);
   assert.ok((await json('status')).lastFollowAt);
   const stopped = await json('stop');
@@ -85,6 +85,45 @@ test('Stop hook: blocks a following session while text is unread, ignores sessio
   assert.match(JSON.parse(await runHook(follower)).reason, /còn 1 đoạn chưa đọc/);
   const { items } = await call('read', {}); await call('next', { after: items.at(-1).id, waitMs: 0 });
   assert.equal(await runHook(follower), '');
+  await call('finish');
+});
+
+test('follow --as dich keeps its own cursor and never touches the main one; the Stop hook decides per follower', async () => {
+  await call('prepare', { title: 'Phiên hai người theo dõi', fixture: true });
+  const first = (await call('fixture', { text: 'Đoạn đầu tiên.' })).id;
+  await call('next', { after: first, waitMs: 0, follower: true });  // main follower ("chinh") has read #1
+  const second = (await call('fixture', { text: 'Đoạn thứ hai.' })).id;
+  const before = await json('status');
+  assert.equal(before.agentCursor, first); assert.equal(before.followers.chinh.unread, 1);
+  const dich = spawn(process.execPath, [resolve('dist/cli.js'), 'follow', '--as', 'dich', '--no-notes', '--batch', '1'], { env });
+  const exited = new Promise(r => dich.on('exit', r));
+  let output = ''; dich.stdout.on('data', d => { output += d; });
+  await sleep(2500);
+  assert.match(output, new RegExp(`FOLLOWING dich "Phiên hai người theo dõi" từ #${first} `));
+  assert.match(output, new RegExp(`#${second} .*Đoạn thứ hai\\.`));
+  const mid = await json('status');
+  assert.equal(mid.agentCursor, first); assert.equal(mid.unread, 1); assert.equal(mid.lastFollowAt === before.lastFollowAt, true);
+  assert.equal(mid.followers.dich.cursor, second); assert.equal(mid.followers.dich.unread, 0);
+  assert.equal(mid.followers.chinh.cursor, first); assert.equal(mid.followers.chinh.unread, 1);
+
+  const transcript = join(directory, 'transcript-follow.jsonl');
+  const runHook = lines => new Promise((res, rej) => { writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n')); const child = spawn(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '' } }); let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript })); });
+  const bash = command => ({ type: 'tool_use', name: 'Bash', input: { command } });
+  const asDich = bash('./pma follow --batch 15 --as dich --no-notes'), asMain = bash('./pma follow --batch 60');
+  // The dich session has read everything: nothing to block on. The main session still has #2 unread.
+  assert.equal(await runHook([asDich]), '');
+  const blocked = JSON.parse(await runHook([asMain])).reason;
+  assert.match(blocked, /còn 1 đoạn chưa đọc/); assert.match(blocked, new RegExp(`--after ${first}\``));
+  // The last `--as` in the transcript decides.
+  assert.equal(await runHook([asMain, asDich]), '');
+  assert.match(JSON.parse(await runHook([asDich, asMain])).reason, /còn 1 đoạn chưa đọc/);
+  // dich stops following and text arrives: block, naming the follower and its own cursor.
+  dich.kill(); await exited;
+  await call('fixture', { text: 'Đoạn thứ ba.' });
+  const behind = (await json('status')).followers.dich;
+  assert.equal(behind.unread, 1); assert.equal(behind.cursor, second);
+  const reason = JSON.parse(await runHook([bash('./pma follow --as dich')])).reason;
+  assert.match(reason, /người theo dõi "dich"/); assert.match(reason, new RegExp(`--after ${second}\``));
   await call('finish');
 });
 
