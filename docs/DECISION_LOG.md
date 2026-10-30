@@ -25,6 +25,8 @@ Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | U17 | 28/10: “sao không dựng và update đi nhỉ?” — làm ngay, áp dụng cho cuộc họp đang diễn ra |
 | U18 | 28/10: “MCP là phương án ban đầu không phải phương án tốt nhất audit nhé” → duyệt “Làm M1–M6” |
 | U19 | 30/10: “micro tôi mặc định nhé, luôn nghe đi nhưng làm sao bạn lấy đúng mic của zoom để khi tôi k bật thì nó cx k nghe”; phần chưa làm được thì đưa vào issue chờ thêm dữ liệu họp |
+| U20 | 30/10 chiều, sau buổi thử thật trên Google Meet: “Gôm cả 3 đợt lại Plan và làm song song”; “Về mic thì biết tôi nói vào mic là được k phụ thuộc nền tảng”; Opus quyết kiến trúc, Sonnet làm; duyệt lưu âm thanh opt-in (B3) và màn hình chung có bản dịch (B1/B5) |
+| U21 | 30/10: “Màn hình chung cho người dự → bỏ nó nhé vì ta đang họp trên session không phải một web nữa” |
 
 Ảnh định hướng trong U1 và tài liệu b15f178 của repo AIOS chỉ cung cấp bối cảnh hai sản phẩm độc lập. Không nhập runtime, quyền phiên họp hoặc tiêu chí nghiệm thu của repo đó vào đây.
 
@@ -48,7 +50,9 @@ Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | OWN-015 | U16 | Claude theo dõi đến khi người dùng nói kết thúc/đóng; không ngắt giữa cuộc họp |
 | OWN-016 | U16 | Không cồng kềnh: mọi thao tác qua Claude; bảng web chỉ là tùy chọn. Micro dùng khi được, không thì chỉ loa |
 | OWN-012 | U15 | Bộ tai nghe cuộc họp nói lẫn tiếng Việt và tiếng Lào. Thay phần “chỉ tiếng Việt” của OWN-008; vẫn không phiên dịch |
-| OWN-017 | U19 | Micro “Tôi” bật mặc định, không hỏi lại mỗi phiên; chỉ lấy tiếng khi micro Zoom của người dùng đang bật. Thay phần “micro chỉ khi đồng ý trong chat” của 0.8.0 |
+| OWN-017 | U19, U20 | Micro “Tôi” luôn mở, không hỏi lại mỗi phiên, **không phụ thuộc nền tảng họp**: lời người dùng nói vào micro là “Tôi”, tiếng loa lọt vào bị bỏ. U20 thay phần “chỉ lấy tiếng khi micro Zoom bật” của U19 (bản 0.9.0 làm mất hết lời người dùng trên Google Meet) |
+| OWN-018 | U20 | Âm thanh được lưu chỉ khi người dùng bật cho lần nghe đó (`--save-audio`), trên máy, tự xoá sau số ngày đặt (mặc định 7). Thay một phần OWN-005 “audio tạm” |
+| OWN-019 | U20, U21 | Không có màn hình chung/trang web cho người dự: theo dõi họp trong phiên Claude. Bản dịch Lào→Việt do Claude viết ngay trong phiên, ghi rõ “(Claude dịch)” và lưu vào RAW |
 
 U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi máy. U11 là ranh giới vận hành lần này: không restart Claude hoặc thực hiện đề nghị thu thử thay người dùng. Claude đã ghi đè lần chỉnh config khi còn chạy; installer hiện yêu cầu app đóng trước khi apply. Host/device acceptance vẫn chờ. Hỏi đáp/ghi chú trong Claude khi người dùng yêu cầu là hỗ trợ theo scope pilot, không phải đã hoàn thành giao diện hỏi đáp hoặc V1 phiên dịch.
 
@@ -74,7 +78,10 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-17 | Lõi là dịch vụ nghe chạy nền một bản mỗi máy + CLI `pma` + skill `hop` + Monitor trên `pma follow`; MCP chỉ là lớp chuyển tiếp | Audit 28/10 (E1–E6): server mỗi phiên làm hỏng trạng thái phiên khác, bộ thu chết theo host, chỉ kéo được không đẩy được, 233 lần hỏi vòng/1,5 giờ |
 | ENG-18 | Tiếng Lào: Whisper small nhận diện vi/lo (th tính là lo), đoạn Lào sang BuzzASR/lao (MIT) trên CUDA; model Lào không chạy trên CPU khi họp trực tiếp | FLEURS 28/10: CER Lào 100,2% → 36,3%, chữ Thái → chữ Lào; nhận diện ngôn ngữ 100% trên 80 clip. Đáp ứng OWN-014 (mã nguồn mở, chạy trên máy) |
 | ENG-19 | GPU: Whisper large-v3-turbo là model chính (nhận diện vi/lo + tiếng Việt); PhoWhisper-large chỉ là tùy chọn `vi` | FLEURS vi 4,8% (small 9,9%); PhoWhisper-large 3,9% nhưng trên họp thật đọc số thành chữ, mất viết hoa/viết tắt, 5,4 GB VRAM |
-| ENG-20 | Micro “Tôi”: `tools/zoom_mic_state.ps1` đọc mỗi giây (chỉ đọc) tên nút micro trong cửa sổ họp Zoom qua Windows UI Automation (“Mute…” = đang bật, “Unmute…”/“Join Audio” = tắt) và micro Zoom đang giữ phiên âm qua Core Audio. Worker thay tiếng micro bằng im lặng khi trạng thái khác “đang bật”, kể cả khi không đọc được | Thực hiện OWN-017 không cần SDK Zoom hay dịch vụ ngoài; trễ tối đa ~1 s khi bật/tắt; tên nút phụ thuộc phiên bản/ngôn ngữ Zoom (máy đang dùng Zoom tiếng Anh) |
+| ENG-20 | Micro “Tôi” (0.10): bỏ đọc nút mute (UI Automation) của 0.9.0. `tools/mic_in_use.ps1` (Core Audio, chỉ đọc) tìm micro mà ứng dụng họp (Zoom, trình duyệt, Teams…) đang giữ, kiểm lại mỗi 30 s và báo khi đổi, không đổi giữa chừng; không có thì micro mặc định Windows. `mic_is_own_voice` bỏ tiếng loa lọt vào | Thực hiện OWN-017 (U20); 0.9.0 cho `NO_MEETING` trên Google Meet. Hệ quả chấp nhận: lời nói khi đang tắt mic trong Zoom/Meet vẫn vào “Tôi” |
+| ENG-21 | Model Lào BuzzASR bị CTranslate2 coi là English-only (vocab 53.474), `language='lo'` thành `<|en|>` từ 0.6 tới 0.9; 0.10 bọc model để giữ `<|lo|>`, đo lại FLEURS | Xác minh 30/10 bằng `model.is_multilingual == False` và cảnh báo của faster-whisper |
+| ENG-22 | `pause` giữ worker và model trong máy (vòng lặp chờ nguồn mới); `modelLoadSeconds` chỉ tính thời gian nạp, thời gian chờ nguồn tách thành `waitedForSourceSeconds` | Buổi 30/10: quãng trống ~55 s sau pause; “nạp 1.273 s” thực ra là chờ họp |
+| ENG-23 | Bản dịch Claude lưu bảng `translations` qua `pma translate`, chỉ cho đoạn `lo` của phiên đang mở, ghi vào RAW dưới đoạn Lào. Trang `/live` (agent D làm) đã bỏ theo U21 | Thực hiện OWN-019 không thêm AI ngoài Claude |
 | ENG-12 | `meeting_open` chỉ nhận link Zoom, dựng lại URL từ phần đã kiểm tra, không lưu passcode; chế độ test không mở Zoom | Thực hiện OWN-009 mà không đưa chuỗi tùy ý tới trình mở URL của hệ điều hành |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.

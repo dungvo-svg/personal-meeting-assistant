@@ -533,16 +533,5 @@ export class MeetingRuntime extends EventEmitter {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
     this.ping(); return { saved: checked.length, replaced, label: 'Claude dịch' };
   }
-  // What the shared screen (web/live.html) shows: the latest segments as `follow` and RAW show them, with Claude's translation.
-  liveState(limit = 40) {
-    const s = this.session;
-    if (!s) return { session: null, captureState: this.captureState, segments: [] };
-    const rows = this.db.prepare('SELECT s.id,s.text,s.origin,s.created,s.boundary,s.language,t.text AS translation FROM sources s LEFT JOIN translations t ON t.source_id=s.id WHERE s.session_id=? ORDER BY s.id DESC LIMIT ?').all(s.id, limit * 3).reverse() as any[];
-    const segments = foldRuns(rows.filter(row => !isHallucination(row))).slice(-limit).map(group => {
-      const row = group.first;
-      return { id: row.id, lastId: group.last.id, at: row.created, language: row.language, mic: row.boundary.includes('CHANNEL_MIC'), gap: row.origin === 'system_gap', unreliable: /LAO_WRITTEN_IN_THAI_SCRIPT|LAO_LOW_CONFIDENCE/.test(row.boundary), text: this.shown(row.text), repeat: group.count > 1 ? group.count : undefined, translation: row.translation ?? group.last.translation ?? null };
-    });
-    return { session: { title: s.title, ended: !!s.ended }, captureState: this.captureState, segments };
-  }
   async close() { if (this.closing) return; this.closing = true; if (this.session) await this.finish(this.session.id); this.ping(); this.db.close(); }
 }
