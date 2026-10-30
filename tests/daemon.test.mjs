@@ -66,6 +66,14 @@ test('after the meeting: read, summary and tasks through the CLI with real sourc
   assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'tasks', '--file', bad], { env }).catch(e => e)).stdout, /SOURCE_OUTSIDE_SESSION/);
 });
 
+test('pma at sets the scheduled start of the current session and rejects bad times', async () => {
+  const set = await json('at', '08:15');
+  assert.equal(new Date(set.scheduledStart).getHours() * 60 + new Date(set.scheduledStart).getMinutes(), 8 * 60 + 15);
+  assert.match(set.coverage, /lịch họp/);
+  assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'at', '8h'], { env }).catch(e => e)).stdout, /INVALID_INPUT|INVALID_TIME/);
+  assert.equal((await json('context')).agenda.scheduledStart, set.scheduledStart);
+});
+
 test('Stop hook: blocks a following session while text is unread, ignores sessions that never followed', async () => {
   await call('prepare', { title: 'Phiên hook', fixture: true });
   await call('fixture', { text: 'Chưa ai đọc đoạn này.' });

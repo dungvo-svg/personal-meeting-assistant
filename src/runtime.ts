@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { applyGlossary, foldRuns, isHallucination, riskyVariants, type GlossaryEntry } from './text.js';
+import { applyGlossary, collapseLoops, foldRuns, isHallucination, riskyVariants, type GlossaryEntry } from './text.js';
 
 export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
 export type Opener = (url: string) => void;
@@ -25,6 +25,25 @@ export function zoomLaunchUrl(input: string) {
   if (confno && /^\d{9,12}$/.test(confno)) return join(confno, url.searchParams.get('pwd'));
   throw new Error('MEETING_URL_NOT_SUPPORTED: chỉ nhận link Zoom dạng https://...zoom.us/j/<số phòng> hoặc /my/<tên>');
 }
+// Google Meet: https://meet.google.com/abc-defg-hij only (no nicknames or lookup links). The URL is rebuilt from the code
+// and, if present, a one- or two-digit authuser (which Google account opens it); the rest of the query is dropped.
+export function meetLaunchUrl(input: string) {
+  let url: URL; try { url = new URL(input.trim()); } catch { throw new Error('MEETING_URL_INVALID'); }
+  const code = url.pathname.match(/^\/([a-z]{3}-[a-z]{4}-[a-z]{3})\/?$/);
+  if (url.protocol === 'https:' && url.hostname.toLowerCase() === 'meet.google.com' && !url.username && !url.password && !url.port && code) {
+    const authuser = url.searchParams.get('authuser');
+    return { meetingId: code[1], launch: 'https://meet.google.com/' + code[1] + (authuser && /^\d{1,2}$/.test(authuser) ? '?authuser=' + authuser : '') };
+  }
+  throw new Error('MEETING_URL_NOT_SUPPORTED: chỉ nhận link Google Meet dạng https://meet.google.com/abc-defg-hij');
+}
+export function meetingLaunch(input: string) {
+  let host = ''; try { host = new URL(input.trim()).hostname.toLowerCase(); } catch { throw new Error('MEETING_URL_INVALID'); }
+  if (host === 'meet.google.com') return { platform: 'meet' as const, ...meetLaunchUrl(input) };
+  try { return { platform: 'zoom' as const, ...zoomLaunchUrl(input) }; }
+  catch (error) { if (String(error).includes('MEETING_URL_NOT_SUPPORTED')) throw new Error('MEETING_URL_NOT_SUPPORTED: chỉ nhận link Zoom (https://...zoom.us/j/<số phòng> hoặc /my/<tên>) hoặc Google Meet (https://meet.google.com/abc-defg-hij)'); throw error; }
+}
+// "HH:MM" on the given day, in local time, as an ISO instant; undefined if it is not a clock time.
+const scheduledAt = (at: string | undefined, day = new Date()) => at && /^([01]?\d|2[0-3]):[0-5]\d$/.test(at) ? new Date(day.toDateString() + ' ' + at).toISOString() : undefined;
 const localTime = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
 const localDate = (iso: string) => new Date(iso).toLocaleDateString('vi-VN');
 const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
@@ -87,7 +106,7 @@ export class MeetingRuntime extends EventEmitter {
     writeFileSync(join(this.dataDir, 'glossary.json'), JSON.stringify(this.glossary, null, 1), 'utf8'); this.ping();
     return this.glossary;
   }
-  shown(text: string) { return applyGlossary(text, this.glossary); }
+  shown(text: string) { return applyGlossary(collapseLoops(text), this.glossary); }
   ping() { this.emit('change'); }
   prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo'], extra: { me?: string; at?: string } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
@@ -102,7 +121,7 @@ export class MeetingRuntime extends EventEmitter {
       : savedIsCurrent ? this.context : { title: title || 'Phiên họp cá nhân', languages, translation_required: false, topics: [], contextSource: 'NONE', staleSavedContextDate: this.context.date };
     // Who "Tôi" is (remembered for next time) and when the meeting was scheduled, for the coverage line in reports.
     if (extra.me?.trim()) this.saveProfile({ me: extra.me.trim().slice(0, 80) });
-    const scheduled = extra.at && /^([01]?\d|2[0-3]):[0-5]\d$/.test(extra.at) ? new Date(new Date().toDateString() + ' ' + extra.at).toISOString() : undefined;
+    const scheduled = scheduledAt(extra.at);
     const context = { ...base, me: this.profile.me, scheduledStart: scheduled };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
@@ -324,15 +343,29 @@ export class MeetingRuntime extends EventEmitter {
     return { ...this.compact(), raw };
   }
   openMeeting(input: string) {
-    const { meetingId, launch } = zoomLaunchUrl(input);
+    const { platform, meetingId, launch } = meetingLaunch(input);
     this.opener(launch);
     const openedAt = new Date().toISOString();
     if (this.session && !this.session.ended) {
       // Keep the meeting ID for the report; the passcode is not stored.
-      this.session.context = { ...this.session.context, meeting: { platform: 'zoom', meetingId, openedAt } };
+      this.session.context = { ...this.session.context, meeting: { platform, meetingId, openedAt } };
       this.db.prepare('UPDATE sessions SET context=? WHERE id=?').run(JSON.stringify(this.session.context), this.session.id); this.ping();
     }
-    return { opened: true, platform: 'zoom', meetingId, openedAt, instruction: 'Zoom was asked to open the meeting. The user still confirms Join and Join Audio in Zoom; this tool does not join, speak or send anything.' };
+    const instruction = platform === 'meet'
+      ? 'The default browser was asked to open the Google Meet room. The user still asks to join and turns audio on in Meet; this tool does not join, speak or send anything.'
+      : 'Zoom was asked to open the meeting. The user still confirms Join and Join Audio in Zoom; this tool does not join, speak or send anything.';
+    return { opened: true, platform, meetingId, openedAt, instruction };
+  }
+  // The scheduled start can be corrected after the session began (start --at is only known then); coverage is computed from
+  // it when a report is written, so a finished session needs `pma raw` again to show the new line.
+  setSchedule(id: string, at: string) {
+    const session = this.sessionRow(id); const scheduledStart = scheduledAt(at, new Date(session.created));
+    if (!scheduledStart) throw new Error('INVALID_TIME: dùng giờ dạng HH:MM, ví dụ 13:30');
+    const context = { ...session.context, scheduledStart };
+    this.db.prepare('UPDATE sessions SET context=? WHERE id=?').run(JSON.stringify(context), id);
+    if (this.session?.id === id) this.session.context = context;
+    this.ping();
+    return { sessionId: id, scheduledStart, coverage: this.coverage({ ...session, context }), ended: !!session.ended };
   }
   private sessionRow(id: string) {
     const session: any = this.db.prepare('SELECT id,title,created,ended,mode,context FROM sessions WHERE id=?').get(id);
@@ -345,7 +378,7 @@ export class MeetingRuntime extends EventEmitter {
     mkdirSync(dir, { recursive: true }); return dir;
   }
   private header(session: any, kind: string) {
-    const meeting = session.context?.meeting?.meetingId ? ' · Zoom ' + session.context.meeting.meetingId : '';
+    const meeting = session.context?.meeting?.meetingId ? (session.context.meeting.platform === 'meet' ? ' · Google Meet ' : ' · Zoom ') + session.context.meeting.meetingId : '';
     return [`# ${kind} — ${session.title}`, '', `Ngày ${localDate(session.created)} · mở phiên ${localTime(session.created)}` + (session.ended ? ` · kết thúc ${localTime(session.ended)}` : ' · phiên chưa kết thúc') + meeting, '', this.coverage(session), ''];
   }
   // How much of the meeting was actually heard (audit 30/10: scheduled 13:30, heard only 14:04–14:13).
@@ -358,7 +391,7 @@ export class MeetingRuntime extends EventEmitter {
     if (scheduled) {
       parts.push(`lịch họp ${localTime(scheduled)}`);
       if (minutes(scheduled, span.first) >= 2) parts.push(`**không nghe được ${minutes(scheduled, span.first)} phút đầu** (${localTime(scheduled)}–${localTime(span.first)})`);
-    } else parts.push('chưa có giờ họp theo lịch (pma start --at HH:MM) nên không biết có lỡ phần đầu không');
+    } else parts.push('chưa có giờ họp theo lịch (pma at HH:MM) nên không biết có lỡ phần đầu không');
     return parts.join(' · ') + '.';
   }
   writeRaw(id: string) {

@@ -5,8 +5,10 @@ import { call } from './client.js';
 import { foldRuns, isHallucination, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
-  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_URL] [--languages vi,lo] [--me "Tên tôi"] [--at HH:MM]
+  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo] [--me "Tên tôi"] [--at HH:MM]
+                                   --link: Zoom (zoom.us/j/...) hoặc Google Meet (meet.google.com/abc-defg-hij)
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
+  pma at HH:MM [--session ID]      sửa giờ họp theo lịch của phiên đang mở (độ phủ tính lại; phiên đã kết thúc thì chạy pma raw lại)
   pma sources                      nguồn loa đang có tiếng (suggested)
   pma select <index>               cấp quyền nguồn loa (sau khi người dùng đồng ý)
   pma select-mic <index>           đổi micro kênh "Tôi" (mặc định: micro Zoom đang dùng, hoặc micro mặc định của Windows)
@@ -111,6 +113,7 @@ async function main() {
       const load = status.expectedLoadSeconds ? `, lần trước mất khoảng ${Math.round(status.expectedLoadSeconds)} giây` : '';
       return out({ ...status, opened, next: `Mô hình đang nạp sẵn (WARMING${load}). pma sources → hỏi người dùng → pma select <index> → pma listen (micro "Tôi" bật sẵn, theo nút micro Zoom) → Monitor "pma follow"` + (status.me ? '' : '. Chưa biết tên người dùng: thêm --me "Tên" ở lần start sau.') });
     }
+    case 'at': return out(await call('schedule', { ...session, at: positional[0] ?? flags.at }));
     case 'sources': { const r = await call('sources', { levels: flags.levels !== 'false' }); return out({ suggested: r.suggested, devices: r.devices.map((d: any) => ({ index: d.index, name: d.name, kind: d.kind === 'microphone' ? 'mic' : 'speaker', default: d.isDefaultOutput || undefined, frames: d.level?.framesReceived, peak: d.level?.peak })) }); }
     case 'select': return out(await call('select', { ...session, deviceIndex: Number(positional[0]) }));
     // Micro "Tôi" is on by default (owner, 30/10/2026); select-mic only picks a different microphone.

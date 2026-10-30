@@ -64,6 +64,64 @@ test('only Zoom links open, rebuilt from validated parts; passcode not stored', 
   for (const bad of ['https://evil.com/j/81234567890', 'https://zoom.us.evil.com/j/81234567890', 'http://zoom.us/j/81234567890', 'https://zoom.us/j/123', 'file:///C:/x.exe', 'zoom.us/j/81234567890', 'https://meet.google.com/abc-defg-hij']) assert.throws(() => zoomLaunchUrl(bad), /MEETING_URL/);
   await withRuntime(async r => { const opened = []; r.opener = url => opened.push(url); r.prepare('Họp'); const got = r.openMeeting('https://zoom.us/j/81234567890?pwd=secret'); assert.equal(got.meetingId, '81234567890'); assert.equal(opened.length, 1); assert.doesNotMatch(JSON.stringify(r.snapshot().session), /secret/); assert.equal(r.session.context.meeting.meetingId, '81234567890'); assert.throws(() => r.openMeeting('https://evil.com/j/81234567890'), /MEETING_URL/); assert.equal(opened.length, 1); });
 });
+test('Google Meet links open in the default browser, rebuilt from the room code; platform and header say Meet', async () => {
+  const { meetLaunchUrl, meetingLaunch } = await import('../dist/runtime.js');
+  assert.deepEqual(meetLaunchUrl('https://meet.google.com/abc-defg-hij'), { meetingId: 'abc-defg-hij', launch: 'https://meet.google.com/abc-defg-hij' });
+  assert.equal(meetLaunchUrl('https://meet.google.com/abc-defg-hij/?authuser=1&pli=1&x=http://evil.com').launch, 'https://meet.google.com/abc-defg-hij?authuser=1');
+  assert.equal(meetLaunchUrl('https://meet.google.com/abc-defg-hij?authuser=evil').launch, 'https://meet.google.com/abc-defg-hij');
+  for (const bad of ['http://meet.google.com/abc-defg-hij', 'https://meet.google.com.evil.com/abc-defg-hij', 'https://evil.com/meet.google.com/abc-defg-hij', 'https://user@meet.google.com/abc-defg-hij', 'https://meet.google.com:8443/abc-defg-hij', 'https://meet.google.com/abc-defg', 'https://meet.google.com/ABC-defg-hij', 'https://meet.google.com/abc-defg-hij/extra', 'https://meet.google.com/lookup/abc', 'https://zoom.us/j/81234567890', 'meet.google.com/abc-defg-hij']) assert.throws(() => meetLaunchUrl(bad), /MEETING_URL/);
+  assert.equal(meetingLaunch('https://meet.google.com/abc-defg-hij').platform, 'meet');
+  assert.equal(meetingLaunch('https://zoom.us/j/81234567890').platform, 'zoom');
+  assert.throws(() => meetingLaunch('https://evil.com/x'), /MEETING_URL_NOT_SUPPORTED.*Google Meet/);
+  assert.throws(() => meetingLaunch('not a url'), /MEETING_URL_INVALID/);
+  await withRuntime(async r => {
+    const opened = []; r.opener = url => opened.push(url); r.prepare('Họp Meet', false, undefined, ['vi']); const id = r.session.id;
+    const got = r.openMeeting('https://meet.google.com/abc-defg-hij?pli=1');
+    assert.deepEqual([got.platform, got.meetingId, opened], ['meet', 'abc-defg-hij', ['https://meet.google.com/abc-defg-hij']]);
+    assert.equal(r.session.context.meeting.platform, 'meet');
+    assert.ok(readFileSync(r.writeRaw(id).path, 'utf8').includes(' · Google Meet abc-defg-hij'));
+    assert.throws(() => r.openMeeting('https://meet.google.com.evil.com/abc-defg-hij'), /MEETING_URL/); assert.equal(opened.length, 1);
+  });
+});
+test('the scheduled start can be set after the session began, and coverage follows it', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp', false, undefined, ['vi']); const id = r.session.id;
+    r.ingest('Dũng làm báo cáo khách hàng', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC', 'cap', 'vi');
+    assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /chưa có giờ họp theo lịch \(pma at HH:MM\)/);
+    assert.throws(() => r.setSchedule(id, '25:00'), /INVALID_TIME/); assert.throws(() => r.setSchedule(id, 'abc'), /INVALID_TIME/);
+    const set = r.setSchedule(id, '00:00');
+    assert.match(set.coverage, /lịch họp .* · \*\*không nghe được \d+ phút đầu\*\*/);
+    assert.equal(new Date(r.session.context.scheduledStart).getHours(), 0);
+    assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /lịch họp .* · \*\*không nghe được \d+ phút đầu\*\*/);
+    // persisted in the database, not only in memory, and still settable after the session ended
+    await r.finish(id); assert.equal(r.setSchedule(id, '00:30').ended, true);
+    assert.throws(() => r.setSchedule('00000000-0000-0000-0000-000000000000', '10:00'), /SESSION_NOT_FOUND/);
+  });
+});
+test('phrase loops collapse for display; segments that are mostly one phrase fold together', async () => {
+  const { collapseLoops, foldRuns } = await import('../dist/text.js');
+  assert.equal(collapseLoops('Kho nhận Thủy của ' + 'Thủy của '.repeat(7).trim() + ' rồi'), 'Kho nhận Thủy của [×8] rồi');
+  assert.equal(collapseLoops('a b a b a b a b'), 'a b [×4]');
+  assert.equal(collapseLoops('a b c a b c a b c a b c'), 'a b c [×4]');
+  assert.equal(collapseLoops('Mai của, Mai của, Mai của, Mai của.'), 'Mai của [×4].');
+  assert.equal(collapseLoops('dạ dạ dạ dạ dạ dạ dạ'), 'dạ [×7]');
+  assert.equal(collapseLoops('Thủy của Thủy của Thủy của'), 'Thủy của Thủy của Thủy của');
+  assert.equal(collapseLoops('có có có có anh'), 'có có có có anh');
+  assert.equal(collapseLoops('Thủy của [×18]'), 'Thủy của [×18]');
+  const loop = n => 'Thủy của '.repeat(n).trim();
+  const rows = [{ id: 1, text: 'Kho số hai đủ hàng' }, { id: 2, text: loop(9) }, { id: 3, text: loop(12) }, { id: 4, text: 'Thủy của [×18]' }, { id: 5, text: 'Anh gửi báo giá' }];
+  const folded = foldRuns(rows);
+  assert.deepEqual(folded.map(g => [g.first.id, g.last.id, g.count]), [[1, 1, 1], [2, 4, 3], [5, 5, 1]]);
+  // two loop segments with different phrases, one loop between ordinary speech, or a loop inside a long sentence stay separate
+  assert.equal(foldRuns([{ id: 1, text: loop(9) }, { id: 2, text: 'Mai của '.repeat(9).trim() }]).length, 2);
+  assert.equal(foldRuns([{ id: 1, text: loop(9) }, { id: 2, text: 'Anh gửi báo giá' }, { id: 3, text: loop(9) }]).length, 3);
+  assert.equal(foldRuns([{ id: 1, text: 'Hôm nay kho kiểm hàng rất kỹ và ' + loop(4) }, { id: 2, text: 'Hôm nay kho kiểm hàng rất kỹ và ' + loop(4) }]).length, 1 + 1);
+  await withRuntime(async r => {
+    r.prepare('Họp', false, undefined, ['vi']);
+    const a = r.ingest(loop(8), 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC', 'cap', 'vi');
+    assert.equal(r.sources(r.session.id)[0].shown, 'Thủy của [×8]'); assert.equal(r.sources(r.session.id)[0].text, loop(8)); assert.ok(a);
+  });
+});
 test('agenda sent by the user becomes session context; a saved agenda from another day is not reused', async () => {
   await withRuntime(async r => { r.context = { title: 'Họp cũ', date: '2000-01-01', topics: ['xe'] }; r.prepare(); assert.equal(r.session.context.contextSource, 'NONE'); assert.equal(r.session.context.staleSavedContextDate, '2000-01-01'); await r.finish(r.session.id); r.prepare('Họp kho', false, 'Rà tồn kho tháng 10'); assert.equal(r.session.context.agenda, 'Rà tồn kho tháng 10'); assert.equal(r.history(r.session.id).context.agenda, 'Rà tồn kho tháng 10'); });
 });

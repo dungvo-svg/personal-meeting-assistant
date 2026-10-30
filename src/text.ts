@@ -45,15 +45,47 @@ export function wrapLine(text: string, width = 450) {
 
 const normalized = (text: string) => text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
 
-// ASR loops ("cái", "cái", "cái"…) arrive as many segments; three or more identical short ones become one entry.
-export function foldRuns<T extends Row>(rows: T[], minRun = 3, maxWords = 4) {
-  const out: { first: T; last: T; count: number }[] = [];
-  for (const row of rows) {
-    const previous = out.at(-1); const key = normalized(row.text);
-    if (previous && key && key.split(' ').length <= maxWords && normalized(previous.first.text) === key) { previous.last = row; previous.count++; }
-    else out.push({ first: row, last: row, count: 1 });
+// Loops of 1-4 words ("Thủy của Thủy của …") collapse to "Thủy của [×N]", as the audio worker does for new text; this
+// covers text stored before that. One word needs 6 in a row ("có có có có" is real speech), a longer phrase 4. Shorter
+// phrases are tried first so "a b a b a b a b" is "a b" x4, not "a b a b" x2.
+const WORD_CHAR = '[^\\s,.;:!?…]';
+const WORD_GAP = '[\\s,.;:!?…]+';
+const WORD = WORD_CHAR + '+';
+const LOOPS = [1, 2, 3, 4].map(words => ({ words, pattern: new RegExp(`(?<!${WORD_CHAR})(${WORD}(?:${WORD_GAP}${WORD}){${words - 1}})(?:${WORD_GAP}\\1(?!${WORD_CHAR})){${words === 1 ? 5 : 3},}`, 'giu') }));
+const wordCount = (text: string) => text.match(new RegExp(WORD, 'gu'))?.length ?? 0;
+export function collapseLoops(text: string) {
+  for (const { words, pattern } of LOOPS) text = text.replace(pattern, (match, phrase) => `${phrase} [×${wordCount(match) / words}]`);
+  return text;
+}
+
+// A segment that is mostly one repeated phrase has a key (the phrase). One the worker already wrote as "phrase [×N]"
+// with N >= 4 and little else around it has the key of its text without the count. Anything else has none.
+const LOOP_SHARE = 0.6;
+const LOOP_MARKED_MAX_WORDS = 6;
+function loopKey(text: string) {
+  const counts = [...text.matchAll(/\[×(\d+)\]/g)].map(match => Number(match[1]));
+  if (counts.some(count => count >= 4)) {
+    const rest = normalized(text.replace(/\s*\[×\d+\]/g, ''));
+    return rest && rest.split(' ').length <= LOOP_MARKED_MAX_WORDS ? rest : null;
   }
-  return out.flatMap(group => group.count >= minRun ? [group] : rowsOf(rows, group));
+  const total = wordCount(text); let best: { key: string; covered: number } | null = null;
+  for (const { pattern } of LOOPS) for (const match of text.matchAll(pattern)) {
+    const covered = wordCount(match[0]);
+    if (!best || covered > best.covered) best = { key: normalized(match[1]), covered };
+  }
+  return best && best.covered / total >= LOOP_SHARE ? best.key : null;
+}
+
+// ASR loops ("cái", "cái", "cái"…) arrive as many segments; three or more identical short ones become one entry.
+// Segments that are mostly the same repeated phrase ("Thủy của Thủy của …", audit 30/10) fold from two.
+export function foldRuns<T extends Row>(rows: T[], minRun = 3, maxWords = 4) {
+  const out: { first: T; last: T; count: number; loop: string | null }[] = [];
+  for (const row of rows) {
+    const previous = out.at(-1); const key = normalized(row.text); const loop = loopKey(row.text);
+    if (previous && key && ((loop && previous.loop === loop) || (key.split(' ').length <= maxWords && normalized(previous.first.text) === key))) { previous.last = row; previous.count++; }
+    else out.push({ first: row, last: row, count: 1, loop });
+  }
+  return out.flatMap(group => group.count >= (group.loop ? 2 : minRun) ? [group] : rowsOf(rows, group));
 }
 function rowsOf<T extends Row>(rows: T[], group: { first: T; last: T; count: number }) {
   const start = rows.indexOf(group.first);

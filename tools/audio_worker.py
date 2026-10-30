@@ -110,10 +110,22 @@ def parent_watch(pid):
 
 
 # Phrases Whisper invents over silence or music. They are kept but flagged, never silently removed.
-SILENCE_PHRASES = ('đăng ký kênh', 'subscribe', 'cảm ơn các bạn đã theo dõi', 'cảm ơn các bạn đã xem', 'hẹn gặp lại các bạn', 'ghiền mì gõ', 'like và share')
+SILENCE_PHRASES = ('đăng ký kênh', 'subscribe', 'cảm ơn các bạn đã theo dõi', 'cảm ơn các bạn đã xem', 'hẹn gặp lại các bạn', 'ghiền mì gõ', 'like và share',
+                   'video hấp dẫn', 'bỏ lỡ những video', 'không bỏ lỡ video', 'nhấn chuông', 'bấm chuông', 'chuông thông báo')
 # Whole segments that are only a greeting-style opener; real speech rarely is just these words (audit 30/10, #1523).
 SILENCE_WHOLE = ('chào mừng', 'chào mừng các bạn', 'chào mừng các bạn đã đến với kênh')
-REPEAT = re.compile(r'(\b\S+\b)(?:\W+\1\b){5,}', re.IGNORECASE)
+# A thank-you on its own is ordinary speech; it is a ghost only when the model itself doubts there was speech (audit 30/10, #1707).
+SILENCE_THANKS = ('cảm ơn', 'cảm ơn bạn', 'cảm ơn các bạn')
+THANKS_NO_SPEECH_ABOVE = 0.3
+THANKS_LOGPROB_BELOW = -0.8
+# Loops of 1-4 words ("Thủy của Thủy của …", audit 30/10, #1690). One word needs 6 in a row (as before: "có có có có" is
+# real speech), a longer phrase 4. Shorter phrases are tried first so "a b a b a b a b" is "a b" x4, not "a b a b" x2.
+WORD_CHAR = r'[^\s,.;:!?…]'
+WORD_GAP = r'[\s,.;:!?…]+'
+WORD = WORD_CHAR + '+'
+REPEAT_PATTERNS = tuple(
+    (words, re.compile(rf'(?<!{WORD_CHAR})({WORD}(?:{WORD_GAP}{WORD}){{{words - 1}}})(?:{WORD_GAP}\1(?!{WORD_CHAR})){{{5 if words == 1 else 3},}}', re.IGNORECASE))
+    for words in (1, 2, 3, 4))
 
 
 # Longest chunk before a forced cut, and how long a backed-up queue may keep growing a chunk before audio is dropped.
@@ -143,9 +155,10 @@ def segment_flags(text, segment, language, language_probability=None):
     if language == 'lo' and any('฀' <= ch <= '๿' for ch in text):
         flags.append('LAO_WRITTEN_IN_THAI_SCRIPT')
     whole = re.sub(r'[^\w\s]', '', text.lower()).strip()
-    if any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or segment.no_speech_prob > 0.6:
+    doubtful = segment.no_speech_prob > THANKS_NO_SPEECH_ABOVE or getattr(segment, 'avg_logprob', 0.0) < THANKS_LOGPROB_BELOW
+    if any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or (whole in SILENCE_THANKS and doubtful) or segment.no_speech_prob > 0.6:
         flags.append('LIKELY_HALLUCINATION')
-    if segment.compression_ratio > 2.4 or REPEAT.search(text):
+    if segment.compression_ratio > 2.4 or any(pattern.search(text) for _, pattern in REPEAT_PATTERNS):
         flags.append('REPETITION')
     if language_probability is not None and language_probability < LANG_UNSURE_BELOW:
         flags.append('LANG_UNSURE')
@@ -155,7 +168,9 @@ def segment_flags(text, segment, language, language_probability=None):
 
 
 def collapse_repeats(text):
-    return REPEAT.sub(lambda m: f'{m.group(1)} [×{len(re.findall(re.escape(m.group(1)), m.group(0), re.IGNORECASE))}]', text)
+    for words, pattern in REPEAT_PATTERNS:
+        text = pattern.sub(lambda m, words=words: f'{m.group(1)} [×{len(re.findall(WORD, m.group(0))) // words}]', text)
+    return text
 
 
 LAO_OPTIONS = {'no_repeat_ngram_size': 3, 'repetition_penalty': 1.2}
