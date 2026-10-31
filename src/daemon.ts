@@ -1,8 +1,10 @@
-// The one meeting runtime on this machine. It owns capture, ASR worker, history and reports, and is
-// independent of any Claude session: the CLI (`pma`) and the thin MCP adapter talk to it over loopback.
+// The session host of this machine (0.11). `pma start` creates it; it lives as long as the meeting: it owns the recorder
+// (WAV of the whole session), the ASR worker, history and reports, and exits after `stop` once the mix is made. Any other
+// command that finds no host starts one only to read history, and that one leaves after PMA_IDLE_MINUTES (2) idle.
+// It is independent of any Claude session: the CLI (`pma`) and the thin MCP adapter talk to it over loopback.
 import { z } from 'zod';
 import { createServer } from 'node:http';
-import { readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -10,7 +12,7 @@ import { MeetingRuntime } from './runtime.js';
 
 export const VERSION = '0.10.1';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
-const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON'];
+const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH'];
 for (let i = 2; i < process.argv.length - 1; i++) {
   if (process.argv[i] !== '--env') continue;
   const [key, ...value] = process.argv[++i].split('=');
@@ -19,7 +21,7 @@ for (let i = 2; i < process.argv.length - 1; i++) {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
 const port = Number(process.env.PMA_PORT || 8796);
-const idleMinutes = Number(process.env.PMA_IDLE_MINUTES || 30);
+const idleMinutes = Number(process.env.PMA_IDLE_MINUTES || 2);
 const origin = `http://127.0.0.1:${port}`;
 const cookie = randomBytes(32).toString('hex');
 const token = randomBytes(32).toString('hex');
@@ -38,13 +40,14 @@ const languages = z.array(z.enum(['vi', 'lo'])).min(1).max(2).default(['vi', 'lo
 const methods: Record<string, (input: any) => any> = {
   ping: () => ({ ok: true, version: VERSION, pid: process.pid, testMode: runtime.testMode }),
   status: () => runtime.compact(),
-  prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional(), me: z.string().max(80).optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages, { me: a.me, at: a.at }); return { ...runtime.compact(), me: runtime.profile.me ?? null, expectedLoadSeconds: runtime.profile.lastModelLoadSeconds ?? null }; },
+  prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional(), me: z.string().max(80).optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(), warm: z.boolean().optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages, { me: a.me, at: a.at, warm: a.warm }); return { ...runtime.compact(), me: runtime.profile.me ?? null, expectedLoadSeconds: runtime.profile.lastModelLoadSeconds ?? null, rememberedSpeaker: runtime.profile.speaker?.name ?? null }; },
   open: input => runtime.openMeeting(z.object({ url: z.string().min(10).max(2000) }).parse(input).url),
   schedule: input => { const a = z.object({ sessionId: sid.optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/) }).parse(input); return runtime.setSchedule(current(a.sessionId), a.at); },
   sources: async input => { const devices = await runtime.listDevices(z.object({ levels: z.boolean().default(true) }).parse(input).levels); return { devices, suggested: runtime.suggest(devices) }; },
-  select: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative() }).parse(input); const armed = await runtime.select(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, expiresAt: armed.expiresAt }; },
+  // Choosing the speaker also starts the recorder (when `start` has not already found the remembered one).
+  select: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), mic: z.boolean().default(true) }).parse(input); const armed = await runtime.select(current(a.sessionId), a.deviceIndex, a.mic); return { index: armed.index, name: armed.name, recorder: runtime.recorderBrief() }; },
   selectMic: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), consent: z.literal(true) }).parse(input); const armed = await runtime.selectMic(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, channel: 'Tôi', expiresAt: armed.expiresAt }; },
-  listen: input => { const a = z.object({ sessionId: sid.optional(), mic: z.boolean().default(true), saveAudio: z.boolean().optional(), keepDays: z.number().int().min(1).max(90).default(7) }).parse(input); return runtime.start(current(a.sessionId), a.mic, { saveAudio: a.saveAudio, keepDays: a.keepDays }); },
+  listen: input => { const a = z.object({ sessionId: sid.optional(), mic: z.boolean().default(true) }).parse(input); return runtime.start(current(a.sessionId), a.mic); },
   replay: input => { const a = z.object({ sessionId: sid.optional(), file: z.string().min(1).max(1000), speed: z.number().min(0.5).max(20).default(1) }).parse(input); return runtime.replay(current(a.sessionId), a.file, a.speed); },
   pause: async input => { runtime.requireSession(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)); await runtime.pause(); return runtime.compact(); },
   audio: input => { const a = z.object({ action: z.enum(['list', 'purge']).default('list'), olderThanDays: z.number().min(0).max(3650).optional() }).parse(input); return a.action === 'purge' ? runtime.purgeAudio(a.olderThanDays) : runtime.audioList(); },
@@ -52,6 +55,10 @@ const methods: Record<string, (input: any) => any> = {
   read: input => { const a = z.object({ sessionId: sid.optional(), after: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(100).default(100) }).parse(input); const items = runtime.sources(current(a.sessionId), a.after, a.limit); return { items, nextCursor: items.at(-1)?.id ?? a.after, done: items.length < a.limit }; },
   context: () => ({ agenda: runtime.session?.context ?? null, session: runtime.compact().session }),
   note: input => { const a = z.object({ sessionId: sid.optional(), key: z.string().regex(/^[\w-]{1,80}$/), revision: z.number().int().min(1), kind: z.enum(['observation', 'decision', 'action', 'question', 'correction']), text: z.string().min(1).max(8000), sourceIds: ids.min(1).max(50) }).parse(input); return runtime.publish(current(a.sessionId), a.key, a.revision, a.kind, a.text, a.sourceIds); },
+  // Listening again from the WAV, and the list of what is worth listening to again. Both work on a finished session too:
+  // without an ID they take the open session, else the latest one.
+  recheck: input => { const a = z.object({ sessionId: sid.optional(), sourceId: z.number().int().positive().optional(), from: z.string().max(40).optional(), to: z.string().max(40).optional(), channel: z.enum(['speaker', 'mic']).optional(), beam: z.number().int().min(1).max(16).optional() }).parse(input); return runtime.recheck(sid.parse(a.sessionId ?? runtime.session?.id ?? runtime.latestSessionId()), a); },
+  coverage: input => { const a = z.object({ sessionId: sid.optional() }).parse(input); return runtime.coverage(sid.parse(a.sessionId ?? runtime.session?.id ?? runtime.latestSessionId())); },
   finish: input => runtime.finish(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   raw: input => runtime.writeRaw(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200) }).parse(input); return runtime.saveSummary(current(a.sessionId), a.markdown, a.sourceIds); },
@@ -112,24 +119,40 @@ const http = createServer(async (request, response) => {
   } catch (error) { if (!response.headersSent) json(response, 400, { error: String(error) }); else response.end(); }
 });
 http.requestTimeout = 30000; http.headersTimeout = 10000;
-try { await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(port, '127.0.0.1', resolve); }); }
+// A host that has just finished its session may still hold the port for a moment while a command already started the next one: wait for it.
+const listen = () => new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(port, '127.0.0.1', resolve); });
+try { for (let attempt = 0; ; attempt++) { try { await listen(); break; } catch (error: any) { if (error?.code !== 'EADDRINUSE' || attempt >= 6) throw error; await new Promise(r => setTimeout(r, 500)); } } }
 catch (error: any) { console.error(`Meeting runtime already running on ${origin} (${error?.code || error}); exiting without touching history.`); process.exit(1); }
 runtime = new MeetingRuntime(root, dataDir, process.env.PMA_TEST_MODE === '1');
 // A diagnostic instance must never launch Zoom.
 if (runtime.testMode) runtime.opener = () => {};
-runtime.on('change', () => { for (const response of events) response.write('event: update\ndata: {}\n\n'); });
+runtime.on('change', () => { writeRegistry(); for (const response of events) response.write('event: update\ndata: {}\n\n'); });
 mkdirSync(dataDir, { recursive: true });
 const startedAt = new Date().toISOString();
-writeFileSync(join(dataDir, 'daemon.json'), JSON.stringify({ url: origin, pid: process.pid, token, version: VERSION, startedAt }));
+// daemon.json says who this host is and (Q-3) which session, recorder and worker it is running, so the next host can take a
+// session over if this one dies while the recorder goes on. Rewritten whenever those change.
+let lastRegistry = '';
+function writeRegistry() {
+  const registry = runtime.registry(); const text = JSON.stringify(registry); if (text === lastRegistry) return; lastRegistry = text;
+  try { writeFileSync(join(dataDir, 'daemon.json'), JSON.stringify({ url: origin, pid: process.pid, token, version: VERSION, startedAt, ...registry })); } catch (error) { console.error('daemon.json not written:', error); }
+}
+writeRegistry();
 writeFileSync(join(dataDir, 'panel.json'), JSON.stringify({ url: origin, pid: process.pid, startedAt }));
 console.error(`Meeting runtime ${VERSION}: ${origin} (capture OFF)`);
 
-// Saved audio is deleted when it expires: at start and then every hour.
-const purgeExpiredAudio = () => { try { runtime.purgeAudio(); } catch (error) { console.error('Audio purge failed:', error); } };
-purgeExpiredAudio(); setInterval(purgeExpiredAudio, 3600_000).unref();
+// Saved audio never expires and is never deleted here: only `pma audio purge` removes it (owner, 31/10/2026).
 
-// Exit when nobody has used it for a while and no meeting is open; the CLI starts it again on demand.
-setInterval(() => { if ((!runtime.session || runtime.session.ended) && !runtime.capture && Date.now() - lastActivity > idleMinutes * 60000) void shutdown(); }, 30000).unref();
+// A host with no open session and nothing recording leaves after PMA_IDLE_MINUTES; the CLI starts one again on demand.
+setInterval(() => { if ((!runtime.session || runtime.session.ended) && !runtime.capture && !runtime.recorderAlive() && Date.now() - lastActivity > idleMinutes * 60000) void shutdown(); }, Math.min(30000, Math.max(500, idleMinutes * 30000))).unref();
+// The session is over, RAW is written and the mix is made: this host has nothing left to do. The grace lets the reply to `pma stop`
+// reach the CLI. A diagnostic runtime stays up (tests keep using it) unless PMA_EXIT_AFTER_FINISH=1.
+if (!runtime.testMode || process.env.PMA_EXIT_AFTER_FINISH === '1') runtime.on('finished', () => setTimeout(() => void shutdown(), 1500).unref());
 let stopping = false;
-async function shutdown() { if (stopping) return; stopping = true; await runtime.close(); for (const response of events) response.end(); http.close(); setTimeout(() => process.exit(0), 100).unref(); }
+async function shutdown() {
+  if (stopping) return; stopping = true;
+  await runtime.close();
+  // Gone from daemon.json before the port is released, so a command that comes right after starts a new host instead of calling this one.
+  try { rmSync(join(dataDir, 'daemon.json'), { force: true }); rmSync(join(dataDir, 'panel.json'), { force: true }); } catch {}
+  for (const response of events) response.end(); http.close(); setTimeout(() => process.exit(0), 100).unref();
+}
 process.on('SIGINT', () => void shutdown()); process.on('SIGTERM', () => void shutdown());

@@ -10,19 +10,23 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
   pma at HH:MM [--session ID]      sửa giờ họp theo lịch của phiên đang mở (độ phủ tính lại; phiên đã kết thúc thì chạy pma raw lại)
   pma sources                      nguồn loa đang có tiếng (suggested)
-  pma select <index>               cấp quyền nguồn loa (sau khi người dùng đồng ý)
+  pma select <index> [--no-mic]    chọn nguồn loa (sau khi người dùng đồng ý) và BẮT ĐẦU GHI ÂM cả buổi (bộ ghi riêng, tới khi pma stop). Nhớ lựa chọn
+                                   cho lần sau: pma start thấy đúng thiết bị đó thì ghi ngay, không cần select. Quyền chọn kéo dài cả phiên
   pma select-mic <index>           đổi micro kênh "Tôi" (mặc định: micro mà ứng dụng họp đang dùng, hoặc micro mặc định của Windows)
-  pma listen [--no-mic] [--no-save-audio] [--keep-days 7]
-                                   bật nghe, chờ tới LISTENING. Micro "Tôi" luôn mở, mọi nền tảng họp (tiếng loa lọt vào micro bị bỏ)
-                                   Mặc định lưu đủ âm thanh dạng WAV trên máy này (không gửi đi), tự xoá sau --keep-days ngày (1–90, mặc định 7);
-                                   --no-save-audio: không lưu (hoặc đặt PMA_SAVE_AUDIO=0). --save-audio vẫn nhận nhưng không còn tác dụng.
-                                   Ngừng nghe (pause/stop) thì tự ghép loa + micro thành <lượt>-mix.wav (16 kHz) để dùng với pma replay
+  pma listen                       bật nhận dạng chữ (ASR), chờ tới LISTENING; bộ nghe đuổi kịp từ giây đầu của bản ghi. Không giới hạn thời lượng.
+                                   Bản ghi âm (WAV) là hộp đen của cả buổi: ghi từ lúc có nguồn loa tới pma stop, giữ trên máy này (không gửi đi) cho tới
+                                   khi bạn tự xoá bằng pma audio purge. Micro "Tôi" luôn ghi (tiếng loa lọt vào micro bị bỏ); không muốn thì pma select --no-mic
   pma follow [--batch 15] [--max 40] [--after N] [--as TÊN] [--no-notes]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
                                    --as: tên người theo dõi (mặc định chinh; hai phiên cùng theo dõi thì mỗi phiên một tên, vd. dich), mỗi tên giữ con trỏ đọc riêng
                                    --no-notes: bỏ nhắc ghi chú cuốn chiếu (phiên dịch không ghi chú); cảnh báo trễ và dòng micro vẫn giữ
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
-  pma status | pause | stop        trạng thái / tạm dừng (giữ mô hình, pma listen lại có chữ ngay) / kết thúc (ghi RAW.md)
-  pma audio [list | purge [--older-than N]]   xem âm thanh đã lưu (mỗi phiên: file ghép dùng cho pma replay, hoặc "đang ghép") / xoá: purge xoá file hết hạn, --older-than N xoá file cũ hơn N ngày (0 = tất cả)
+  pma status | pause | stop        trạng thái / tạm dừng CHỈ phần nhận dạng chữ (bộ ghi âm vẫn ghi; pma listen lại thì đuổi kịp) /
+                                   kết thúc: dừng ghi, bộ nghe đọc nốt, ghép meeting-mix.wav, rồi mới ghi RAW.md (có thể mất vài phút)
+  pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS [--channel speaker|mic] [--beam 8] [--session ID]
+                                   nghe lại một đoạn từ bản ghi âm (chậm hơn, kỹ hơn), lưu kết quả, đoạn đó hiện "(đã nghe lại: …)" trong RAW
+  pma coverage [--json] [--session ID]   chỗ bản ghi có tiếng mà chưa có chữ, đoạn ASR lỗi, đoạn cờ không chắc: mỗi dòng kèm lệnh pma recheck
+  pma audio [list | purge [--older-than N]]   xem âm thanh đã lưu (mỗi phiên: meeting-mix.wav dùng cho pma replay, hoặc "đang ghép") / xoá: âm thanh KHÔNG tự hết hạn,
+                                   chỉ xoá khi bạn gõ lệnh này: --older-than N xoá phiên cũ hơn N ngày (0 = tất cả; phiên đang họp luôn được giữ)
   pma read [--after N] [--limit 100] [--session ID]
   pma note --text T --sources 1,2 [--kind observation]
   pma summary --file SUMMARY.md --sources 1,2,3 [--session ID]
@@ -59,7 +63,7 @@ function line(item: any) {
   if (isHallucination(item)) return `#${item.id} [bỏ: nghi câu ảo]`;
   const flags = Object.entries(FLAG_LABELS).filter(([code]) => item.boundary?.includes(code)).map(([, label]) => label);
   const who = item.boundary?.includes('CHANNEL_MIC') ? ' Tôi' : '';
-  return `#${item.id} ${clock(item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}`;
+  return `#${item.id} ${clock(item.wall || item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}`;
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
 const lines = (items: any[]) => foldRuns(items).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
@@ -85,10 +89,12 @@ async function follow(flags: Record<string, string>) {
     batch = [];
   };
   // Sau mỗi lô: báo khi chữ ra chậm hơn lời nói, và nhắc ghi chú cuốn chiếu mỗi 10 phút nghe.
-  let lastReminder = 0; let lastCheck = 0; let micDevice: string | undefined; let micChanged: string | undefined; let micError: string | undefined;
+  let lastReminder = 0; let lastCheck = 0; let micDevice: string | undefined; let micChanged: string | undefined; let micError: string | undefined; let recorderError: string | undefined;
   const checkHealth = async () => {
     lastCheck = Date.now();
-    const s = await call('status').catch(() => null); if (!s || s.captureState !== 'LISTENING') return;
+    const s = await call('status').catch(() => null); if (!s) return;
+    if (s.recorder?.error && s.recorder.error !== recorderError) { recorderError = s.recorder.error; console.log(`GHI ÂM ${s.recorder.state}: ${s.recorder.error}`); }
+    if (s.captureState !== 'LISTENING') return;
     const info = s.captureInfo ?? {};
     if (info.micDevice && info.micDevice !== micDevice) { micDevice = info.micDevice; console.log(`MICRO TÔI: đang thu ${info.micDevice} (${micWhy(info.micSelectedBy)})`); }
     if (info.micError && info.micError !== micError) { micError = info.micError; console.log(`MICRO TÔI: không mở được micro, chỉ nghe loa (${info.micError})`); }
@@ -127,21 +133,21 @@ async function main() {
       const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at });
       const opened = flags.link ? await call('open', { url: flags.link }) : undefined;
       const load = status.expectedLoadSeconds ? `, lần trước mất khoảng ${Math.round(status.expectedLoadSeconds)} giây` : '';
-      return out({ ...status, opened, next: `Mô hình đang nạp sẵn (WARMING${load}). pma sources → hỏi người dùng → pma select <index> → pma listen (micro "Tôi" luôn mở) → Monitor "pma follow"` + (status.me ? '' : '. Chưa biết tên người dùng: thêm --me "Tên" ở lần start sau.') });
+      // The recorder starts by itself when the speaker of the last session is still there (profile.json): pma status shows recorder.state.
+      const source = status.rememberedSpeaker ? `Đang dò nguồn loa đã nhớ từ lần trước ("${status.rememberedSpeaker}"): nếu còn thì bộ ghi âm tự chạy (pma status → recorder.state RECORDING), không cần select; nếu không: pma sources → hỏi người dùng → pma select <index> (bắt đầu ghi âm cả buổi). Rồi pma listen → Monitor "pma follow"` : 'pma sources → hỏi người dùng → pma select <index> (bắt đầu ghi âm cả buổi) → pma listen → Monitor "pma follow"';
+      return out({ ...status, opened, next: `Mô hình đang nạp sẵn, chữ chưa chạy tới khi pma listen (WARMING${load}). ${source} (micro "Tôi" luôn ghi)` + (status.me ? '' : '. Chưa biết tên người dùng: thêm --me "Tên" ở lần start sau.') });
     }
     case 'at': return out(await call('schedule', { ...session, at: positional[0] ?? flags.at }));
     case 'sources': { const r = await call('sources', { levels: flags.levels !== 'false' }); return out({ suggested: r.suggested, devices: r.devices.map((d: any) => ({ index: d.index, name: d.name, kind: d.kind === 'microphone' ? 'mic' : 'speaker', default: d.isDefaultOutput || undefined, frames: d.level?.framesReceived, peak: d.level?.peak })) }); }
-    case 'select': return out(await call('select', { ...session, deviceIndex: Number(positional[0]) }));
+    case 'select': return out(await call('select', { ...session, deviceIndex: Number(positional[0]), mic: flags['no-mic'] !== 'true' }));
     // Micro "Tôi" is on by default (owner, 30/10/2026); select-mic only picks a different microphone.
     case 'select-mic': return out(await call('selectMic', { ...session, deviceIndex: Number(positional[0]), consent: true }));
     case 'listen': {
-      const keepDays = flags['keep-days'] ? Number(flags['keep-days']) : undefined;
-      if (keepDays !== undefined && !(Number.isInteger(keepDays) && keepDays >= 1 && keepDays <= 90)) throw new Error('--keep-days phải là số nguyên từ 1 đến 90');
-      await call('listen', { ...session, mic: flags['no-mic'] !== 'true', ...(flags['no-save-audio'] === 'true' ? { saveAudio: false } : {}), ...(keepDays ? { keepDays } : {}) });
+      await call('listen', { ...session, mic: flags['no-mic'] !== 'true' });
       // Model load took up to ~3 minutes on 30/10; wait for it instead of reporting a failure.
       const deadline = Date.now() + 300000; let status = await call('status');
       while (['WARMING', 'WARM_READY', 'LOADING_ASR', 'WAITING_FOR_SOURCE'].includes(status.captureState) && Date.now() < deadline) { await new Promise(r => setTimeout(r, 1500)); status = await call('status'); }
-      return out({ captureState: status.captureState, lastError: status.lastError, device: status.captureInfo?.device, mic: status.captureInfo?.micDevice ?? undefined, micWhy: status.captureInfo?.micDevice ? micWhy(status.captureInfo.micSelectedBy) : status.captureInfo?.micError, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, waitedForSourceSeconds: status.captureInfo?.waitedForSourceSeconds, rms: status.captureInfo?.rms, audio: status.audio ? { dir: status.audio.dir, expiresAt: status.audio.expiresAt, note: 'Lưu đủ âm thanh trên máy: WAV ~0,8 GB/giờ (loa + micro + file ghép); khi ngừng nghe tự ghép <lượt>-mix.wav dùng cho pma replay; tự xoá khi hết hạn hoặc pma audio purge; tắt bằng pma listen --no-save-audio' } : 'không lưu âm thanh (đã tắt: --no-save-audio hoặc PMA_SAVE_AUDIO=0)', next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
+      return out({ captureState: status.captureState, lastError: status.lastError, recorder: status.recorder, device: status.armedDevice?.name, mic: status.captureInfo?.micDevice ?? undefined, micWhy: status.captureInfo?.micDevice ? micWhy(status.captureInfo.micSelectedBy) : status.captureInfo?.micError, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, audio: status.audio ? { dir: status.audio.dir, note: 'Bản ghi âm cả buổi nằm trên máy này (WAV ~0,8 GB/giờ), giữ cho tới khi bạn tự xoá bằng pma audio purge; meeting-mix.wav được ghép khi pma stop' } : 'chưa có file âm thanh: bộ ghi âm chưa chạy (cần pma select <index> trước)', next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
     }
     case 'follow': return follow(flags);
     case 'translate': {
@@ -156,10 +162,27 @@ async function main() {
       const olderThanDays = flags['older-than'] !== undefined ? Number(flags['older-than']) : undefined;
       if (olderThanDays !== undefined && !(olderThanDays >= 0)) throw new Error('--older-than phải là số ngày (0 trở lên)');
       const r = await call('audio', { action, olderThanDays });
-      if (action === 'list') return out(r.map((item: any) => ({ session: item.sessionId, title: item.title, dir: item.dir, files: item.files, mb: megabytes(item.bytes), expiresAt: item.expiresAt, mix: [...item.mix, ...item.mixing.map(() => 'đang ghép')] })));
+      if (action === 'list') return out(r.map((item: any) => ({ session: item.sessionId, title: item.title, dir: item.dir, files: item.files, mb: megabytes(item.bytes), expiresAt: item.expiresAt ?? 'không hết hạn', mix: [...item.mix, ...item.mixing.map(() => 'đang ghép')] })));
       return out({ removed: r.removed.length, kept: r.kept, freedMb: megabytes(r.freedBytes) });
     }
-    case 'stop': { const r = await call('finish', session); return out({ session: r.session, raw: r.raw, next: 'pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }
+    // Stop = recorder stops, ASR drains, the mix is made, then RAW: minutes on a long meeting, so wait much longer than usual.
+    case 'stop': { const r = await call('finish', session, 20 * 60000); return out({ session: r.session, raw: r.raw, audio: r.audio?.mix, next: 'pma coverage (chỗ chưa nghe rõ → pma recheck) → pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }
+    case 'recheck': {
+      const target = positional[0]?.replace(/^#/, ''); const sourceId = target ? Number(target) : undefined;
+      if (target !== undefined && !Number.isInteger(sourceId)) throw new Error('pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS');
+      if (sourceId === undefined && !(flags.from && flags.to)) throw new Error('pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS');
+      const channel = flags.channel; const beam = flags.beam ? Number(flags.beam) : undefined;
+      return out(await call('recheck', { ...session, sourceId, from: flags.from, to: flags.to, ...(channel ? { channel } : {}), ...(beam ? { beam } : {}) }, 15 * 60000));
+    }
+    case 'coverage': {
+      const r = await call('coverage', session, 120000);
+      if (flags.json) return out(r);
+      console.log(`ÂM THANH ${r.audio.seconds >= 60 ? Math.round(r.audio.seconds / 60) + ' phút' : r.audio.seconds + ' giây'} (xét theo ${r.audio.basis === 'mix' ? 'file ghép' : 'file loa'}) · cần nghe lại: ${r.open}/${r.total}`);
+      if (r.note) console.log(`LƯU Ý: ${r.note}`);
+      const KIND: Record<string, string> = { NO_TRANSCRIPT: 'CÓ TIẾNG NHƯNG KHÔNG CÓ CHỮ', ASR_GAP: 'KHOẢNG TRỐNG ASR', UNSURE: 'CHƯA CHẮC', RECORDER_LOST: 'BỘ GHI MẤT ÂM', RECORDER_ERROR: 'BỘ GHI LỖI' };
+      for (const item of r.items) console.log(`[${item.fromClock}–${item.toClock}] ${KIND[item.kind] ?? item.kind}${item.sourceId ? ' #' + item.sourceId : ''}: ${item.why}${item.rechecked ? ' (đã nghe lại)' : ` → pma recheck ${item.sourceId ? '#' + item.sourceId : `--from ${item.fromClock} --to ${item.toClock}`}`}`);
+      return console.log(r.total > r.items.length ? `CÒN ${r.total - r.items.length} mục nữa (xem --json)` : r.total ? 'HẾT DANH SÁCH' : 'KHÔNG CÓ CHỖ NÀO CẦN NGHE LẠI');
+    }
     case 'read': {
       const r = await call('read', { ...session, after: Number(flags.after || 0), limit: Number(flags.limit || 100) });
       if (flags.json) return out(r);
@@ -179,7 +202,7 @@ async function main() {
     case 'context': return out(await call('context'));
     case 'replay': {
       const status = await call('status');
-      if (!status.session || status.session.ended) await call('prepare', { title: flags.title || 'Phát lại: ' + positional[0], agenda: agenda(flags), languages: languagesOf(flags) });
+      if (!status.session || status.session.ended) await call('prepare', { title: flags.title || 'Phát lại: ' + positional[0], agenda: agenda(flags), languages: languagesOf(flags), warm: false });
       await call('replay', { file: positional[0], speed: Number(flags.speed || 1) });
       return out({ replaying: positional[0], next: 'Monitor "pma follow"; khi báo phát lại đã hết: pma stop' });
     }

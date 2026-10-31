@@ -1,47 +1,53 @@
-// Audio saving (on by default, `pma listen --no-save-audio` turns it off): where the WAV files go, when they expire,
-// and how they are purged. Layout: <dataDir>/audio/<sessionId>/<captureId>-<speaker|mic>.wav (what the worker wrote, at
-// the device's rate), <captureId>-mix.wav (tools/mix_audio.py: both channels at 16 kHz, the file for `pma replay`)
-// and expires.json. Nothing here records audio; the worker writes the files, this only names, measures and deletes them.
+// Saved audio (the black box of a meeting, owner 31/10/2026): where the WAV files go and how they are measured and deleted.
+// Layout of <dataDir>/audio/<sessionId>/ (agreed in docs/PLAN_0_11.md, Q-1): seg-NNNN-speaker.wav / seg-NNNN-mic.wav (what
+// tools/recorder.py wrote, at the device's rate), timeline.jsonl, meeting-mix.wav (tools/mix_audio.py: both channels at
+// 16 kHz, the file for `pma replay`) and expires.json. Nothing here records audio; the recorder writes the files, this only
+// names, measures and deletes them. Audio does NOT expire: it goes only when the user runs `pma audio purge` (0.11).
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const DEFAULT_KEEP_DAYS = 7;
 const DAY_MS = 86400000;
 const SESSION_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const META = 'expires.json';
+export const MIX_FILE = 'meeting-mix.wav';
+export const TIMELINE_FILE = 'timeline.jsonl';
 
-export type AudioMeta = { keepDays: number; savedAt: string; expiresAt: string };
+// expiresAt null = kept until the user deletes it. Folders saved by 0.10 still carry a date and keep honouring it.
+export type AudioMeta = { keepDays: number | null; savedAt: string; expiresAt: string | null };
 // mix: finished mix files; mixing: the mix files that channel files are waiting for (not there yet).
 export type AudioInfo = AudioMeta & { dir: string; files: number; bytes: number; mix: string[]; mixing: string[] };
 
 export const audioRoot = (dataDir: string) => join(dataDir, 'audio');
 export const audioDir = (dataDir: string, sessionId: string) => join(audioRoot(dataDir), sessionId);
-export const keepDaysOf = (value?: number) => Number.isFinite(value) ? Math.max(1, Math.min(90, Math.floor(value!))) : DEFAULT_KEEP_DAYS;
 
 function readMeta(dir: string): AudioMeta | null {
-  try { const meta = JSON.parse(readFileSync(join(dir, META), 'utf8')); return Number.isFinite(Date.parse(meta.expiresAt)) ? meta : null; } catch { return null; }
+  try {
+    const meta = JSON.parse(readFileSync(join(dir, META), 'utf8'));
+    if (meta.expiresAt !== null && !Number.isFinite(Date.parse(meta.expiresAt))) return null;
+    return { keepDays: meta.keepDays ?? null, savedAt: meta.savedAt, expiresAt: meta.expiresAt ?? null };
+  } catch { return null; }
 }
 
-// Creates the session's audio folder and records when it expires. A later listening in the same session never
-// shortens an earlier expiry.
-export function markAudioDir(dataDir: string, sessionId: string, keepDays: number, now = Date.now()): AudioMeta & { dir: string } {
+// Creates the session's audio folder and records that it has no expiry. A folder that already has a legacy expiry keeps it.
+export function markAudioDir(dataDir: string, sessionId: string, now = Date.now()): AudioMeta & { dir: string } {
   const dir = audioDir(dataDir, sessionId); mkdirSync(dir, { recursive: true });
   const before = readMeta(dir);
-  const expiresAt = Math.max(now + keepDays * DAY_MS, before ? Date.parse(before.expiresAt) : 0);
-  const meta: AudioMeta = { keepDays, savedAt: before?.savedAt ?? new Date(now).toISOString(), expiresAt: new Date(expiresAt).toISOString() };
-  writeFileSync(join(dir, META), JSON.stringify(meta), 'utf8');
+  const meta: AudioMeta = before ?? { keepDays: null, savedAt: new Date(now).toISOString(), expiresAt: null };
+  if (!before) writeFileSync(join(dir, META), JSON.stringify(meta), 'utf8');
   return { ...meta, dir };
 }
 
-export const mixName = (captureId: string) => `${captureId}-mix.wav`;
 const CHANNEL_FILE = /^(.+)-(speaker|mic)\.wav$/;
 
-// Which listenings have channel files, and which of those already have a finished mix (<captureId>-mix.part never counts).
+// Finished mix files, and the mix a folder is still waiting for. Folders of 0.10 mixed one file per listening
+// (<captureId>-mix.wav); 0.11 has one meeting-mix.wav for the whole session. <name>-mix.part never counts as finished.
 function mixState(dir: string) {
   const names = readdirSync(dir); const have = new Set(names);
-  const captures = [...new Set(names.map(name => name.match(CHANNEL_FILE)?.[1]).filter((id): id is string => !!id))].sort();
   const mix = names.filter(name => name.endsWith('-mix.wav')).sort().map(name => join(dir, name));
-  return { mix, mixing: captures.filter(id => !have.has(mixName(id))).map(id => join(dir, mixName(id))) };
+  const legacy = [...new Set(names.map(name => name.match(CHANNEL_FILE)?.[1]).filter((id): id is string => !!id && !id.startsWith('seg-')))].sort();
+  const mixing = legacy.filter(id => !have.has(`${id}-mix.wav`)).map(id => join(dir, `${id}-mix.wav`));
+  if (names.some(name => /^seg-\d+-(speaker|mic)\.wav$/.test(name)) && !have.has(MIX_FILE)) mixing.push(join(dir, MIX_FILE));
+  return { mix, mixing };
 }
 
 function measure(dir: string) {
@@ -54,18 +60,18 @@ function measure(dir: string) {
   return { files, bytes, newest: newest || statSync(dir).mtimeMs };
 }
 
-// With olderThanDays: anything whose newest file is at least that old (0 = everything). Without: what has reached its
-// own expiry; a folder with no expiry record counts DEFAULT_KEEP_DAYS from its newest file.
+// With olderThanDays: anything whose newest file is at least that old (0 = everything). Without: only a folder that carries
+// a legacy expiry date which has passed; a folder with no expiry is never deleted by this.
 export function isExpired(meta: AudioMeta | null, newestMs: number, now: number, olderThanDays?: number) {
   if (olderThanDays !== undefined) return now - newestMs >= olderThanDays * DAY_MS;
-  return meta ? Date.parse(meta.expiresAt) <= now : now - newestMs >= DEFAULT_KEEP_DAYS * DAY_MS;
+  return !!meta?.expiresAt && Date.parse(meta.expiresAt) <= now;
 }
 
 export function audioInfo(dataDir: string, sessionId: string): AudioInfo | null {
   const dir = audioDir(dataDir, sessionId);
   if (!SESSION_DIR.test(sessionId) || !existsSync(dir)) return null;
   const { files, bytes, newest } = measure(dir); if (!files) return null;
-  const meta = readMeta(dir) ?? { keepDays: DEFAULT_KEEP_DAYS, savedAt: new Date(newest).toISOString(), expiresAt: new Date(newest + DEFAULT_KEEP_DAYS * DAY_MS).toISOString() };
+  const meta = readMeta(dir) ?? { keepDays: null, savedAt: new Date(newest).toISOString(), expiresAt: null };
   return { ...meta, dir, files, bytes, ...mixState(dir) };
 }
 
@@ -74,8 +80,8 @@ export function listAudio(dataDir: string) {
   return readdirSync(root).filter(name => SESSION_DIR.test(name)).map(name => ({ sessionId: name, ...audioInfo(dataDir, name) })).filter(item => item.dir) as (AudioInfo & { sessionId: string })[];
 }
 
-// Deletes expired session folders. Only folders named like a session ID are ever touched, and `keep` (the session being
-// recorded now) is left alone.
+// Deletes session folders on the user's explicit request (`pma audio purge`). Only folders named like a session ID are ever
+// touched, and `keep` (the session being recorded now) is left alone.
 export function purgeAudio(dataDir: string, options: { olderThanDays?: number; now?: number; keep?: string[] } = {}) {
   const root = audioRoot(dataDir); const now = options.now ?? Date.now();
   const removed: { sessionId: string; bytes: number }[] = []; let kept = 0;

@@ -32,8 +32,8 @@ test('publication requires current source references; retries idempotent and rev
 test('ended-session source cannot be rebound; text survives a real database reopen without resuming', async () => {
   await withRuntime(async (r,directory) => { r.prepare('one',true); const old=r.session.id; const source=r.ingest('Nguồn cũ.', 'synthetic_fixture'); await r.finish(old); r.prepare('two',true); assert.throws(()=>r.publish(r.session.id,'n',1,'observation','reuse',[source]),/SOURCE_OUTSIDE_SESSION/); await r.close(); const reopened=new MeetingRuntime(resolve('.'),directory,true); try { assert.equal(reopened.history(old).sources[0].text,'Nguồn cũ.'); assert.equal(reopened.session,null); assert.equal(reopened.capture,null); assert.match(reopened.exportText(old),/Nguồn cũ/); } finally { await reopened.close(); } });
 });
-test('source grant expires before recording; preparing a new session clears the grant', async () => {
-  await withRuntime(async r => { r.prepare(); r.devices=[{index:13,name:'Fixture device, not hardware'}]; r.arm(r.session.id,13); r.armedDevice.expiresAt=new Date(0).toISOString(); await assert.rejects(r.start(r.session.id),/SOURCE_GRANT_EXPIRED/); assert.equal(r.capture,null); await r.finish(r.session.id); r.prepare(); assert.equal(r.armedDevice,null); });
+test('the source grant lasts for the whole session (no 3-hour expiry); preparing a new session clears it', async () => {
+  await withRuntime(async r => { r.prepare(); r.devices=[{index:13,name:'Fixture device, not hardware'}]; r.arm(r.session.id,13); assert.equal(r.armedDevice.expiresAt, null); assert.equal(r.compact().armedDevice.expiresAt, null); await r.finish(r.session.id); r.prepare(); assert.equal(r.armedDevice,null); });
 });
 test('overlapping STOP calls hold capture ownership and cannot start another recorder', async () => {
   await withRuntime(async r => {
@@ -188,39 +188,8 @@ test('glossary replaces whole words only and keeps two different short segments 
   assert.equal(applyGlossary('mì da và mì dai', [{ name: 'MISA', variants: ['mì da'] }]), 'MISA (nghe: mì da) và mì dai');
   assert.equal(foldRuns([{ id: 1, text: 'cái' }, { id: 2, text: 'cái' }, { id: 3, text: 'dạ' }]).length, 3);
 });
-test('warm worker gets its source on listen; the user microphone joins only as an explicit "Tôi" channel', async () => {
-  await withRuntime(async (r, directory) => {
-    r.prepare(); const id = r.session.id;
-    r.devices = [{ index: 12, name: 'Mic', kind: 'microphone' }, { index: 13, name: 'Realtek [Loopback]', kind: 'speaker_loopback_all_device_audio' }];
-    await assert.rejects(r.selectMic(id, 13), /NOT_A_MICROPHONE/);
-    const written = []; const child = new EventEmitter(); child.exitCode = null; child.signalCode = null; child.stdin = { write: line => written.push(line) }; child.kill = () => {};
-    r.capture = child; r.captureState = 'WARM_READY';
-    r.arm(id, 13); await r.selectMic(id, 12);
-    const started = await r.start(id);
-    assert.equal(started.state, 'WAITING_FOR_SOURCE');
-    const request = JSON.parse(written[0]);  // audio is saved by default: the worker is told where, and under which capture ID
-    assert.ok(request.captureId); assert.deepEqual({ ...request, captureId: undefined }, { device: 13, deviceName: 'Realtek [Loopback]', micDevice: 12, micName: 'Mic', saveAudioDir: join(directory, 'audio', id), maxSeconds: request.maxSeconds, captureId: undefined });
-    assert.equal(r.compact().armedMic.index, 12);
-    r.capture = null; r.captureState = 'OFF'; clearTimeout(r.captureDeadline);
-    r.ingest('Em gửi bảng giá chiều nay', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC; CHANNEL_MIC', 'cap', 'vi');
-    assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /· Tôi \(micro\)\) Em gửi bảng giá/);
-  });
-});
 test('a session left open by a crash ends at its last source, not at the next start', async () => {
   await withRuntime(async (r, directory) => { r.prepare('Họp'); const id = r.session.id; r.ingest('Đoạn cuối.', 'operator_text'); const last = r.sources(id).at(-1).createdAt; r.closing = true; r.db.close(); await new Promise(res => setTimeout(res, 30)); const reopened = new MeetingRuntime(resolve('.'), directory, true); try { assert.equal(reopened.history(id).session.ended, last); } finally { await reopened.close(); } });
-});
-test('micro "Tôi" is on by default whatever the meeting platform; --no-mic leaves it out', async () => {
-  await withRuntime(async r => {
-    r.prepare(); const id = r.session.id;
-    r.devices = [{ index: 13, name: 'Realtek [Loopback]', kind: 'speaker_loopback_all_device_audio' }];
-    const fakeWorker = () => { const written = []; const child = new EventEmitter(); child.exitCode = null; child.signalCode = null; child.stdin = { write: line => written.push(line) }; child.kill = () => {}; r.capture = child; r.captureState = 'WARM_READY'; return written; };
-    let written = fakeWorker(); r.arm(id, 13); await r.start(id);
-    assert.equal(JSON.parse(written[0]).micAuto, true);
-    r.capture = null; r.captureState = 'OFF'; clearTimeout(r.captureDeadline);
-    written = fakeWorker(); await r.start(id, false);
-    assert.equal(JSON.parse(written[0]).micAuto, undefined);
-    r.capture = null; r.captureState = 'OFF'; clearTimeout(r.captureDeadline);
-  });
 });
 test('glossary refuses short, everyday or already-used variants unless forced', async () => {
   await withRuntime(async r => {
