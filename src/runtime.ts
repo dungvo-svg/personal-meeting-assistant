@@ -5,7 +5,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { applyGlossary, collapseLoops, foldRuns, isHallucination, riskyVariants, type GlossaryEntry } from './text.js';
+import { applyGlossary, collapseLoops, foldRuns, isHallucination, micLabel, riskyVariants, type GlossaryEntry } from './text.js';
+import { canonicalOwner } from './participants.js';
 import { audioInfo, keepDaysOf, listAudio, markAudioDir, purgeAudio } from './audio.js';
 
 export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
@@ -484,7 +485,7 @@ export class MeetingRuntime extends EventEmitter {
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
     const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là lúc text được ghi nhận, trễ vài giây so với lời nói. Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. ' + this.audioNote(id), ''];
     if (rows.some(row => row.translation)) lines.push('> Dòng "→ (Claude dịch)" là bản dịch tiếng Việt do Claude viết cho đoạn tiếng Lào, chưa ai kiểm; chữ Lào ở trên mới là nguồn.', '');
-    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${row.boundary.includes('CHANNEL_MIC') ? ` · Tôi${session.context?.me ? ' — ' + session.context.me : ''} (micro)` : ''}`;
+    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${(mic => mic ? ' · ' + mic : '')(micLabel(row.boundary, session.context?.me))}`;
     // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
     const ghosts = rows.filter(isHallucination);
     let capture: string | null = null;
@@ -516,6 +517,8 @@ export class MeetingRuntime extends EventEmitter {
   saveTasks(id: string, tasks: TaskItem[]) {
     const session = this.sessionRow(id);
     if (!Array.isArray(tasks) || tasks.length > 200) throw new Error('INVALID_TASKS');
+    // An owner written the way ASR spelt a participant becomes the participant's name (only listed variants match).
+    tasks = tasks.map(t => ({ ...t, owner: canonicalOwner(session.context?.participants, t.owner) }));
     const all: number[] = [];
     const rows = tasks.map((t, i) => {
       const task = String(t.task || '').trim(); if (!task || task.length > 2000) throw new Error('INVALID_TASK: ' + (i + 1));

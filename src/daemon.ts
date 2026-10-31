@@ -7,6 +7,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { MeetingRuntime } from './runtime.js';
+import { composeBrief } from './brief.js';
+import { applyParticipants } from './participants.js';
+import { setMicState } from './mic.js';
 
 export const VERSION = '0.10.1';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
@@ -63,6 +66,10 @@ const methods: Record<string, (input: any) => any> = {
     if (a.action === 'remove') return runtime.glossaryRemove(a.name ?? '');
     return runtime.glossary;
   },
+  // Pre-meeting context (participants, brief) and the owner's manual microphone state for the "Tôi" channel.
+  participants: input => applyParticipants(runtime, z.object({ participants: z.array(z.any()).max(200) }).parse(input).participants),
+  brief: input => ({ markdown: composeBrief(runtime, root, z.object({ sessionId: sid.optional() }).parse(input).sessionId) }),
+  mic: input => setMicState(runtime, z.object({ state: z.enum(['on', 'off', 'auto']) }).parse(input).state),
   fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); const a = z.object({ text: z.string().min(1).max(8000), language: z.enum(['vi', 'lo']).optional() }).parse(input); return { id: runtime.ingest(a.text, 'synthetic_fixture', 0, 0, '', '', a.language) }; },
   // Vietnamese lines for Lao segments, written by the Claude session following the meeting.
   translate: input => { const a = z.object({ sessionId: sid.optional(), items: z.array(z.object({ sourceId: z.number().int().positive(), text: z.string().min(1).max(2000) })).min(1).max(100) }).parse(input); return runtime.translate(current(a.sessionId), a.items); },

@@ -208,7 +208,7 @@ test('audio list: finished mix files, and the ones channel files are still waiti
 test('daemon deletes expired audio when it starts; `pma audio` lists and purges', async () => {
   const { execFile } = await import('node:child_process'); const { promisify } = await import('node:util'); const run = promisify(execFile);
   const dir = mkdtempSync(join(tmpdir(), 'pma-audio-cli-')); const day = 86400000;
-  const env = { ...process.env, PMA_PORT: '8814', PMA_TEST_MODE: '1', PMA_DATA_DIR: dir, PMA_STOP_HOOK: 'off' };
+  const env = { ...process.env, PMA_PORT: process.env.PMA_CAPTURE_TEST_PORT || '8814', PMA_TEST_MODE: '1', PMA_DATA_DIR: dir, PMA_STOP_HOOK: 'off' };
   const pma = async (...args) => JSON.parse((await run(process.execPath, [resolve('dist/cli.js'), ...args], { env })).stdout);
   const wavIn = (id, now) => { const marked = markAudioDir(dir, id, 7, now); const file = join(marked.dir, 'cap-speaker.wav'); writeFileSync(file, Buffer.alloc(3 * 1048576)); utimesSync(file, new Date(now), new Date(now)); };
   const expired = '55555555-5555-4555-8555-555555555555', current = '66666666-6666-4666-8666-666666666666';
