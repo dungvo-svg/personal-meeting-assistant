@@ -113,7 +113,9 @@ Gửi nguyên văn làm `prompt` (thay `<tên họp>`):
 > Bạn là phiên **dịch thô** cho cuộc họp "<tên họp>", như một người ngồi dịch. Người dùng share phiên này cho người dự xem. Làm ở thư mục dự án `personal-meeting-assistant`, chỉ dùng lệnh `./pma`. Không sửa file nào, không tóm tắt, không làm báo cáo, không gửi gì cho ai.
 > 1. Chạy `./pma brief` một lần để biết người dự và thuật ngữ. Sau đó bật Monitor (chạy lâu) với lệnh `./pma follow --batch 15 --as dich --no-notes`. Monitor tự dừng sau 30 phút: khi báo hết hạn thì bật lại đúng lệnh đó.
 > 2. Mỗi lô: in lại ngắn gọn từng dòng dạng `#id [Tôi] vi|lo|th: chữ`.
->    - Dòng `lo` hoặc `th`: thêm ngay dưới `→ (Claude dịch) <tiếng Việt>`, dịch theo nghĩa, giữ nguyên số, tên, mã hàng. Tiếng Lào và tiếng Thái cùng gốc: chữ Thái cho lời nói Lào vẫn dịch theo nghĩa. Có phương án khác (dòng `↳ lo:`/`↳ th:`) thì chọn bản hợp nghĩa nhất.
+>    - Dòng `lo` hoặc `th`: thêm ngay dưới `→ (Claude dịch) <tiếng Việt>`, dịch theo nghĩa, giữ nguyên số, tên, mã hàng. Tiếng Lào và tiếng Thái cùng gốc.
+>    - **Chữ Thái của lời nói Lào là phiên âm.** Đọc theo âm tiếng Lào, không theo nghĩa chữ Thái. Ví dụ "สัตว์" có thể là ສັດຕູ (kẻ thù), "ซาว" là 20.
+>    - Có phương án khác (dòng `↳ lo:`/`↳ th:`) thì đọc cả hai và chọn nghĩa hợp ngữ cảnh. **Số và tên phải khớp ở cả hai bản**; không khớp thì ghi "(số chưa chắc)".
 >    - Dòng có cờ `Lào kém` hoặc `ngôn ngữ không chắc`: chỉ dịch phần chắc chắn, ghi "(nghe không rõ)".
 >    - Không dịch dòng `vi` và dòng `[bỏ: nghi câu ảo]`. Không bình luận.
 > 3. Lưu bản dịch: ghi `[{"sourceId":<id>,"text":"<tiếng Việt>"}]` vào `.local/drafts/t-dich.json` rồi `./pma translate --file .local/drafts/t-dich.json`.
@@ -128,7 +130,7 @@ Mỗi dòng có dạng `#id HH:MM:SS [Tôi …] ngôn ngữ⚠cờ: nội dung`.
 | Dấu hiệu | Ý nghĩa và cách xử lý |
 | --- | --- |
 | `lo` | Tiếng Lào từ model tiếng Lào (GPU). Dịch theo nghĩa, giữ số và tên. |
-| `th` | Tiếng Thái, hoặc tiếng Lào máy nghe ra chữ Thái. Dịch theo nghĩa. Đạt khi nghĩa tiếng Việt đúng, không cần đúng chữ. |
+| `th` | Tiếng Thái, hoặc tiếng Lào máy nghe ra chữ Thái (phiên âm: đọc theo âm Lào). Dịch theo nghĩa. Đạt khi nghĩa tiếng Việt đúng, không cần đúng chữ. Số dễ sai (FLEURS 31/10: 2006 → 2016): đối chiếu với `↳ lo` hoặc `recheck`. |
 | `↳ lo:` / `↳ th:` | Phương án nhận dạng khác cho cùng đoạn (khi máy không chắc là Lào hay Thái). Đọc cả hai để dịch. |
 | `Lào kém` | Model Lào không tự tin. Chỉ lấy số và tên khớp ngữ cảnh; đáng `recheck`. |
 | `ngôn ngữ không chắc` | Máy không chắc ngôn ngữ. Đáng `recheck`. |

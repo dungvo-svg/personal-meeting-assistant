@@ -1029,7 +1029,10 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
         except Exception:
             continue  # a language this build cannot decode (th before it is wired in) is left out, not fatal
         score = segments_score(segments)
-        result['alternatives'].append({'language': code, 'text': text_of(segments), 'score': round(score, 3) if score > float('-inf') else None})
+        text = text_of(segments)
+        if any(phrase in text.lower() for phrase in SILENCE_PHRASES):
+            continue  # a decode forced into the wrong language invents a stock phrase ("subscribe…"); it is not a reading
+        result['alternatives'].append({'language': code, 'text': text, 'score': round(score, 3) if score > float('-inf') else None})
     try:
         segments, language, _ = transcribe_chunk(model, waveform, list(languages), lao_model, vi_model, beam=beam)
         result.update(text=text_of(list(segments)), language=language)

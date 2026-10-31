@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.11.0 —31/10/2026
+
+Audit thiết kế 31/10 (owner: "có vẻ bạn đang làm sai thiết kế").
+- Fable 5.1 audit kiến trúc độc lập, chỉ để tham khảo. Báo cáo: `.local/drafts/AUDIT-KIEN-TRUC-20261031.md`.
+- Opus quyết theo câu trả lời của owner: `docs/PLAN_0_11.md`, `docs/PRODUCT_BASELINE.md` v0.11.
+- 5 agent Sonnet làm song song (R, W, H, L, C), Opus gộp và nối.
+
+- **Định hướng:**
+  - Claude trong phiên dùng công cụ phục vụ owner và cuộc họp, real-time.
+  - Sống theo phiên họp, không dịch vụ chờ sẵn.
+  - Việc chính là context trước họp.
+  - Không thi đấu AI của Zoom/Meet.
+- **Bộ ghi hộp đen** (`tools/recorder.py`, `tools/timeline.py`):
+  - loa + micro → WAV khúc 10 phút + `timeline.jsonl` (giờ thật ↔ mẫu, mất mẫu, đổi thiết bị, trạng thái micro);
+  - không model; lỗi thiết bị thì khúc mới ≤ 2 s;
+  - sống khi host chết; chỉ dừng khi có `stop`, file `STOP` hoặc trần 12 giờ.
+  - `tools/mix_audio.py` ghép `meeting-mix.wav` theo giờ thật.
+  - **WAV giữ tới khi người dùng xoá.**
+- **Bộ nghe đọc từ WAV** (`audio_worker.py --follow`, `tools/follow_source.py`):
+  - đọc từ giây 0, đuổi kịp (thử 42 s âm thanh: xong trong 49 s kể cả 34 s nạp model);
+  - lỗi ASR một đoạn thành `[KHOẢNG TRỐNG ASR]` rồi chạy tiếp;
+  - `stop` đọc nốt; chạy lại sau lỗi bằng `--from-wall`.
+- **Host theo phiên** (`src/daemon.ts`, `src/runtime.ts`):
+  - `pma start` nạp model và tự ghi nếu nguồn loa lần trước còn;
+  - không còn trần 2 giờ;
+  - bộ nghe chết thì chạy lại 3 lần/10 phút; bộ ghi chết thì chạy lại;
+  - host mới gắn lại phiên có bộ ghi còn sống;
+  - `stop` dừng ghi → đọc nốt → ghép WAV → RAW → host thoát.
+- **Nghe lại là việc của Claude:**
+  - `pma recheck <#id>` hoặc `--from/--to`: nhận dạng lại từ WAV với beam 8, các phương án vi/lo/th. RAW ghi `(đã nghe lại)`.
+  - `pma coverage` liệt kê chỗ có âm mà không có chữ, đoạn lỗi, đoạn không chắc.
+- **Ba ngôn ngữ Việt / Lào / Thái** (`th` mới):
+  - Bộ dò Whisper không tách được Lào–Thái (AUC 0,50), nên đoạn Tai chạy cả hai mô hình và chọn theo điểm (AUC 0,91 clip đủ).
+  - Phương án còn lại gửi kèm (`↳ lo:`/`↳ th:`) để Claude dịch theo nghĩa.
+  - FLEURS: Thái CER 11,3%, Lào 23,9% (34 clip đi `lo`), Việt 4,69%.
+  - Lào/Thái tách đúng khỏi Việt 100% trên clip đủ. Đoạn ngắn 1,5–3 s: Lào 81%, Thái 59% đúng ngôn ngữ (88% đúng nhóm).
+  - **Lào nghe ra chữ Thái → dịch Việt** (10 cặp, Opus chấm khi đọc chữ Thái theo âm Lào): đúng nghĩa 5, ý chính 3, sai 2 (một sai số, một bị cắt cụt). Skill dặn đọc theo âm Lào và đối chiếu số giữa hai bản.
+- **Micro "Tôi" phân loại:**
+  - `tools/mic_state.ps1` đọc nút micro Zoom và Meet (Chrome/Edge) qua UI Automation, chỉ đọc.
+  - Đoạn "Tôi" mang nhãn mic bật / mic tắt (nói riêng) / không rõ.
+  - `pma me --on/--off/--auto`.
+- **Context trước họp:** `pma brief` (≤ 2 KB), `pma participants`, `pma start --participants`, `.local/context/owner.json`. Tên dễ nghe sai của người dự vào bảng tên.
+- **Hai phiên khi họp (giữ):**
+  - dịch thô Haiku lô 15 s = "màn hình" owner share cho người dự, gửi lô ngay khi có dòng lo/th;
+  - tổng hợp Sonnet lô 60 s chat với owner.
+  - `follow` tự thoát phút 29 và in `BẬT LẠI`.
+  - Không build màn hình web.
+- **Tài liệu:**
+  - PRODUCT_BASELINE 0.11 là chỗ chốt duy nhất; DECISION_LOG có U23–U25, OWN-021..028, ENG-24..27.
+  - 11 tài liệu cũ + `handoff/` sang `docs/history/`.
+  - CLAUDE.md, AGENTS.md, README, project.json, skill `hop` viết lại.
+- **Kiểm:**
+  - 69 test Node, 122 test Python; chạy thật bộ nghe/nghe lại trên GPU bằng file công khai.
+  - **Không thu âm thật để tự kiểm.** Bộ ghi với thiết bị thật, Meet UI Automation, hai phiên và họp dài sẽ kiểm ở buổi họp thật tiếp theo.
+
 ## 0.10.1 —31/10/2026
 
 - Owner: "các đoạn là phần dịch theo dõi, còn wav phải ghi được đầy đủ". **WAV ghi mặc định** mỗi lần nghe (tắt bằng `--no-save-audio` hoặc `PMA_SAVE_AUDIO=0`), tự xoá sau 7 ngày (`--keep-days`). Worker ghi mọi khối âm thô trước khi lọc im lặng/nhận dạng, nên WAV đủ cả phần ASR bỏ qua.
