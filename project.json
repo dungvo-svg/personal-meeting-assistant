@@ -2,14 +2,15 @@
   "schema": "personal-meeting-assistant-project@2",
   "name": "personal-meeting-assistant",
   "created_on": "2026-10-26",
-  "status": "MEETING_LINK_REPORTS_MIXED_VI_LO_IMPLEMENTED_NOT_MEETING_VERIFIED",
-  "product_kind": "TOOLS_FOR_PERSONAL_MEETING_AGENT",
+  "status": "PER_MEETING_RECORDER_LISTENER_VI_LO_TH_IMPLEMENTED_AWAITING_NEXT_REAL_MEETING",
+  "product_kind": "CLAUDE_USES_LOCAL_MEETING_TOOLS_FOR_OWNER",
   "workflow_owner": "USER_SELECTED_AI_AGENT",
   "audience": "SINGLE_USER_PERSONAL_ASSISTANT",
   "host": "USER_MEETING_COMPUTER",
   "languages": [
     "vi",
-    "lo"
+    "lo",
+    "th"
   ],
   "assistant_options": [
     "claude",
@@ -20,13 +21,16 @@
   "first_required_host": "claude_code_in_claude_desktop",
   "connected_assistant": null,
   "implemented_adapters": [
-    "runtime_daemon",
+    "per_meeting_host",
     "pma_cli",
     "claude_code_skill_hop",
+    "black_box_recorder",
+    "follow_listener_from_wav",
+    "recheck_from_wav",
+    "pre_meeting_brief",
+    "mic_state_classification",
     "mcp_stdio_thin_adapter",
-    "windows_wasapi_local_asr",
-    "recording_replay",
-    "cuda_lao_asr_routing"
+    "recording_replay"
   ],
   "assistant_switching": "EXPLICIT_USER_SELECTION",
   "automatic_fallback": false,
@@ -39,41 +43,35 @@
     "credentials_or_meeting_data": false,
     "release_or_acceptance": false
   },
-  "primary_output": "PERSONAL_VI_LO_TRANSCRIPT_PANEL_AND_POST_MEETING_REPORTS",
+  "primary_output": "CLAUDE_SESSIONS_RAW_TRANSLATION_AND_SYNTHESIS_PLUS_RAW_SUMMARY_TASKS_AND_MEETING_WAV",
   "current_pilot": {
-    "date": "2026-10-28",
+    "date": "2026-10-31",
     "languages": [
       "vi",
-      "lo"
+      "lo",
+      "th"
     ],
-    "translation_required": false,
-    "mode": "USER_SENDS_ZOOM_LINK_AND_CONTENT",
+    "mode": "USER_SENDS_ZOOM_OR_MEET_LINK_AND_CONTENT",
+    "sessions": {
+      "raw_translation": "haiku effort low, follow batch 15 s, shared to attendees",
+      "synthesis": "sonnet, follow batch 60 s, chats with owner"
+    },
     "post_meeting_outputs": [
       "RAW.md",
       "SUMMARY.md",
-      "TASKS.md"
+      "TASKS.md",
+      "meeting-mix.wav"
     ],
-    "hosts": [
-      "claude_code",
-      "claude_desktop",
-      "codex",
-      "antigravity"
-    ],
-    "actual_claude_code_tool_calls_verified": true,
-    "actual_device_capture_verified": "2026-10-28 v0.2.0 worker on Realtek loopback via Claude Code; v0.3.0 not yet run in a meeting",
-    "lao_asr_quality": "BUZZASR_LAO_GPU_FLEURS_CER_0.363_LAO_SCRIPT; CPU_FALLBACK_THAI_SCRIPT_FLAGGED",
-    "non_claude_hosts_verified": false,
     "primary_host": "claude_code_in_claude_desktop",
-    "continuity": "MONITOR_ON_PMA_FOLLOW_PLUS_STOP_HOOK_NOT_YET_MEASURED_FULL_MEETING",
-    "vi_asr_quality": "WHISPER_LARGE_V3_TURBO_GPU_FLEURS_CER_0.048"
+    "acceptance": "NEXT_REAL_MEETING"
   },
-  "runtime_runbook": "docs/MEETING_RUNTIME.md",
-  "v1_meeting_mode": "OPEN_USER_SENT_ZOOM_LINK_USER_CONFIRMS_JOIN",
+  "runtime_runbook": ".claude/skills/hop/SKILL.md",
+  "v1_meeting_mode": "USER_SENDS_ZOOM_OR_MEET_LINK_USER_CONFIRMS_JOIN",
   "v1_interactive_qa": false,
   "text_history": "AUTO_SAVE_LOCAL",
-  "audio_retention": "TEMPORARY_ONLY",
+  "audio_retention": "KEEP_UNTIL_USER_DELETES",
   "documentation_baseline": {
-    "version": "0.7.0",
+    "version": "0.11.0",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",
@@ -93,7 +91,28 @@
       "OWN-013",
       "OWN-014",
       "OWN-015",
-      "OWN-016"
+      "OWN-016",
+      "OWN-017",
+      "OWN-018",
+      "OWN-019",
+      "OWN-020",
+      "OWN-021",
+      "OWN-022",
+      "OWN-023",
+      "OWN-024",
+      "OWN-025",
+      "OWN-026",
+      "OWN-027",
+      "OWN-028"
+    ],
+    "superseded_owner_ids": [
+      "OWN-004",
+      "OWN-005",
+      "OWN-007",
+      "OWN-008",
+      "OWN-012",
+      "OWN-016",
+      "OWN-018"
     ]
   },
   "acceptance_status": "NOT_EVALUATED",

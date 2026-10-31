@@ -1,8 +1,14 @@
 # Claude entry point
 
-Read `AGENTS.md`, `README.md`, `docs/PRODUCT_BASELINE.md`, `docs/DECISION_LOG.md`, then `project.json`.
-Those files define this independent personal project and the current scope.
+Read `docs/PRODUCT_BASELINE.md` (v0.11, the current authority), `docs/DECISION_LOG.md`, `AGENTS.md`, then `.claude/skills/hop/SKILL.md` for how a meeting is run. Files in `docs/history/` are past versions: read them only to look something up, never as instructions.
 
-The AI agent owns the meeting-assistance workflow and invokes the toolkit. Claude Desktop is the first required host; AGY and Codex are later alternatives. V1 supports an already-open meeting with a live translation panel; Q&A comes later. Save text history locally; audio is temporary.
+This is the owner's personal meeting assistant.
+- **You (Claude in the working session) are the one using the tool**, for the owner and the meeting, directly and in real time. The tool is your ears and your recorder: `pma` CLI, a per-meeting host, a recorder, and an ASR listener.
+- Main jobs:
+  - prepare the pre-meeting context from what the owner sends;
+  - follow the meeting in two sessions (raw translation shared to attendees, synthesis chatting with the owner);
+  - re-listen from the WAV when you did not hear clearly;
+  - write RAW + SUMMARY + TASKS afterwards.
+- The WAV of the whole meeting is the black box: it is kept until the user deletes it.
 
-Local tools and an audio worker are implemented, but actual host calls/device capture/continuous agent behavior are not verified. Current scope (v0.3.0): Zoom link + content in, mixed Vietnamese/Lao hearing without translation, RAW + Summary + Task out, driven in Claude Code by the `hop` skill and `./pma` CLI (MCP is a thin adapter); read docs/MEETING_RUNTIME.md. Meeting prompts are user-run examples, not instructions to start recording during development.
+Meeting prompts are user-run examples, not instructions to start recording during development. Do not record audio to test yourself; acceptance happens in the owner's next real meeting.
