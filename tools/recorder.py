@@ -318,6 +318,17 @@ class ChannelRecorder:
 
 
 # ---- real devices (PyAudioWPatch) ----
+_com = threading.local()
+
+
+def com_ready():
+    # WASAPI needs COM on the thread that opens a stream. PortAudio sets it up only on the thread that initialised it, so
+    # the second channel's thread failed with "-9999 Unanticipated host error" (31/10, real devices). Once per thread.
+    if os.name == 'nt' and not getattr(_com, 'ready', False):
+        ctypes.windll.ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED; "already initialised" is fine too
+        _com.ready = True
+
+
 class PortAudioHub:
     """One PyAudio instance shared by both channels. PortAudio rescans its device list only when the last user
     terminates, so a restarted channel sees a replugged device only while the other channel is down too."""
@@ -382,6 +393,7 @@ class DeviceSource:
     def open(self):
         import numpy as np
         import pyaudiowpatch as pa
+        com_ready()
         self.audio = self.hub.acquire()
         try:
             with self.hub.lock:
@@ -450,6 +462,7 @@ class MicAuto:
 
     def make_source(self):
         import pyaudiowpatch as pa
+        com_ready()
         audio = self.hub.acquire()
         try:
             with self.hub.lock:
@@ -659,6 +672,11 @@ def main(argv=None):
     clock = Clock()
     log = TimelineLog(directory / 'timeline.jsonl', clock)
     resume = Timeline.load(directory)  # a crashed recorder's last sample, so the hole before this run is counted
+    # Load the native modules and initialise PortAudio once on this thread, before the channel threads start. On Windows
+    # a channel thread inside PyAudio() and another importing numpy deadlocked on the DLL loader lock (31/10, real devices).
+    import numpy  # noqa: F401
+    import pyaudiowpatch
+    pyaudiowpatch.PyAudio().terminate()
     hub = PortAudioHub()
     mic_auto = MicAuto(hub) if args.mic_auto else None
     channels = [ChannelRecorder('speaker', lambda: DeviceSource(hub, args.speaker_device, args.speaker_name, True), log, clock, directory, args.segment_seconds, resume_wall=resume.end_wall('speaker'))]
