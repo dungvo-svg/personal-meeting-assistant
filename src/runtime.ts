@@ -10,6 +10,9 @@ import { audioInfo, keepDaysOf, listAudio, markAudioDir, purgeAudio } from './au
 
 export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
 export type Opener = (url: string) => void;
+// Starts tools/mix_audio.py (python, [script, audio dir, captureId]) without waiting for it: hidden, detached, no stdio.
+export type Mixer = (python: string, args: string[]) => void;
+const defaultMixer: Mixer = (python, args) => { const child = spawn(python, args, { detached: true, windowsHide: true, stdio: 'ignore' }); child.on('error', () => {}); child.unref(); };
 const defaultOpener: Opener = url => { spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], { detached: true, windowsHide: true, stdio: 'ignore' }).unref(); };
 
 // Only Zoom links. The launch URL is rebuilt from validated parts, so nothing user-typed reaches the OS handler.
@@ -71,7 +74,7 @@ export class MeetingRuntime extends EventEmitter {
   followers: Record<string, { cursor: number; at: string }> = {};
   context: any;
   closing = false;
-  // Set when `listen --save-audio` was asked for this session; the files themselves are described by audioInfo().
+  // Set when a listening of this session saves audio (the default); the files themselves are described by audioInfo().
   audioSave: { dir: string; keepDays: number; expiresAt: string } | null = null;
   // One ID per listening (a paused worker listens again under a new one: its clock restarts at 0).
   private captureId = '';
@@ -80,6 +83,9 @@ export class MeetingRuntime extends EventEmitter {
   private stoppingCapture: Promise<void> | null = null;
   private captureDeadline: ReturnType<typeof setTimeout> | null = null;
   opener: Opener = defaultOpener;
+  mixer: Mixer = defaultMixer;
+  // The listening that saved audio and has not been mixed yet; startMix() takes it once it has ended.
+  private mixPending: { dir: string; captureId: string } | null = null;
   constructor(public root: string, public dataDir: string, public testMode = false) {
     super(); mkdirSync(dataDir, { recursive: true });
     this.db = new DatabaseSync(join(dataDir, 'history.sqlite3'));
@@ -201,7 +207,7 @@ export class MeetingRuntime extends EventEmitter {
     const recent = id ? this.db.prepare('SELECT id,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? ORDER BY id DESC LIMIT 300').all(id).reverse() : [];
     const notes = id ? this.db.prepare('SELECT item_key AS itemKey,revision,kind,payload,created FROM notes WHERE session_id=? ORDER BY id DESC LIMIT 100').all(id).reverse().map((n: any) => ({ ...n, ...JSON.parse(n.payload), payload: undefined })) : [];
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count,MIN(created) AS oldest FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0, oldest: null };
-    return { session: this.session, context: this.session?.context ?? this.context, captureState: this.captureState, captureInfo: this.captureInfo, lastError: this.lastError, armedDevice: this.armedDevice, lastAgentReadAt: this.lastAgentReadAt, backlog, sources: recent, notes, audioStorage: this.audioInfoOf(id) ? 'WAV_SAVED_LOCALLY_UNTIL_AUTO_DELETE' : 'RAM_ONLY_NO_AUDIO_FILES', historyDirectory: this.dataDir, testMode: this.testMode };
+    return { session: this.session, context: this.session?.context ?? this.context, captureState: this.captureState, captureInfo: this.captureInfo, lastError: this.lastError, armedDevice: this.armedDevice, lastAgentReadAt: this.lastAgentReadAt, backlog, sources: recent, notes, audioStorage: this.audioStorageOf(id), historyDirectory: this.dataDir, testMode: this.testMode };
   }
   compact() {
     const s = this.session; const id = s?.id;
@@ -220,11 +226,15 @@ export class MeetingRuntime extends EventEmitter {
   audioInfoOf(id?: string) {
     if (!id) return null;
     const info = audioInfo(this.dataDir, id);
-    return info ?? (this.audioSave && this.session?.id === id ? { ...this.audioSave, savedAt: this.session.created, files: 0, bytes: 0 } : null);
+    return info ?? (this.audioSave && this.session?.id === id ? { ...this.audioSave, savedAt: this.session.created, files: 0, bytes: 0, mix: [], mixing: [] } : null);
   }
+  audioStorageOf(id?: string) { return this.audioInfoOf(id) ? 'WAV_SAVED_LOCALLY_UNTIL_AUTO_DELETE' : 'NO_AUDIO_FILES'; }
+  // RAW is written the moment the session ends, usually before the mix of the last listening is finished.
   audioNote(id: string) {
     const info = audioInfo(this.dataDir, id);
-    return info ? `Âm thanh đã lưu trên máy tại ${info.dir} (${info.files} file, ${Math.round(info.bytes / 1048576)} MB), tự xoá sau ${localDate(info.expiresAt)}; không gửi đi đâu.` : 'Không có audio lưu lại.';
+    if (!info) return 'Không có audio lưu lại.';
+    const mix = [...info.mix, ...info.mixing.map(path => path + ' (đang ghép, chưa xong)')];
+    return `Âm thanh đã lưu trên máy tại ${info.dir} (${info.files} file, ${Math.round(info.bytes / 1048576)} MB), tự xoá sau ${localDate(info.expiresAt)}; không gửi đi đâu.` + (mix.length ? ` File ghép cả loa và micro, dùng với pma replay: ${mix.join('; ')}.` : '');
   }
   audioList() { return listAudio(this.dataDir).map(item => ({ ...item, title: (this.db.prepare('SELECT title FROM sessions WHERE id=?').get(item.sessionId) as any)?.title ?? null })); }
   purgeAudio(olderThanDays?: number) {
@@ -242,7 +252,7 @@ export class MeetingRuntime extends EventEmitter {
     const session: any = this.db.prepare('SELECT id,title,created,ended,mode,context FROM sessions WHERE id=?').get(id);
     if (!session) throw new Error('SESSION_NOT_FOUND');
     const context = JSON.parse(session.context); delete session.context;
-    return { session, context, captureState: 'OFF', captureInfo: {}, lastError: null, armedDevice: null, lastAgentReadAt: null, backlog: { count: 0 }, sources: this.db.prepare('SELECT id,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? ORDER BY id DESC LIMIT 300').all(id).reverse(), notes: this.db.prepare('SELECT item_key AS itemKey,revision,kind,payload,created FROM notes WHERE session_id=? ORDER BY id DESC LIMIT 100').all(id).reverse().map((n: any) => ({ ...n, ...JSON.parse(n.payload), payload: undefined })), audioStorage: 'RAM_ONLY_NO_AUDIO_FILES', historyDirectory: this.dataDir, historicalView: true, historyLimit: 300 };
+    return { session, context, captureState: 'OFF', captureInfo: {}, lastError: null, armedDevice: null, lastAgentReadAt: null, backlog: { count: 0 }, sources: this.db.prepare('SELECT id,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language FROM sources WHERE session_id=? ORDER BY id DESC LIMIT 300').all(id).reverse(), notes: this.db.prepare('SELECT item_key AS itemKey,revision,kind,payload,created FROM notes WHERE session_id=? ORDER BY id DESC LIMIT 100').all(id).reverse().map((n: any) => ({ ...n, ...JSON.parse(n.payload), payload: undefined })), audioStorage: this.audioStorageOf(id), historyDirectory: this.dataDir, historicalView: true, historyLimit: 300 };
   }
   // Models come from .local/models/asr-profile.json in the worker; PMA_LAO_MODEL overrides the Lao one (tests).
   laoModelArgs() { const path = process.env.PMA_LAO_MODEL; return path && existsSync(path) ? ['--lao-model', path] : []; }
@@ -286,7 +296,8 @@ export class MeetingRuntime extends EventEmitter {
     const device = this.devices.find(d => d.index === deviceIndex); if (!device) throw new Error('DEVICE_NOT_LISTED');
     this.armedDevice = { ...device, grantedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3 * 3600_000).toISOString() }; this.ping(); return this.armedDevice;
   }
-  // saveAudio: opt-in WAV copy of this listening on this machine only, deleted after keepDays (default 7).
+  // saveAudio: WAV copy of this listening on this machine only, deleted after keepDays (default 7). On unless the caller
+  // says false or PMA_SAVE_AUDIO=0 (owner, 31/10/2026: the transcript is for following, the recording must be complete).
   async start(id: string, mic = true, save: { saveAudio?: boolean; keepDays?: number } = {}) {
     this.requireSession(id);
     if (this.stoppingCapture || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
@@ -298,7 +309,7 @@ export class MeetingRuntime extends EventEmitter {
     // else the Windows default, and drops speaker sound that leaks into it.
     const own = !mic || process.env.PMA_MIC === '0' ? {} : this.armedMic && Date.parse(this.armedMic.expiresAt) > Date.now() ? { micDevice: this.armedMic.index, micName: this.armedMic.name } : { micAuto: true };
     let saveAudioDir: string | undefined;
-    if (save.saveAudio) { const marked = markAudioDir(this.dataDir, id, keepDaysOf(save.keepDays)); saveAudioDir = marked.dir; this.audioSave = { dir: marked.dir, keepDays: marked.keepDays, expiresAt: marked.expiresAt }; }
+    if (save.saveAudio ?? process.env.PMA_SAVE_AUDIO !== '0') { const marked = markAudioDir(this.dataDir, id, keepDaysOf(save.keepDays)); saveAudioDir = marked.dir; this.audioSave = { dir: marked.dir, keepDays: marked.keepDays, expiresAt: marked.expiresAt }; }
     return this.launch(id, { device: this.armedDevice.index, deviceName: this.armedDevice.name, ...own, saveAudioDir }, maxSeconds);
   }
   // Replays a recording through the same worker, chunking and ASR as a live meeting. No device is opened.
@@ -318,7 +329,13 @@ export class MeetingRuntime extends EventEmitter {
     try { this.spawnWorker(id, ['--wait-source', '--max-seconds', '7200']); this.captureInfo = { ...this.captureInfo, warmingSince: new Date().toISOString(), expectedLoadSeconds: this.profile.lastModelLoadSeconds }; }
     catch (error) { this.captureState = 'OFF'; this.lastError = String(error); }
   }
+  // Mixes the listening that has just ended (speaker + mic -> <captureId>-mix.wav) in a separate process. Never waits for it.
+  private startMix() {
+    const pending = this.mixPending; this.mixPending = null; if (!pending) return;
+    try { this.mixer(this.python(), [join(this.root, 'tools', 'mix_audio.py'), pending.dir, pending.captureId]); } catch {}
+  }
   private launch(id: string, source: { device?: number; deviceName?: string; micDevice?: number; micName?: string; micAuto?: boolean; replay?: string; speed?: number; saveAudioDir?: string }, maxSeconds: number) {
+    this.startMix();
     if (this.warm()) {
       // The same worker listens again after a pause: a new capture ID keeps the restarted clock apart (and names the WAV files).
       this.captureId = randomUUID(); this.captureInfo = { ...this.captureInfo, captureId: this.captureId };
@@ -329,6 +346,7 @@ export class MeetingRuntime extends EventEmitter {
       const args = source.replay ? ['--replay', source.replay, '--speed', String(source.speed ?? 1)] : ['--device', String(source.device), '--device-name', String(source.deviceName), ...(source.micDevice !== undefined ? ['--mic-device', String(source.micDevice), '--mic-name', String(source.micName)] : source.micAuto ? ['--mic-auto'] : []), ...(source.saveAudioDir ? ['--save-audio-dir', source.saveAudioDir] : [])];
       this.spawnWorker(id, [...args, '--max-seconds', String(maxSeconds)]);
     }
+    this.mixPending = source.saveAudioDir ? { dir: source.saveAudioDir, captureId: this.captureId } : null;
     this.captureDeadline = setTimeout(() => { this.lastError = 'Capture duration or source grant expired; source stopped.'; void this.stopCapture(); }, maxSeconds * 1000);
     this.ping(); return { state: this.captureState, instruction: 'Model loads locally; use session_status to verify LISTENING. Do not claim capture active while loading.' };
   }
@@ -360,7 +378,7 @@ export class MeetingRuntime extends EventEmitter {
     });
     child.on('error', e => { this.lastError = e.message; this.captureState = 'ERROR'; if (this.capture === child) { this.capture = null; if (this.captureDeadline) clearTimeout(this.captureDeadline); this.captureDeadline = null; } this.ping(); });
     child.on('exit', code => {
-      lines.close(); if (this.capture === child) { this.capture = null; if (this.captureDeadline) clearTimeout(this.captureDeadline); this.captureDeadline = null; this.captureState = code === 0 ? 'OFF' : 'ERROR'; if (code !== 0) this.lastError ||= 'Audio worker stopped: ' + error; this.ping(); }
+      lines.close(); if (this.capture === child) { this.capture = null; if (this.captureDeadline) clearTimeout(this.captureDeadline); this.captureDeadline = null; this.captureState = code === 0 ? 'OFF' : 'ERROR'; if (code !== 0) this.lastError ||= 'Audio worker stopped: ' + error; this.startMix(); this.ping(); }
     });
     return child;
   }
@@ -378,7 +396,7 @@ export class MeetingRuntime extends EventEmitter {
       const check = () => { if (this.captureState !== 'PAUSING') done(true); };
       const timer = setTimeout(() => done(false), timeoutMs); this.on('change', check); check();
     });
-    if (!paused) await this.stopCapture();
+    if (!paused) await this.stopCapture(); else this.startMix();
   }
   async stopCapture() {
     if (this.stoppingCapture) return this.stoppingCapture;
@@ -388,6 +406,7 @@ export class MeetingRuntime extends EventEmitter {
     this.captureInfo = { ...this.captureInfo, stopCoverage: 'Unprocessed audio/tail may be discarded on immediate stop; transcript is not complete-meeting evidence.' };
     this.stoppingCapture = this.stopOwned(child);
     try { await this.stoppingCapture; } finally { this.stoppingCapture = null; }
+    if (child.exitCode !== null || child.signalCode !== null) this.startMix();  // not while an unconfirmed worker may still write
     if (this.session && !this.session.ended && !this.closing && !this.lastError && this.captureState === 'OFF') this.warmUp(this.session.id);
   }
   private async stopOwned(child: ChildProcess) {

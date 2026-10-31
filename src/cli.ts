@@ -12,15 +12,17 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma sources                      nguồn loa đang có tiếng (suggested)
   pma select <index>               cấp quyền nguồn loa (sau khi người dùng đồng ý)
   pma select-mic <index>           đổi micro kênh "Tôi" (mặc định: micro mà ứng dụng họp đang dùng, hoặc micro mặc định của Windows)
-  pma listen [--no-mic] [--save-audio [--keep-days 7]]
+  pma listen [--no-mic] [--no-save-audio] [--keep-days 7]
                                    bật nghe, chờ tới LISTENING. Micro "Tôi" luôn mở, mọi nền tảng họp (tiếng loa lọt vào micro bị bỏ)
-                                   --save-audio: lưu thêm file WAV trên máy này (không gửi đi), tự xoá sau --keep-days ngày (1–90, mặc định 7)
+                                   Mặc định lưu đủ âm thanh dạng WAV trên máy này (không gửi đi), tự xoá sau --keep-days ngày (1–90, mặc định 7);
+                                   --no-save-audio: không lưu (hoặc đặt PMA_SAVE_AUDIO=0). --save-audio vẫn nhận nhưng không còn tác dụng.
+                                   Ngừng nghe (pause/stop) thì tự ghép loa + micro thành <lượt>-mix.wav (16 kHz) để dùng với pma replay
   pma follow [--batch 15] [--max 40] [--after N] [--as TÊN] [--no-notes]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
                                    --as: tên người theo dõi (mặc định chinh; hai phiên cùng theo dõi thì mỗi phiên một tên, vd. dich), mỗi tên giữ con trỏ đọc riêng
                                    --no-notes: bỏ nhắc ghi chú cuốn chiếu (phiên dịch không ghi chú); cảnh báo trễ và dòng micro vẫn giữ
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
   pma status | pause | stop        trạng thái / tạm dừng (giữ mô hình, pma listen lại có chữ ngay) / kết thúc (ghi RAW.md)
-  pma audio [list | purge [--older-than N]]   xem / xoá âm thanh đã lưu: purge xoá file hết hạn, --older-than N xoá file cũ hơn N ngày (0 = tất cả)
+  pma audio [list | purge [--older-than N]]   xem âm thanh đã lưu (mỗi phiên: file ghép dùng cho pma replay, hoặc "đang ghép") / xoá: purge xoá file hết hạn, --older-than N xoá file cũ hơn N ngày (0 = tất cả)
   pma read [--after N] [--limit 100] [--session ID]
   pma note --text T --sources 1,2 [--kind observation]
   pma summary --file SUMMARY.md --sources 1,2,3 [--session ID]
@@ -135,11 +137,11 @@ async function main() {
     case 'listen': {
       const keepDays = flags['keep-days'] ? Number(flags['keep-days']) : undefined;
       if (keepDays !== undefined && !(Number.isInteger(keepDays) && keepDays >= 1 && keepDays <= 90)) throw new Error('--keep-days phải là số nguyên từ 1 đến 90');
-      await call('listen', { ...session, mic: flags['no-mic'] !== 'true', saveAudio: flags['save-audio'] === 'true', ...(keepDays ? { keepDays } : {}) });
+      await call('listen', { ...session, mic: flags['no-mic'] !== 'true', ...(flags['no-save-audio'] === 'true' ? { saveAudio: false } : {}), ...(keepDays ? { keepDays } : {}) });
       // Model load took up to ~3 minutes on 30/10; wait for it instead of reporting a failure.
       const deadline = Date.now() + 300000; let status = await call('status');
       while (['WARMING', 'WARM_READY', 'LOADING_ASR', 'WAITING_FOR_SOURCE'].includes(status.captureState) && Date.now() < deadline) { await new Promise(r => setTimeout(r, 1500)); status = await call('status'); }
-      return out({ captureState: status.captureState, lastError: status.lastError, device: status.captureInfo?.device, mic: status.captureInfo?.micDevice ?? undefined, micWhy: status.captureInfo?.micDevice ? micWhy(status.captureInfo.micSelectedBy) : status.captureInfo?.micError, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, waitedForSourceSeconds: status.captureInfo?.waitedForSourceSeconds, rms: status.captureInfo?.rms, audio: status.audio ? { dir: status.audio.dir, expiresAt: status.audio.expiresAt, note: 'WAV ~0,7 GB/giờ cho cả loa và micro; tự xoá khi hết hạn hoặc pma audio purge' } : undefined, next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
+      return out({ captureState: status.captureState, lastError: status.lastError, device: status.captureInfo?.device, mic: status.captureInfo?.micDevice ?? undefined, micWhy: status.captureInfo?.micDevice ? micWhy(status.captureInfo.micSelectedBy) : status.captureInfo?.micError, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, waitedForSourceSeconds: status.captureInfo?.waitedForSourceSeconds, rms: status.captureInfo?.rms, audio: status.audio ? { dir: status.audio.dir, expiresAt: status.audio.expiresAt, note: 'Lưu đủ âm thanh trên máy: WAV ~0,8 GB/giờ (loa + micro + file ghép); khi ngừng nghe tự ghép <lượt>-mix.wav dùng cho pma replay; tự xoá khi hết hạn hoặc pma audio purge; tắt bằng pma listen --no-save-audio' } : 'không lưu âm thanh (đã tắt: --no-save-audio hoặc PMA_SAVE_AUDIO=0)', next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
     }
     case 'follow': return follow(flags);
     case 'translate': {
@@ -154,7 +156,7 @@ async function main() {
       const olderThanDays = flags['older-than'] !== undefined ? Number(flags['older-than']) : undefined;
       if (olderThanDays !== undefined && !(olderThanDays >= 0)) throw new Error('--older-than phải là số ngày (0 trở lên)');
       const r = await call('audio', { action, olderThanDays });
-      if (action === 'list') return out(r.map((item: any) => ({ session: item.sessionId, title: item.title, dir: item.dir, files: item.files, mb: megabytes(item.bytes), expiresAt: item.expiresAt })));
+      if (action === 'list') return out(r.map((item: any) => ({ session: item.sessionId, title: item.title, dir: item.dir, files: item.files, mb: megabytes(item.bytes), expiresAt: item.expiresAt, mix: [...item.mix, ...item.mixing.map(() => 'đang ghép')] })));
       return out({ removed: r.removed.length, kept: r.kept, freedMb: megabytes(r.freedBytes) });
     }
     case 'stop': { const r = await call('finish', session); return out({ session: r.session, raw: r.raw, next: 'pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }

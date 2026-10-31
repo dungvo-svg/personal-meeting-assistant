@@ -457,5 +457,114 @@ class AudioInfrastructureTests(unittest.TestCase):
             parent.stdout.close()
 
 
+class MixAudioTests(unittest.TestCase):
+    """tools/mix_audio.py: the speaker + mic WAVs of one listening become one 16 kHz file for `pma replay`."""
+
+    def setUp(self):
+        tools = str(Path(__file__).resolve().parents[1] / 'tools')
+        if tools not in sys.path:
+            sys.path.insert(0, tools)
+        import mix_audio
+        self.mix = mix_audio
+        self.worker = __import__('audio_worker')
+
+    def wav(self, directory, name, rate, samples):
+        writer = self.worker.WavWriter(Path(directory) / name, rate)
+        writer.write(samples)
+        writer.close()
+
+    def sine(self, rate, seconds, freq, amplitude):
+        import numpy as np
+        t = np.arange(int(rate * seconds)) / rate
+        return (amplitude * np.sin(2 * np.pi * freq * t)).astype(np.float32)
+
+    def read(self, path):
+        import numpy as np
+        import wave
+        with wave.open(str(path), 'rb') as reading:
+            self.assertEqual((reading.getnchannels(), reading.getsampwidth(), reading.getframerate()), (1, 2, 16000))
+            return np.frombuffer(reading.readframes(reading.getnframes()), dtype='<i2').astype(np.float32) / 32768
+
+    def test_own_voice_slot_is_added_and_echo_slot_is_not(self):
+        import numpy as np
+        slot = self.mix.SLOT
+        speaker = np.zeros(4 * slot, dtype=np.float32)
+        speaker[:2 * slot] = 0.1                    # slots 0-1: the meeting talks
+        mic = np.zeros(4 * slot, dtype=np.float32)
+        mic[:slot] = 0.15                           # slot 0: mic hears the speakers again (1.5x, not clearly louder)
+        mic[slot:2 * slot] = 0.3                    # slot 1: the user talks over the meeting (3x)
+        mic[2 * slot:3 * slot] = 0.2                # slot 2: the user talks, meeting quiet
+        mic[3 * slot:] = 0.002                      # slot 3: room noise below SOUND_RMS
+        out = self.mix.mix_block(speaker, mic)
+        self.assertAlmostEqual(float(out[0]), 0.1, places=5)                     # echo not added
+        self.assertAlmostEqual(float(out[slot]), 0.4, places=5)                  # own voice added
+        self.assertAlmostEqual(float(out[2 * slot]), 0.2, places=5)              # own voice, alone
+        self.assertAlmostEqual(float(out[3 * slot]), 0.0, places=5)              # noise not added
+        loud = self.mix.mix_block(np.full(slot, 0.9, dtype=np.float32), np.full(slot, 0.95, dtype=np.float32), speaker_present=False)
+        self.assertEqual(float(loud.max()), 1.0)                                 # clipped to [-1, 1], never wrapped
+
+    def test_mic_without_speaker_file_is_kept_whole(self):
+        import numpy as np
+        out = self.mix.mix_block(np.zeros(0, dtype=np.float32), np.full(self.mix.SLOT, 0.003, dtype=np.float32), speaker_present=False)
+        self.assertAlmostEqual(float(out[0]), 0.003, places=6)
+
+    def test_inputs_at_different_rates_become_one_16k_file_of_the_longer_length(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            self.wav(directory, 'cap-speaker.wav', 48000, self.sine(48000, 3.0, 440, 0.1))
+            self.wav(directory, 'cap-mic.wav', 44100, self.sine(44100, 3.5, 880, 0.4))
+            target, samples = self.mix.mix_files(directory, 'cap')
+            self.assertEqual(target.name, 'cap-mix.wav')
+            data = self.read(target)
+            self.assertEqual(len(data), samples)
+            self.assertLessEqual(abs(samples - 3.5 * 16000), 2)                  # the longer input sets the length
+            self.assertEqual(sorted(p.name for p in Path(directory).iterdir()), ['cap-mic.wav', 'cap-mix.wav', 'cap-speaker.wav'])  # no .part left
+            self.assertLessEqual(float(abs(data).max()), 1.0)
+
+    def test_missing_mic_file_gives_the_speaker_resampled(self):
+        import numpy as np
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            self.wav(directory, 'cap-speaker.wav', 48000, self.sine(48000, 2.0, 440, 0.2))
+            target, samples = self.mix.mix_files(directory, 'cap')
+            data = self.read(target)
+            self.assertLessEqual(abs(samples - 32000), 2)
+            self.assertGreater(float(np.sqrt(np.mean(data[4000:-4000] ** 2))), 0.13)  # 0.2/sqrt(2) = 0.141
+            self.assertTrue(mix_has_tone(data, 440))
+
+    def test_nothing_to_mix_raises_and_leaves_no_file(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(FileNotFoundError):
+                self.mix.mix_files(directory, 'cap')
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            self.assertEqual(self.mix.main(['mix_audio.py', directory, 'cap']), 1)
+            self.assertEqual(self.mix.main(['mix_audio.py', directory, '../x']), 2)
+
+    def test_long_input_streams_in_small_blocks(self):
+        import numpy as np
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            # 70 s of speaker: more than one block, so the stateful resamplers and the 1 s loop are exercised end to end.
+            self.wav(directory, 'cap-speaker.wav', 44100, self.sine(44100, 70.0, 300, 0.1))
+            reads = []
+            original = self.mix.Channel.read
+            self.mix.Channel.read = lambda channel, count: reads.append(count) or original(channel, count)
+            try:
+                target, samples = self.mix.mix_files(directory, 'cap')
+            finally:
+                self.mix.Channel.read = original
+            self.assertTrue(all(count == self.mix.BLOCK for count in reads))
+            self.assertLessEqual(abs(samples - 70 * 16000), 2)
+            data = self.read(target)
+            self.assertLess(float(abs(np.diff(data)).max()), 0.05)               # no jump at block seams
+
+
+def mix_has_tone(data, freq):
+    import numpy as np
+    spectrum = np.abs(np.fft.rfft(data[:16000]))
+    return abs(int(np.argmax(spectrum)) - freq) <= 1
+
+
 if __name__ == '__main__':
     unittest.main()

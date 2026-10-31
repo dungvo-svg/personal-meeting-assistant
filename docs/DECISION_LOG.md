@@ -27,6 +27,7 @@ Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | U19 | 30/10: “micro tôi mặc định nhé, luôn nghe đi nhưng làm sao bạn lấy đúng mic của zoom để khi tôi k bật thì nó cx k nghe”; phần chưa làm được thì đưa vào issue chờ thêm dữ liệu họp |
 | U20 | 30/10 chiều, sau buổi thử thật trên Google Meet: “Gôm cả 3 đợt lại Plan và làm song song”; “Về mic thì biết tôi nói vào mic là được k phụ thuộc nền tảng”; Opus quyết kiến trúc, Sonnet làm; duyệt lưu âm thanh opt-in (B3) và màn hình chung có bản dịch (B1/B5) |
 | U21 | 30/10: “Màn hình chung cho người dự → bỏ nó nhé vì ta đang họp trên session không phải một web nữa” |
+| U22 | 31/10: “các đoạn là phần dịch theo dõi, còn wav phải ghi được đầy đủ” |
 
 Ảnh định hướng trong U1 và tài liệu b15f178 của repo AIOS chỉ cung cấp bối cảnh hai sản phẩm độc lập. Không nhập runtime, quyền phiên họp hoặc tiêu chí nghiệm thu của repo đó vào đây.
 
@@ -51,7 +52,8 @@ Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | OWN-016 | U16 | Không cồng kềnh: mọi thao tác qua Claude; bảng web chỉ là tùy chọn. Micro dùng khi được, không thì chỉ loa |
 | OWN-012 | U15 | Bộ tai nghe cuộc họp nói lẫn tiếng Việt và tiếng Lào. Thay phần “chỉ tiếng Việt” của OWN-008; vẫn không phiên dịch |
 | OWN-017 | U19, U20 | Micro “Tôi” luôn mở, không hỏi lại mỗi phiên, **không phụ thuộc nền tảng họp**: lời người dùng nói vào micro là “Tôi”, tiếng loa lọt vào bị bỏ. U20 thay phần “chỉ lấy tiếng khi micro Zoom bật” của U19 (bản 0.9.0 làm mất hết lời người dùng trên Google Meet) |
-| OWN-018 | U20 | Âm thanh được lưu chỉ khi người dùng bật cho lần nghe đó (`--save-audio`), trên máy, tự xoá sau số ngày đặt (mặc định 7). Thay một phần OWN-005 “audio tạm” |
+| OWN-018 | U20, U22 | Âm thanh được lưu trên máy, tự xoá sau số ngày đặt (mặc định 7). Thay một phần OWN-005 “audio tạm”. U22: **lưu mặc định** (tắt bằng `pma listen --no-save-audio` hoặc `PMA_SAVE_AUDIO=0`), vì các đoạn chữ chỉ để theo dõi/dịch còn WAV phải đủ; `--save-audio` còn nhận nhưng không còn tác dụng |
+| OWN-020 | U22 | Khi ngừng nghe (pause/stop), tự ghép file loa + micro của lượt đó thành `<lượt>-mix.wav` (16 kHz) để `pma replay`: ứng dụng họp không phát lại giọng người dùng ra loa nên file loa thiếu lời “Tôi”. Micro chỉ được cộng vào ở những khoảng 0,1 s đúng là giọng người dùng (cùng luật với bộ tai); ghép chạy tiến trình riêng, không làm chậm pause/stop |
 | OWN-019 | U20, U21 | Không có màn hình chung/trang web cho người dự: theo dõi họp trong phiên Claude. Bản dịch Lào→Việt do Claude viết ngay trong phiên, ghi rõ “(Claude dịch)” và lưu vào RAW |
 
 U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi máy. U11 là ranh giới vận hành lần này: không restart Claude hoặc thực hiện đề nghị thu thử thay người dùng. Claude đã ghi đè lần chỉnh config khi còn chạy; installer hiện yêu cầu app đóng trước khi apply. Host/device acceptance vẫn chờ. Hỏi đáp/ghi chú trong Claude khi người dùng yêu cầu là hỗ trợ theo scope pilot, không phải đã hoàn thành giao diện hỏi đáp hoặc V1 phiên dịch.

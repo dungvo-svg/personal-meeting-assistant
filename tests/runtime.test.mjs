@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 
 async function withRuntime(fn, testMode = true) {
   const directory = mkdtempSync(join(tmpdir(), 'personal-meeting-test-'));
-  const runtime = new MeetingRuntime(resolve('.'), directory, testMode);
+  const runtime = new MeetingRuntime(resolve('.'), directory, testMode); runtime.mixer = () => {};  // no real mix process from tests that fake the worker
   try { await fn(runtime, directory); } finally { await runtime.close(); assert.ok(resolve(directory).startsWith(resolve(tmpdir()))); rmSync(directory, { recursive: true }); }
 }
 test('capture cannot be started by a model-supplied session ID without local source grant', async () => {
@@ -189,7 +189,7 @@ test('glossary replaces whole words only and keeps two different short segments 
   assert.equal(foldRuns([{ id: 1, text: 'cái' }, { id: 2, text: 'cái' }, { id: 3, text: 'dạ' }]).length, 3);
 });
 test('warm worker gets its source on listen; the user microphone joins only as an explicit "Tôi" channel', async () => {
-  await withRuntime(async r => {
+  await withRuntime(async (r, directory) => {
     r.prepare(); const id = r.session.id;
     r.devices = [{ index: 12, name: 'Mic', kind: 'microphone' }, { index: 13, name: 'Realtek [Loopback]', kind: 'speaker_loopback_all_device_audio' }];
     await assert.rejects(r.selectMic(id, 13), /NOT_A_MICROPHONE/);
@@ -198,7 +198,8 @@ test('warm worker gets its source on listen; the user microphone joins only as a
     r.arm(id, 13); await r.selectMic(id, 12);
     const started = await r.start(id);
     assert.equal(started.state, 'WAITING_FOR_SOURCE');
-    assert.deepEqual(JSON.parse(written[0]), { device: 13, deviceName: 'Realtek [Loopback]', micDevice: 12, micName: 'Mic', maxSeconds: JSON.parse(written[0]).maxSeconds });
+    const request = JSON.parse(written[0]);  // audio is saved by default: the worker is told where, and under which capture ID
+    assert.ok(request.captureId); assert.deepEqual({ ...request, captureId: undefined }, { device: 13, deviceName: 'Realtek [Loopback]', micDevice: 12, micName: 'Mic', saveAudioDir: join(directory, 'audio', id), maxSeconds: request.maxSeconds, captureId: undefined });
     assert.equal(r.compact().armedMic.index, 12);
     r.capture = null; r.captureState = 'OFF'; clearTimeout(r.captureDeadline);
     r.ingest('Em gửi bảng giá chiều nay', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC; CHANNEL_MIC', 'cap', 'vi');

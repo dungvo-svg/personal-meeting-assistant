@@ -1,4 +1,5 @@
-// Capture flow: pause that keeps the worker warm, model load time (audit 30/10 A4, A9) and opt-in audio saving (B3).
+// Capture flow: pause that keeps the worker warm, model load time (audit 30/10 A4, A9), audio saving on by default (B3, owner 31/10)
+// and the mix of the saved channels that starts when a listening ends.
 // The worker here is a tiny Node script that speaks the same JSON lines as tools/audio_worker.py; no device is opened.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { MeetingRuntime } from '../dist/runtime.js';
-import { audioInfo, isExpired, keepDaysOf, markAudioDir, purgeAudio } from '../dist/audio.js';
+import { audioInfo, isExpired, keepDaysOf, listAudio, markAudioDir, purgeAudio } from '../dist/audio.js';
 
 const FAKE_WORKER = `
 const rl = require('node:readline').createInterface({ input: process.stdin });
@@ -48,13 +49,14 @@ async function withFakeWorker(fn) {
 test('pause keeps the worker and its models; the next listen has text at once under a new capture ID', async () => {
   await withFakeWorker(async (r, dir) => {
     let saves = 0; const save = r.saveProfile.bind(r); r.saveProfile = change => { saves++; return save(change); };
+    const mixes = []; r.mixer = (python, args) => mixes.push({ python, args });
     r.prepare('Họp'); const id = r.session.id;
     await until(() => r.captureState === 'WARM_READY', 'warm');
     assert.equal(r.captureInfo.modelLoadSeconds, 15.3); assert.equal(saves, 1);
     const child = r.capture;
     r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }]; r.arm(id, 13);
 
-    await r.start(id, true, { saveAudio: true, keepDays: 3 });
+    await r.start(id, true, { keepDays: 3 });  // saving is the default
     await until(() => r.captureState === 'LISTENING' && r.sources(id).length === 1, 'first listening');
     const first = r.captureId;
     // A4: the ready event of the worker may carry the wait for the source; the load time stays the one from "warm".
@@ -67,15 +69,64 @@ test('pause keeps the worker and its models; the next listen has text at once un
     assert.equal(r.captureState, 'WARM_READY'); assert.equal(r.capture, child); assert.equal(child.exitCode, null);
     assert.equal(saves, 1, 'a resumed warm is not a model load');
     assert.equal(r.sources(id).length, 2); assert.equal(r.sources(id)[1].text, 'câu cuối trước khi tạm dừng');
+    assert.deepEqual(mixes, [{ python: process.execPath, args: [join(r.root, 'tools', 'mix_audio.py'), join(dir, 'audio', id), first] }], 'the listening that ended is mixed once the worker is paused');
 
-    await r.start(id, true);
+    await r.start(id, true, { saveAudio: false });
     await until(() => r.captureState === 'LISTENING' && r.sources(id).length === 3, 'second listening');
     const [a, b, c] = r.sources(id); assert.equal(a.captureId, first); assert.equal(b.captureId, first);
     assert.notEqual(c.captureId, first); assert.equal(c.captureId, r.captureId);
     assert.equal(r.captureInfo.request.captureId, undefined, 'no audio saving this time: no capture ID needed by the worker');
+    assert.equal(r.captureInfo.request.saveAudioDir, undefined);
 
     await r.finish(id);
     assert.equal(r.capture, null); assert.equal(r.captureState, 'OFF');
+    assert.equal(mixes.length, 1, 'a listening that saved nothing has nothing to mix');
+  });
+});
+
+test('saving audio is the default; --no-save-audio (saveAudio:false) and PMA_SAVE_AUDIO=0 turn it off', async () => {
+  const listen = async (save, env) => { let result; await withFakeWorker(async (r, dir) => {
+    const before = process.env.PMA_SAVE_AUDIO; if (env === undefined) delete process.env.PMA_SAVE_AUDIO; else process.env.PMA_SAVE_AUDIO = env;
+    try {
+      r.mixer = () => {}; r.prepare('Họp'); const id = r.session.id; await until(() => r.captureState === 'WARM_READY', 'warm');
+      r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }]; r.arm(id, 13);
+      await r.start(id, true, save); await until(() => r.captureState === 'LISTENING', 'listening');
+      const request = r.captureInfo.request; result = { saved: request.saveAudioDir, captureId: request.captureId, audio: r.compact().audio, dir: join(dir, 'audio', id) };
+    } finally { if (before === undefined) delete process.env.PMA_SAVE_AUDIO; else process.env.PMA_SAVE_AUDIO = before; }
+  }); return result; };
+  const byDefault = await listen({}, undefined); assert.equal(byDefault.saved, byDefault.dir); assert.ok(byDefault.captureId); assert.equal(byDefault.audio.keepDays, 7);
+  const asked = await listen({ saveAudio: true }, '0'); assert.equal(asked.saved, asked.dir, 'an explicit request wins over the environment');
+  for (const [save, env] of [[{ saveAudio: false }, undefined], [{}, '0'], [{ keepDays: 3 }, '0']]) {
+    const off = await listen(save, env); assert.equal(off.saved, undefined); assert.equal(off.captureId, undefined); assert.equal(off.audio, null);
+  }
+});
+
+test('stop mixes the listening that saved audio once the worker has exited; a stop right after a pause mixes nothing twice', async () => {
+  await withFakeWorker(async (r, dir) => {
+    const mixes = []; r.mixer = (python, args) => mixes.push(args.slice(1));
+    r.prepare('Họp'); const id = r.session.id; await until(() => r.captureState === 'WARM_READY', 'warm');
+    r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }]; r.arm(id, 13);
+    await r.start(id, true); await until(() => r.captureState === 'LISTENING', 'first listening');
+    const first = r.captureId; const child = r.capture;
+    await r.stopCapture();
+    assert.notEqual(child.exitCode, null);
+    assert.deepEqual(mixes, [[join(dir, 'audio', id), first]], 'mixed after the worker exited');
+    await until(() => r.captureState === 'WARM_READY', 'a fresh worker warms up again');
+    await r.start(id, true); await until(() => r.captureState === 'LISTENING', 'second listening');
+    const second = r.captureId; assert.notEqual(second, first);
+    await r.pause(); assert.equal(mixes.length, 2); assert.deepEqual(mixes[1], [join(dir, 'audio', id), second]);
+    await r.stopCapture(); await r.finish(id);
+    assert.equal(mixes.length, 2, 'the paused listening was mixed at the pause, not again at the stop');
+  });
+});
+
+test('a failing mix spawner never breaks pause or stop', async () => {
+  await withFakeWorker(async (r) => {
+    r.mixer = () => { throw new Error('spawn EPERM'); };
+    r.prepare('Họp'); const id = r.session.id; await until(() => r.captureState === 'WARM_READY', 'warm');
+    r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }]; r.arm(id, 13);
+    await r.start(id, true); await until(() => r.captureState === 'LISTENING', 'listening');
+    await r.pause(); assert.equal(r.captureState, 'WARM_READY'); assert.equal(r.lastError, null);
   });
 });
 
@@ -122,18 +173,36 @@ test('saved audio: expiry never shortens, only expired session folders go, a ses
   } finally { rmSync(dir, { recursive: true }); }
 });
 
-test('RAW and status say where saved audio is and when it is deleted; without the flag it stays RAM only', async () => {
+test('RAW and status say where saved audio is, when it is deleted and which file to replay; with nothing saved they say so', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'pma-audio-raw-')); const r = new MeetingRuntime(resolve('.'), dir, true);
   try {
     r.prepare('Họp'); const id = r.session.id;
-    assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /Không có audio lưu lại/); assert.equal(r.compact().audio, null); assert.equal(r.snapshot().audioStorage, 'RAM_ONLY_NO_AUDIO_FILES');
+    assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /Không có audio lưu lại/); assert.equal(r.compact().audio, null); assert.equal(r.snapshot().audioStorage, 'NO_AUDIO_FILES');
     const marked = markAudioDir(dir, id, 7); writeFileSync(join(marked.dir, 'cap-mic.wav'), Buffer.alloc(2048));
-    const raw = readFileSync(r.writeRaw(id).path, 'utf8');
-    assert.ok(raw.includes(`Âm thanh đã lưu trên máy tại ${marked.dir} (1 file`)); assert.match(raw, /tự xoá sau \d/);
+    let raw = readFileSync(r.writeRaw(id).path, 'utf8');
+    assert.ok(raw.includes(`Âm thanh đã lưu trên máy tại ${marked.dir} (1 file`)); assert.match(raw, /tự xoá sau \d/); assert.equal(r.snapshot().audioStorage, 'WAV_SAVED_LOCALLY_UNTIL_AUTO_DELETE');
+    // RAW is written at once, usually before the mix exists: it names the mix file as the one for pma replay.
+    assert.ok(raw.includes(`dùng với pma replay: ${join(marked.dir, 'cap-mix.wav')} (đang ghép, chưa xong)`));
+    writeFileSync(join(marked.dir, 'cap-mix.wav'), Buffer.alloc(512)); writeFileSync(join(marked.dir, 'cap-mix.part'), Buffer.alloc(512));
+    raw = readFileSync(r.writeRaw(id).path, 'utf8');
+    assert.ok(raw.includes(`dùng với pma replay: ${join(marked.dir, 'cap-mix.wav')}.`)); assert.ok(!raw.includes('đang ghép'));
     assert.equal(r.compact().audio.dir, marked.dir); assert.equal(r.audioList()[0].title, 'Họp');
+    assert.deepEqual(r.audioList()[0].mix, [join(marked.dir, 'cap-mix.wav')]); assert.deepEqual(r.audioList()[0].mixing, []);
     assert.equal(r.purgeAudio().removed.length, 0); assert.equal(r.purgeAudio(0).removed.length, 1);
     assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /Không có audio lưu lại/);
   } finally { await r.close(); rmSync(dir, { recursive: true }); }
+});
+
+test('audio list: finished mix files, and the ones channel files are still waiting for', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pma-audio-mix-')); const id = '77777777-7777-4777-8777-777777777777';
+  try {
+    const { dir: folder } = markAudioDir(dir, id, 7); const put = name => writeFileSync(join(folder, name), Buffer.alloc(100));
+    put('a-speaker.wav'); put('a-mic.wav'); put('a-mix.wav'); put('b-speaker.wav'); put('c-mic.wav'); put('c-mix.part'); put('d-speaker.wav'); put('d-mix.wav');
+    const [item] = listAudio(dir);
+    assert.deepEqual(item.mix.map(path => path.slice(folder.length + 1)), ['a-mix.wav', 'd-mix.wav']);
+    assert.deepEqual(item.mixing.map(path => path.slice(folder.length + 1)), ['b-mix.wav', 'c-mix.wav'], 'a half-written .part is not a finished mix');
+    assert.equal(item.files, 7);
+  } finally { rmSync(dir, { recursive: true }); }
 });
 
 test('daemon deletes expired audio when it starts; `pma audio` lists and purges', async () => {
@@ -148,8 +217,11 @@ test('daemon deletes expired audio when it starts; `pma audio` lists and purges'
     await pma('status');  // starts the daemon, which purges expired folders first
     assert.ok(!existsSync(join(dir, 'audio', expired))); assert.ok(existsSync(join(dir, 'audio', current)));
     const listed = await pma('audio'); assert.equal(listed.length, 1); assert.equal(listed[0].session, current); assert.equal(listed[0].mb, 3);
+    assert.deepEqual(listed[0].mix, ['đang ghép'], 'only a channel file so far');
+    writeFileSync(join(dir, 'audio', current, 'cap-mix.wav'), Buffer.alloc(1048576));
+    assert.deepEqual((await pma('audio'))[0].mix, [join(dir, 'audio', current, 'cap-mix.wav')]);
     assert.deepEqual(await pma('audio', 'purge'), { removed: 0, kept: 1, freedMb: 0 });
-    assert.deepEqual(await pma('audio', 'purge', '--older-than', '0'), { removed: 1, kept: 0, freedMb: 3 });
+    assert.deepEqual(await pma('audio', 'purge', '--older-than', '0'), { removed: 1, kept: 0, freedMb: 4 });
     await assert.rejects(pma('listen', '--keep-days', '0'), /./);
   } finally { await pma('shutdown').catch(() => {}); await new Promise(resolve => setTimeout(resolve, 600)); rmSync(dir, { recursive: true, force: true }); }
 });

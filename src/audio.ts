@@ -1,6 +1,7 @@
-// Opt-in audio saving (`pma listen --save-audio`): where the WAV files go, when they expire, and how they are purged.
-// Layout: <dataDir>/audio/<sessionId>/<captureId>-<speaker|mic>.wav plus expires.json. Nothing here records audio;
-// the worker writes the files, this only names, measures and deletes them.
+// Audio saving (on by default, `pma listen --no-save-audio` turns it off): where the WAV files go, when they expire,
+// and how they are purged. Layout: <dataDir>/audio/<sessionId>/<captureId>-<speaker|mic>.wav (what the worker wrote, at
+// the device's rate), <captureId>-mix.wav (tools/mix_audio.py: both channels at 16 kHz, the file for `pma replay`)
+// and expires.json. Nothing here records audio; the worker writes the files, this only names, measures and deletes them.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -10,7 +11,8 @@ const SESSION_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 const META = 'expires.json';
 
 export type AudioMeta = { keepDays: number; savedAt: string; expiresAt: string };
-export type AudioInfo = AudioMeta & { dir: string; files: number; bytes: number };
+// mix: finished mix files; mixing: the mix files that channel files are waiting for (not there yet).
+export type AudioInfo = AudioMeta & { dir: string; files: number; bytes: number; mix: string[]; mixing: string[] };
 
 export const audioRoot = (dataDir: string) => join(dataDir, 'audio');
 export const audioDir = (dataDir: string, sessionId: string) => join(audioRoot(dataDir), sessionId);
@@ -29,6 +31,17 @@ export function markAudioDir(dataDir: string, sessionId: string, keepDays: numbe
   const meta: AudioMeta = { keepDays, savedAt: before?.savedAt ?? new Date(now).toISOString(), expiresAt: new Date(expiresAt).toISOString() };
   writeFileSync(join(dir, META), JSON.stringify(meta), 'utf8');
   return { ...meta, dir };
+}
+
+export const mixName = (captureId: string) => `${captureId}-mix.wav`;
+const CHANNEL_FILE = /^(.+)-(speaker|mic)\.wav$/;
+
+// Which listenings have channel files, and which of those already have a finished mix (<captureId>-mix.part never counts).
+function mixState(dir: string) {
+  const names = readdirSync(dir); const have = new Set(names);
+  const captures = [...new Set(names.map(name => name.match(CHANNEL_FILE)?.[1]).filter((id): id is string => !!id))].sort();
+  const mix = names.filter(name => name.endsWith('-mix.wav')).sort().map(name => join(dir, name));
+  return { mix, mixing: captures.filter(id => !have.has(mixName(id))).map(id => join(dir, mixName(id))) };
 }
 
 function measure(dir: string) {
@@ -53,7 +66,7 @@ export function audioInfo(dataDir: string, sessionId: string): AudioInfo | null 
   if (!SESSION_DIR.test(sessionId) || !existsSync(dir)) return null;
   const { files, bytes, newest } = measure(dir); if (!files) return null;
   const meta = readMeta(dir) ?? { keepDays: DEFAULT_KEEP_DAYS, savedAt: new Date(newest).toISOString(), expiresAt: new Date(newest + DEFAULT_KEEP_DAYS * DAY_MS).toISOString() };
-  return { ...meta, dir, files, bytes };
+  return { ...meta, dir, files, bytes, ...mixState(dir) };
 }
 
 export function listAudio(dataDir: string) {
