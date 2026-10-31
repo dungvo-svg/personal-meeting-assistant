@@ -454,7 +454,7 @@ class MicStateTests(unittest.TestCase):
             log = recorder.TimelineLog(Path(directory) / 'timeline.jsonl', clock)
             recorder.copy_mic_state(['{"mic":"on","app":"chrome"}'], lambda state, app: log.write('mic_state', state=state, app=app, by='mic_state.ps1'))
             log.close()
-            self.assertEqual(timeline.Timeline.load(directory).mic_states(), [{'wall': WALL0, 'state': 'on', 'app': 'chrome', 'by': 'mic_state.ps1'}])
+            self.assertEqual(timeline.Timeline.load(directory).mic_states(), [{'wall': WALL0, 't': WALL0, 'state': 'on', 'app': 'chrome', 'by': 'mic_state.ps1', 'release': None}])
 
 
 class TimelineFileTests(unittest.TestCase):

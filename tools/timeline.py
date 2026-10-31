@@ -191,7 +191,8 @@ class Timeline:
                     segment.add_anchor(item['start'], int(at))
                     segment.add_anchor(item['end'], int(at))
         elif kind == 'mic_state':
-            self.mic_state_events.append({'wall': event['wall'], 'state': event.get('state'), 'app': event.get('app'), 'by': event.get('by')})
+            # `t` and `release` too, so tools/mic_state.label_mic_chunk can take these entries as they are.
+            self.mic_state_events.append({'wall': event['wall'], 't': event['wall'], 'state': event.get('state'), 'app': event.get('app'), 'by': event.get('by'), 'release': event.get('release')})
         elif kind == 'error':
             self.error_events.append({'wall': event['wall'], 'channel': event.get('channel'), 'message': event.get('message')})
         elif kind == 'end':

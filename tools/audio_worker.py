@@ -13,6 +13,7 @@ import types
 import uuid
 
 from follow_source import RATE16, SEGMENT_END, ChannelFollower, cut_window
+from mic_state import label_mic_chunk
 from timeline import Timeline, parse_wall
 
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
@@ -865,6 +866,10 @@ def capture(args):
                             marks = ''.join('; ' + flag for flag in segment_flags(text, segment, language, language_probability))
                             if channel == 'mic':
                                 marks += '; CHANNEL_MIC'
+                                if listening.follow and place:
+                                    # Mic on in the meeting / muted ("nói riêng") / unknown, by what the recorder saw (owner Q7).
+                                    begin_wall = parse_wall(place['wall'])
+                                    marks += '; ' + label_mic_chunk(timeline.mic_states(), begin_wall, begin_wall + (end - begin))
                             emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place})
                 except Exception as exc:
                     # One bad chunk must not end the meeting: say which stretch has no text and go on with the next.

@@ -831,6 +831,20 @@ class FollowTests(unittest.TestCase):
         self.assertAlmostEqual(self.wall(mic[0]), mic[0]['start'], delta=0.05)
         self.assertEqual(len(self.sources('speaker')), 1)
 
+    def test_mic_chunks_carry_whether_the_mic_was_on_in_the_meeting_or_muted(self):
+        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
+        self.session.event('mic_state', 9.5, state='off', app='zoom', by='uia')
+        # The user talks twice, once with the mic open in the meeting and once muted (owner Q7: keep it, but classify).
+        self.session.segment(1, 'mic', 0.0, [(3, 0.2), (8, 0), (3, 0.2), (6, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertEqual(len(mic), 2)
+        self.assertIn('MIC_STATE_ON', mic[0]['boundary'])
+        self.assertIn('MIC_STATE_OFF', mic[1]['boundary'])
+
     def test_a_stale_wav_header_does_not_hide_samples_that_are_on_disk(self):
         self.session.begin(1, 'speaker', 0.0)
         self.session.add(1, 'speaker', self.session.wave(2, 0.2), 2.0)
