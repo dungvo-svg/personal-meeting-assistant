@@ -55,7 +55,7 @@ const localDate = (iso: string) => new Date(iso).toLocaleDateString('vi-VN');
 const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 
 export type Source = { id: number; sessionId: string; text: string; origin: string; start: number; end: number; createdAt: string; boundary: string; captureId: string; language: string; shown?: string };
-export type Language = 'vi' | 'lo';
+export type Language = 'vi' | 'lo' | 'th';
 export class MeetingRuntime extends EventEmitter {
   db: DatabaseSync;
   session: any = null;
@@ -127,12 +127,12 @@ export class MeetingRuntime extends EventEmitter {
   }
   shown(text: string) { return applyGlossary(collapseLoops(text), this.glossary); }
   ping() { this.emit('change'); }
-  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo'], extra: { me?: string; at?: string } = {}) {
+  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
     if (this.session && !this.session.ended) return this.snapshot();
     if (this.capture || this.stoppingCapture || this.captureState === 'CLEANUP_UNCONFIRMED') throw new Error('PREVIOUS_CAPTURE_NOT_CLOSED');
     if (fixture && !this.testMode) throw new Error('FIXTURE_DISABLED');
-    languages = [...new Set(languages)]; if (!languages.length || languages.some(code => code !== 'vi' && code !== 'lo')) throw new Error('LANGUAGES_MUST_BE_VI_LO');
+    languages = [...new Set(languages)]; if (!languages.length || languages.some(code => code !== 'vi' && code !== 'lo' && code !== 'th')) throw new Error('LANGUAGES_MUST_BE_VI_LO_TH');
     const created = new Date().toISOString();
     // A saved agenda from another day must not be presented as context for today's meeting.
     const savedIsCurrent = !this.context.date || this.context.date === new Date().toLocaleDateString('sv-SE');
@@ -142,7 +142,7 @@ export class MeetingRuntime extends EventEmitter {
     if (extra.me?.trim()) this.saveProfile({ me: extra.me.trim().slice(0, 80) });
     const scheduled = scheduledAt(extra.at);
     const context = { ...base, me: this.profile.me, scheduledStart: scheduled };
-    this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
+    this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'th' ? 'TH_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
     this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.followers = {}; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.audioSave = null; this.captureState = 'OFF'; this.captureInfo = {};
     if (!fixture) this.warmUp(this.session.id);
@@ -162,7 +162,7 @@ export class MeetingRuntime extends EventEmitter {
     text = text.trim(); if (!text || text.length > 8000 || !Number.isFinite(start) || !Number.isFinite(end) || end < start) throw new Error('INVALID_SOURCE');
     const size: any = this.db.prepare('SELECT COUNT(*) AS n,COALESCE(SUM(length(text)),0) AS chars FROM sources WHERE session_id=?').get(this.session.id);
     if (size.n >= 10000 || size.chars + text.length > 5_000_000) throw new Error('TEXT_CAPACITY_REACHED');
-    if (language && language !== 'vi' && language !== 'lo') throw new Error('INVALID_SOURCE_LANGUAGE');
+    if (language && language !== 'vi' && language !== 'lo' && language !== 'th') throw new Error('INVALID_SOURCE_LANGUAGE');
     const row = this.db.prepare('INSERT INTO sources(session_id,text,origin,start,end,created,boundary,capture_id,language) VALUES(?,?,?,?,?,?,?,?,?)').run(this.session.id, text, origin, start, end, new Date().toISOString(), boundary, captureId, language);
     this.ping(); return Number(row.lastInsertRowid);
   }
@@ -554,7 +554,7 @@ export class MeetingRuntime extends EventEmitter {
       if (!Number.isSafeInteger(item?.sourceId) || !text || text.length > 2000) throw new Error('INVALID_TRANSLATION: #' + item?.sourceId);
       const row: any = this.db.prepare('SELECT language FROM sources WHERE session_id=? AND id=?').get(id, item.sourceId);
       if (!row) throw new Error('SOURCE_OUTSIDE_SESSION: ' + item.sourceId);
-      if (row.language !== 'lo') throw new Error('TRANSLATE_ONLY_LAO: #' + item.sourceId + ' không phải đoạn tiếng Lào');
+      if (row.language !== 'lo' && row.language !== 'th') throw new Error('TRANSLATE_ONLY_LAO: #' + item.sourceId + ' không phải đoạn tiếng Lào/Thái');
       return { sourceId: item.sourceId, text };
     });
     const now = new Date().toISOString(); let replaced = 0;

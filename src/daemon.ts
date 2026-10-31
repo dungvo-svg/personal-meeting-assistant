@@ -32,7 +32,7 @@ let lastActivity = Date.now();
 const sid = z.string().uuid();
 const ids = z.array(z.number().int().positive());
 const current = (sessionId?: string) => sid.parse(sessionId ?? runtime.session?.id);
-const languages = z.array(z.enum(['vi', 'lo'])).min(1).max(2).default(['vi', 'lo']);
+const languages = z.array(z.enum(['vi', 'lo', 'th'])).min(1).max(3).default(['vi', 'lo', 'th']);
 
 // Every operation the CLI and MCP adapter may call. Inputs are validated here, once, for both.
 const methods: Record<string, (input: any) => any> = {
@@ -63,7 +63,7 @@ const methods: Record<string, (input: any) => any> = {
     if (a.action === 'remove') return runtime.glossaryRemove(a.name ?? '');
     return runtime.glossary;
   },
-  fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); const a = z.object({ text: z.string().min(1).max(8000), language: z.enum(['vi', 'lo']).optional() }).parse(input); return { id: runtime.ingest(a.text, 'synthetic_fixture', 0, 0, '', '', a.language) }; },
+  fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); const a = z.object({ text: z.string().min(1).max(8000), language: z.enum(['vi', 'lo', 'th']).optional() }).parse(input); return { id: runtime.ingest(a.text, 'synthetic_fixture', 0, 0, '', '', a.language) }; },
   // Vietnamese lines for Lao segments, written by the Claude session following the meeting.
   translate: input => { const a = z.object({ sessionId: sid.optional(), items: z.array(z.object({ sourceId: z.number().int().positive(), text: z.string().min(1).max(2000) })).min(1).max(100) }).parse(input); return runtime.translate(current(a.sessionId), a.items); },
   shutdown: () => { setTimeout(() => void shutdown(), 50); return { stopping: true }; },
