@@ -2,12 +2,16 @@
 // `follow` and `read`, which print transcript lines for Claude to read.
 import { readFileSync } from 'node:fs';
 import { call } from './client.js';
-import { foldRuns, isHallucination, wrapLine } from './text.js';
+import { foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
-  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo] [--me "Tên tôi"] [--at HH:MM]
+  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
                                    --link: Zoom (zoom.us/j/...) hoặc Google Meet (meet.google.com/abc-defg-hij)
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
+  pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
+                                   variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
+  pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
+  pma me --on | --off | --auto     micro "Tôi" đang bật/tắt khi máy không tự đọc được (ghi vào timeline, by:manual); --auto trả lại cho máy đọc
   pma at HH:MM [--session ID]      sửa giờ họp theo lịch của phiên đang mở (độ phủ tính lại; phiên đã kết thúc thì chạy pma raw lại)
   pma sources                      nguồn loa đang có tiếng (suggested)
   pma select <index>               cấp quyền nguồn loa (sau khi người dùng đồng ý)
@@ -58,7 +62,7 @@ function line(item: any) {
   // Câu ảo khi im lặng chỉ để lại số đoạn, không đưa chữ vào để Claude không đọc nhầm thành nội dung.
   if (isHallucination(item)) return `#${item.id} [bỏ: nghi câu ảo]`;
   const flags = Object.entries(FLAG_LABELS).filter(([code]) => item.boundary?.includes(code)).map(([, label]) => label);
-  const who = item.boundary?.includes('CHANNEL_MIC') ? ' Tôi' : '';
+  const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : '';
   return `#${item.id} ${clock(item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}`;
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
@@ -124,10 +128,25 @@ async function main() {
   const session = flags.session ? { sessionId: flags.session } : {};
   switch (command) {
     case 'start': {
+      // The participants file is read first: a bad file stops here, before any session exists.
+      const listed = flags.participants ? JSON.parse(readFileSync(flags.participants, 'utf8')) : undefined;
       const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at });
+      // Right after the session exists; a list the runtime refuses is reported, the session stays open.
+      const people = listed ? await call('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
       const opened = flags.link ? await call('open', { url: flags.link }) : undefined;
       const load = status.expectedLoadSeconds ? `, lần trước mất khoảng ${Math.round(status.expectedLoadSeconds)} giây` : '';
-      return out({ ...status, opened, next: `Mô hình đang nạp sẵn (WARMING${load}). pma sources → hỏi người dùng → pma select <index> → pma listen (micro "Tôi" luôn mở) → Monitor "pma follow"` + (status.me ? '' : '. Chưa biết tên người dùng: thêm --me "Tên" ở lần start sau.') });
+      return out({ ...status, opened, ...(people ? { participants: people } : {}), next: `Mô hình đang nạp sẵn (WARMING${load}). pma sources → hỏi người dùng → pma select <index> → pma listen (micro "Tôi" luôn mở) → Monitor "pma follow"` + (status.me ? '' : '. Chưa biết tên người dùng: thêm --me "Tên" ở lần start sau.') });
+    }
+    case 'participants': {
+      if (!flags.file) throw new Error('pma participants --file p.json');
+      return out(await call('participants', { participants: JSON.parse(readFileSync(flags.file, 'utf8')) }));
+    }
+    case 'brief': { const r = await call('brief', session); return process.stdout.write(r.markdown); }
+    case 'me': {
+      const chosen = (['on', 'off', 'auto'] as const).filter(v => flags[v] === 'true');
+      if (chosen.length !== 1) throw new Error('pma me --on | --off | --auto (đúng một cờ)');
+      const r = await call('mic', { state: chosen[0] });
+      return out({ mic: r.entry.state === 'unknown' ? 'auto' : r.entry.state, by: 'manual', at: r.entry.t, timeline: r.path });
     }
     case 'at': return out(await call('schedule', { ...session, at: positional[0] ?? flags.at }));
     case 'sources': { const r = await call('sources', { levels: flags.levels !== 'false' }); return out({ suggested: r.suggested, devices: r.devices.map((d: any) => ({ index: d.index, name: d.name, kind: d.kind === 'microphone' ? 'mic' : 'speaker', default: d.isDefaultOutput || undefined, frames: d.level?.framesReceived, peak: d.level?.peak })) }); }
