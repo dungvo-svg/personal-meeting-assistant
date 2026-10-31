@@ -12,7 +12,8 @@ import time
 import types
 import uuid
 
-from follow_source import RATE16, SEGMENT_END, ChannelFollower, Timeline, cut_window, parse_iso
+from follow_source import RATE16, SEGMENT_END, ChannelFollower, cut_window
+from timeline import Timeline, parse_wall
 
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
 os.environ.setdefault('HF_HUB_OFFLINE', '1')
@@ -920,9 +921,8 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
     # Cut a wall-time window out of the recorder's files and transcribe it again with a wider beam. `text`/`language` are the
     # usual detection and pick over all languages; `alternatives` is one forced decode per language with its confidence
     # (mean log-probability), so the agent can read the stretch the way it is meant when the detector is unsure.
-    timeline = Timeline(directory)
-    timeline.refresh()
-    waveform = cut_window(timeline, channel, parse_iso(start), parse_iso(end))
+    timeline = Timeline.load(directory)
+    waveform = cut_window(timeline, channel, parse_wall(start), parse_wall(end))
     result = {'text': '', 'language': None, 'alternatives': [], 'silent': silent_audio(waveform), 'seconds': round(len(waveform) / RATE16, 3)}
     if result['silent']:
         return result

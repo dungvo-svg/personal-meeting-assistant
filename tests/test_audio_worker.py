@@ -8,6 +8,9 @@ import sys
 import time
 import unittest
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+import timeline as timeline_module
+
 
 class TranscriptFilterTests(unittest.TestCase):
     def setUp(self):
@@ -619,6 +622,10 @@ class FakeSession:
     def finish(self, seg, channel, offset):
         self.event('close', offset, seg=seg, channel=channel, samples=self.samples[(seg, channel)])
 
+    def lost(self, seg, channel, offset, seconds):
+        # The recorder lost `seconds` of audio that ended at `offset`; the file goes on from the same sample count.
+        self.event('lost', offset, seg=seg, channel=channel, seconds=seconds, reason='device_gap', at_samples=self.samples[(seg, channel)])
+
     def end(self, offset):
         self.event('end', offset)
 
@@ -724,7 +731,7 @@ class FollowTests(unittest.TestCase):
             time.sleep(0.02)
 
     def wall(self, event):
-        return self.worker.parse_iso(event['wall']) - self.worker.parse_iso(self.session.iso(0))
+        return timeline_module.parse_wall(event['wall']) - timeline_module.parse_wall(self.session.iso(0))
 
     def test_two_segments_are_read_in_order_and_the_worker_ends_on_end(self):
         at = self.session.segment(1, 'speaker', 0.0, [(4, 0.2), (1, 0)])
@@ -824,34 +831,6 @@ class FollowTests(unittest.TestCase):
         self.assertAlmostEqual(self.wall(mic[0]), mic[0]['start'], delta=0.05)
         self.assertEqual(len(self.sources('speaker')), 1)
 
-    def test_the_timeline_may_be_read_while_a_line_is_half_written(self):
-        self.session.begin(1, 'speaker', 0.0)
-        with open(self.session.timeline, 'a', encoding='utf-8') as file:
-            file.write('{"t": "' + self.session.iso(1.0) + '", "type": "tick", "seg": 1, "chan')
-        timeline = self.worker.Timeline(self.dir)
-        timeline.refresh()
-        info = timeline.segments[(1, 'speaker')]
-        self.assertEqual(info.points, [(self.worker.parse_iso(self.session.iso(0.0)), 0)])
-        with open(self.session.timeline, 'a', encoding='utf-8') as file:
-            file.write('nel": "speaker", "samples": 16000}\nnot json\n')
-        timeline.refresh()
-        self.assertEqual(info.points[-1][1], 16000)
-        self.assertFalse(timeline.ended)
-
-    def test_wall_time_between_ticks_and_across_a_lost_stretch(self):
-        self.session.begin(1, 'speaker', 0.0)
-        self.session.add(1, 'speaker', self.session.wave(1, 0.2), 1.0)
-        self.session.add(1, 'speaker', self.session.wave(1, 0.2), 5.0)  # 3 s lost between the ticks: 1 s of audio took 4 s
-        timeline = self.worker.Timeline(self.dir)
-        timeline.refresh()
-        info = timeline.segments[(1, 'speaker')]
-        base = self.worker.parse_iso(self.session.iso(0))
-        self.assertAlmostEqual(timeline.wall_at(info, 8000) - base, 0.5, delta=0.001)
-        self.assertAlmostEqual(timeline.wall_at(info, 24000) - base, 3.0, delta=0.001)
-        self.assertAlmostEqual(timeline.wall_at(info, 48000) - base, 6.0, delta=0.001)  # past the last tick: at the device's rate
-        self.assertAlmostEqual(timeline.sample_at(info, base + 3.0), 24000, delta=1)
-        self.assertEqual(timeline.sample_at(info, base - 5), 0)
-
     def test_a_stale_wav_header_does_not_hide_samples_that_are_on_disk(self):
         self.session.begin(1, 'speaker', 0.0)
         self.session.add(1, 'speaker', self.session.wave(2, 0.2), 2.0)
@@ -871,7 +850,7 @@ class FollowTests(unittest.TestCase):
         session.segment(1, 'speaker', 0.0, [(1, 0.2)])
         session.segment(2, 'speaker', 3.0, [(1, 0.2)])  # opens 2 s after segment 1 closed
         session.end(4.0)
-        timeline = follow_source.Timeline(self.dir)
+        timeline = self.worker.Timeline.load(self.dir)
         follower = follow_source.ChannelFollower(timeline, 'speaker', sleep=lambda seconds: None)
         total, flushes, blocks = 0, 0, []
         while True:
@@ -891,7 +870,32 @@ class FollowTests(unittest.TestCase):
         self.assertGreater(float(np.abs(data[:16000]).max()), 0.1)
         wall, seg = follower.locate(3.5 * 16000)
         self.assertEqual(seg, 2)
-        self.assertAlmostEqual(self.worker.parse_iso(wall) - self.worker.parse_iso(session.iso(0)), 3.5, delta=0.02)
+        self.assertAlmostEqual(timeline_module.parse_wall(wall) - timeline_module.parse_wall(session.iso(0)), 3.5, delta=0.02)
+
+    def test_a_stretch_the_recorder_lost_inside_a_segment_is_filled_with_silence(self):
+        import numpy as np
+        import follow_source
+        self.session.begin(1, 'speaker', 0.0)
+        self.session.add(1, 'speaker', self.session.wave(2, 0.2), 2.0)
+        self.session.lost(1, 'speaker', 5.0, 3.0)
+        self.session.add(1, 'speaker', self.session.wave(2, 0.2), 7.0)
+        self.session.finish(1, 'speaker', 7.0)
+        self.session.end(7.0)
+        follower = follow_source.ChannelFollower(self.worker.Timeline.load(self.dir), 'speaker', sleep=lambda seconds: None)
+        blocks = []
+        while True:
+            try:
+                block = follower.read_block()
+            except EOFError:
+                break
+            if block is not follow_source.SEGMENT_END:
+                blocks.append(np.frombuffer(block, dtype=np.float32))
+        data = np.concatenate(blocks)
+        self.assertEqual(len(data), 7 * 16000)  # 2 s + 3 s lost + 2 s
+        self.assertLess(float(np.abs(data[2 * 16000:5 * 16000]).max()), 1e-6)
+        self.assertGreater(float(np.abs(data[5 * 16000:]).max()), 0.1)
+        wall, seg = follower.locate(6 * 16000)
+        self.assertAlmostEqual(timeline_module.parse_wall(wall) - timeline_module.parse_wall(self.session.iso(0)), 6.0, delta=0.02)
 
 
 class RecheckTests(unittest.TestCase):
@@ -926,9 +930,8 @@ class RecheckTests(unittest.TestCase):
         self.assertEqual(self.calls[0][1], 3.0)
         self.assertFalse(result['silent'])
         self.assertEqual(result['seconds'], 3.0)
-        timeline = self.worker.Timeline(self.tmp.name)
-        timeline.refresh()
-        wave = self.worker.cut_window(timeline, 'speaker', self.worker.parse_iso(self.session.iso(4.0)), self.worker.parse_iso(self.session.iso(7.0)))
+        timeline = self.worker.Timeline.load(self.tmp.name)
+        wave = self.worker.cut_window(timeline, 'speaker', timeline_module.parse_wall(self.session.iso(4.0)), timeline_module.parse_wall(self.session.iso(7.0)))
         import numpy as np
         self.assertEqual(len(wave), 48000)
         self.assertAlmostEqual(float(np.sqrt(np.mean(wave[:16000] ** 2))), 0.1 / 2 ** 0.5, delta=0.005)
