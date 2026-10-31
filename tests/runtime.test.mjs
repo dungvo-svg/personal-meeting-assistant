@@ -285,3 +285,15 @@ test('an unsure Lao/Thai chunk keeps its other reading for the translation sessi
     assert.equal(r.translate(id, [{ sourceId: lo, text: 'Xin chào.' }]).saved, 1);
   });
 });
+test('the synthesis session keeps one running picture of the whole meeting, version by version', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp kho'); const id = r.session.id;
+    const a = r.ingest('Chốt nhập hàng thứ Hai', 'local_asr_unverified', 0, 3, '', 'cap', 'vi');
+    assert.equal(r.picture(id), null);
+    assert.deepEqual(r.savePicture(id, '- Đang bàn: lịch nhập hàng\n- Đã chốt: thứ Hai', [a]), { saved: true, revision: 1 });
+    const b = r.ingest('Anh Nam lo xe', 'local_asr_unverified', 3, 6, '', 'cap', 'vi');
+    assert.equal(r.savePicture(id, '- Đang bàn: xe chở hàng\n- Đã chốt: nhập thứ Hai\n- Việc: anh Nam lo xe', [b]).revision, 2);
+    const p = r.picture(id); assert.equal(p.revision, 2); assert.match(p.text, /anh Nam lo xe/); assert.deepEqual(p.sourceIds, [b]);
+    assert.throws(() => r.savePicture(id, 'x', [b + 99]), /SOURCE_OUTSIDE_SESSION/);
+  });
+});

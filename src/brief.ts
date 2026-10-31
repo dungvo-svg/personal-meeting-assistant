@@ -17,6 +17,7 @@ export type BriefInput = {
   session: { title: string; ended: string | null; languages?: string[]; context?: any } | null;
   glossary: GlossaryEntry[];
   captureState?: string; unread?: number; lastError?: string | null; minutesRecorded?: number | null;
+  picture?: { revision: number; savedAt: string } | null;
 };
 
 const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
@@ -55,7 +56,8 @@ export function buildBrief(input: BriefInput, maxBytes = BRIEF_MAX_BYTES) {
   const status = '**Tình trạng:** ' + [state,
     input.minutesRecorded != null ? `đã ghi ${input.minutesRecorded} phút` : undefined,
     input.unread != null && session && !session.ended ? `chưa đọc ${input.unread} đoạn` : undefined,
-    session && !session.ended ? (input.lastError ? 'lỗi cuối: ' + clipBytes(oneLine(input.lastError), 110) : 'không lỗi') : undefined].filter(Boolean).join(' · ');
+    session && !session.ended ? (input.lastError ? 'lỗi cuối: ' + clipBytes(oneLine(input.lastError), 110) : 'không lỗi') : undefined,
+    input.picture ? `bức tranh bản ${input.picture.revision} lúc ${clock(input.picture.savedAt)} (pma picture)` : undefined].filter(Boolean).join(' · ');
 
   const agenda = typeof context.agenda === 'string' && context.agenda.trim() ? clipBytes(oneLine(context.agenda), AGENDA_MAX_BYTES) : '';
   const participants: Participant[] = Array.isArray(context.participants) ? context.participants : [];
@@ -109,5 +111,5 @@ export function composeBrief(runtime: MeetingRuntime, root: string, sessionId?: 
   }
   if (!current) return buildBrief({ owner, glossary: runtime.glossary, session: null });
   const compact = runtime.compact();
-  return buildBrief({ owner, glossary: runtime.glossary, session: { title: current.title, ended: current.ended, languages: current.languages, context: current.context }, captureState: compact.captureState, unread: compact.unread, lastError: compact.lastError, minutesRecorded: minutesRecorded(runtime.dataDir, current.id, compact.captureInfo) });
+  return buildBrief({ owner, glossary: runtime.glossary, session: { title: current.title, ended: current.ended, languages: current.languages, context: current.context }, captureState: compact.captureState, unread: compact.unread, lastError: compact.lastError, minutesRecorded: minutesRecorded(runtime.dataDir, current.id, compact.captureInfo), picture: runtime.picture(current.id) });
 }

@@ -10,6 +10,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
                                    variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
+  pma picture [--file f.md --sources 1,2]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô)
   pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
   pma me --on | --off | --auto     micro "Tôi" đang bật/tắt khi máy không tự đọc được (ghi vào timeline, by:manual); --auto trả lại cho máy đọc
   pma at HH:MM [--session ID]      sửa giờ họp theo lịch của phiên đang mở (độ phủ tính lại; phiên đã kết thúc thì chạy pma raw lại)
@@ -52,6 +53,7 @@ const list = (value?: string) => value ? value.split(',').map(v => Number(v.trim
 const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
 const FLAG_LABELS: Record<string, string> = { LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém' };
+const MAIN = 'chinh';
 const NOTE_EVERY_MS = 10 * 60000; const LAG_WARN_SECONDS = 10;
 const micWhy = (by?: string) => !by ? '' : by.startsWith('meeting_app:') ? `micro ${by.slice(12)} đang dùng` : ({ windows_default: 'micro mặc định của Windows', selected: 'micro đã chọn', NO_MICROPHONE_FOUND: 'không thấy micro nào' } as Record<string, string>)[by] ?? by;
 const megabytes = (bytes: number) => Math.round(bytes / 1048576);
@@ -96,6 +98,8 @@ async function follow(flags: Record<string, string>) {
     if (!batch.length) return;
     console.log(`LÔ #${batch[0].id}–#${batch.at(-1).id} (${batch.length} đoạn):`);
     for (const text of lines(batch)) for (const part of wrapLine(text)) console.log(part);
+    // The synthesis session keeps the whole meeting in view: after each batch it rewrites the picture, not a batch summary.
+    if (name === MAIN && flags['no-notes'] !== 'true') console.log(`CẬP NHẬT BỨC TRANH: viết lại bức tranh CẢ cuộc họp tới #${batch.at(-1).id} (đang bàn · đã chốt · việc–người–hạn · câu hỏi mở · chỗ chưa nghe rõ), lưu: pma picture --file <f.md> --sources <id lô này>; trả lời người dùng chỉ phần mới.`);
     batch = [];
   };
   // Sau mỗi lô: báo khi chữ ra chậm hơn lời nói, và nhắc ghi chú cuốn chiếu mỗi 10 phút nghe.
@@ -161,6 +165,12 @@ async function main() {
       return out(await call('participants', { participants: JSON.parse(readFileSync(flags.file, 'utf8')) }));
     }
     case 'brief': { const r = await call('brief', session); return process.stdout.write(r.markdown); }
+    // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
+    case 'picture': {
+      if (flags.file) return out(await call('picture', { ...session, text: readFileSync(flags.file, 'utf8'), sourceIds: list(flags.sources) }));
+      const p = await call('picture', session);
+      return console.log(p ? `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n${p.text}` : 'Chưa có bức tranh cuộc họp (pma picture --file f.md --sources <id,…>)');
+    }
     case 'me': {
       const chosen = (['on', 'off', 'auto'] as const).filter(v => flags[v] === 'true');
       if (chosen.length !== 1) throw new Error('pma me --on | --off | --auto (đúng một cờ)');

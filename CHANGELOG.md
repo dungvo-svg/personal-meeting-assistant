@@ -51,8 +51,23 @@ Audit thiết kế 31/10 (owner: "có vẻ bạn đang làm sai thiết kế").
   - PRODUCT_BASELINE 0.11 là chỗ chốt duy nhất; DECISION_LOG có U23–U25, OWN-021..028, ENG-24..27.
   - 11 tài liệu cũ + `handoff/` sang `docs/history/`.
   - CLAUDE.md, AGENTS.md, README, project.json, skill `hop` viết lại.
+- **Chạy thật trên máy owner 31/10** (Google Meet mở một mình trên Chrome, phát file công khai Việt–Lào ra loa):
+  - Nút micro Meet đọc đúng: "Turn off microphone" → on, "Turn on microphone" → off, trễ ~1 s; sổ thời gian ghi đúng lúc tắt/bật.
+  - Tìm và sửa hai lỗi chỉ lộ ra trên thiết bị thật: bộ ghi khoá chết khi hai luồng cùng nạp DLL (PortAudio + numpy), và micro báo `-9999` vì luồng mở thiết bị chưa khởi tạo COM.
+  - Sau khi sửa:
+    - lần mở phiên thứ hai bộ ghi tự chạy 2 s sau `pma start` (nhớ nguồn loa);
+    - WAV loa 101,29 s, micro 100,36 s, file ghép 101,29 s;
+    - `pma stop` 1 s;
+    - `pma coverage` liệt kê 5 đoạn Lào/Thái chưa chắc;
+    - `pma recheck #1764` (22 s) cho bản Lào đủ ý hơn;
+    - host tự thoát sau 2 phút rảnh.
+- **Phiên tổng hợp giữ bức tranh cả cuộc họp** (owner: "lô 60s phải đảm bảo được toàn bộ cảnh họp liên tục"):
+  - `pma picture` đọc, `pma picture --file f.md --sources …` lưu bản mới;
+  - `follow` của phiên tổng hợp in `CẬP NHẬT BỨC TRANH` sau mỗi lô;
+  - brief chỉ bản mới nhất;
+  - SUMMARY dựng từ bức tranh cuối.
 - **Kiểm:**
-  - 69 test Node, 122 test Python; chạy thật bộ nghe/nghe lại trên GPU bằng file công khai.
+  - 70 test Node, 122 test Python; chạy thật bộ nghe/nghe lại trên GPU bằng file công khai.
   - **Không thu âm thật để tự kiểm.** Bộ ghi với thiết bị thật, Meet UI Automation, hai phiên và họp dài sẽ kiểm ở buổi họp thật tiếp theo.
 
 ## 0.10.1 —31/10/2026

@@ -76,6 +76,12 @@ const methods: Record<string, (input: any) => any> = {
   // Pre-meeting context (participants, brief) and the owner's manual microphone state for the "Tôi" channel.
   participants: input => applyParticipants(runtime, z.object({ participants: z.array(z.any()).max(200) }).parse(input).participants),
   brief: input => ({ markdown: composeBrief(runtime, root, z.object({ sessionId: sid.optional() }).parse(input).sessionId) }),
+  picture: input => {
+    const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(8000).optional(), sourceIds: ids.min(1).max(50).optional() }).parse(input);
+    const id = current(a.sessionId);
+    if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); return runtime.savePicture(id, a.text, a.sourceIds); }
+    return runtime.picture(id);
+  },
   mic: input => setMicState(runtime, z.object({ state: z.enum(['on', 'off', 'auto']) }).parse(input).state),
   fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); const a = z.object({ text: z.string().min(1).max(8000), language: z.enum(['vi', 'lo', 'th']).optional() }).parse(input); return { id: runtime.ingest(a.text, 'synthetic_fixture', 0, 0, '', '', a.language) }; },
   // Vietnamese lines for Lao segments, written by the Claude session following the meeting.

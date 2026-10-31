@@ -66,6 +66,18 @@ Thiếu thông tin thì để trống, không đoán.
 
 ## 4. Trong lúc họp (phiên tổng hợp)
 
+- **Mỗi lô 60 giây giữ bức tranh của CẢ cuộc họp, không chỉ khung 60 giây vừa nghe.**
+  - Sau mỗi lô (follow in `CẬP NHẬT BỨC TRANH`), viết lại toàn bộ bức tranh từ đầu buổi tới đoạn mới nhất:
+    - **Đang bàn**: chủ đề hiện tại, ai đang nói;
+    - **Diễn tiến**: các chủ đề đã qua, mỗi chủ đề một dòng;
+    - **Đã chốt**;
+    - **Việc – người – hạn**;
+    - **Câu hỏi mở / còn tranh luận**;
+    - **Người dự và lập trường** (khi rõ);
+    - **Chỗ chưa nghe rõ** (#id, đã/chưa recheck).
+  - Lưu bằng `./pma picture --file .local/drafts/buc-tranh.md --sources <id của lô này>`. Mỗi lần lưu là một bản mới; `./pma picture` đọc bản mới nhất.
+  - Trả lời người dùng **chỉ phần thay đổi** so với bản trước, vài dòng. Người dùng hỏi gì thì trả lời dựa trên bức tranh + `#id`.
+  - Phiên Claude mới vào giữa họp: `./pma brief` rồi `./pma picture` là đủ để nối mạch.
 - Không tự kết thúc cuộc họp. Chỉ người dùng gõ kết thúc. Câu chào cuối buổi chưa đủ để kết thúc.
 - **Nghe lại là việc của bạn.** Khi bạn chưa nghe rõ một đoạn, chạy `./pma recheck <#id>` hoặc `./pma recheck --from HH:MM:SS --to HH:MM:SS`:
   - các cờ: `ngôn ngữ không chắc`, `Lào kém`, `[KHOẢNG TRỐNG ASR]`;
@@ -73,7 +85,7 @@ Thiếu thông tin thì để trống, không đoán.
   - đoạn người dùng hỏi tới.
 
   Lệnh nhận dạng lại từ WAV (beam cao, các phương án vi/lo/th). Kết quả được lưu và RAW ghi `(đã nghe lại)`. Vẫn không rõ thì ghi `[chưa nghe rõ]`, không đoán. Không bắt người dùng nghe lại: họ đã nghe trực tiếp.
-- Khi follow in `NHẮC GHI CHÚ`, ghi ngay: `./pma note --text "<tóm tắt khúc vừa rồi>" --sources <id,id>`.
+- Bức tranh đã thay cho ghi chú cuốn chiếu. `NHẮC GHI CHÚ` nghĩa là bức tranh đã lâu chưa cập nhật; làm ngay.
 - Khi follow in `CẢNH BÁO TRỄ`, dừng mọi việc nặng trên máy.
 - Trả lời người dùng dựa trên `#id`, phân biệt điều đã nói với suy luận. Không viết cập nhật dài cho mỗi lô.
 - Đoạn `Tôi (mic tắt — nói riêng)` không phải lời phát biểu trong họp.
@@ -99,7 +111,7 @@ Thiếu thông tin thì để trống, không đoán.
    2. Ai chủ trì, ai được giao việc nào (nếu bạn không chắc)?
    3. Tài liệu được nhắc là của ai lập, ai chỉ chuyển?
 5. Viết báo cáo:
-   - `.local/drafts/SUMMARY-<ngày>.md`: tổng quan, ý chính, điều đã thống nhất, câu hỏi mở, đối chiếu với context trước họp, các chỗ `[chưa nghe rõ]`. Lưu bằng `./pma summary --file <file> --sources <id,…>`.
+   - `.local/drafts/SUMMARY-<ngày>.md`, dựng từ bức tranh cuối cùng (`./pma picture`) và RAW đã nghe lại: tổng quan, diễn tiến, ý chính, điều đã thống nhất, câu hỏi mở, đối chiếu với context trước họp, các chỗ `[chưa nghe rõ]`. Lưu bằng `./pma summary --file <file> --sources <id,…>`.
    - `.local/drafts/tasks-<ngày>.json`: `[{"task","owner","due","sourceIds"}]`. Chỉ ghi `owner`/`due` khi được nói rõ hoặc người dùng xác nhận. Lưu bằng `./pma tasks --file <file>`.
 6. Trả lời người dùng:
    - đường dẫn RAW.md, SUMMARY.md, TASKS.md và `meeting-mix.wav`;
