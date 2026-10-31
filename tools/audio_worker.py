@@ -12,6 +12,8 @@ import time
 import types
 import uuid
 
+from follow_source import RATE16, SEGMENT_END, ChannelFollower, Timeline, cut_window, parse_iso
+
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
 os.environ.setdefault('HF_HUB_OFFLINE', '1')
 sys.stdout.reconfigure(encoding='utf-8')
@@ -500,14 +502,15 @@ def safe_name(value):
 def listening_from_request(request, max_seconds):
     # Everything one listening needs, from the JSON line that wakes a warm worker (the command line does the same cold).
     replay = request.get('replay')
+    follow = request.get('follow')
     mic = request.get('micDevice') is not None
     capture_id = safe_name(request.get('captureId')) or uuid.uuid4().hex
     return types.SimpleNamespace(
-        replay=replay, speed=float(request.get('speed', 1)) if replay else 1.0,
-        device=None if replay else int(request['device']), device_name=None if replay else str(request['deviceName']),
+        replay=replay, follow=Path(follow) if follow and not replay else None, speed=float(request.get('speed', 1)) if replay else 1.0,
+        device=None if replay or follow else int(request['device']), device_name=None if replay or follow else str(request['deviceName']),
         mic_device=int(request['micDevice']) if mic else None, mic_name=str(request['micName']) if mic else None, mic_auto=bool(request.get('micAuto')),
         max_seconds=int(request.get('maxSeconds', max_seconds)), capture_id=capture_id, mic_by=None, mic_error=None,
-        save_dir=Path(request['saveAudioDir']) if request.get('saveAudioDir') and not replay else None)
+        save_dir=Path(request['saveAudioDir']) if request.get('saveAudioDir') and not replay and not follow else None)
 
 
 def command_loop(next_line, run_listening, on_warm_again):
@@ -548,26 +551,39 @@ def capture(args):
     import av
     threading.Thread(target=parent_watch, args=(args.parent,), daemon=True).start()
     languages = args.languages.split(',')
-    if not languages or any(code not in ('vi', 'lo') for code in languages):
-        raise ValueError('Languages must be vi, lo or vi,lo')
+    if not languages or any(code not in ('vi', 'lo', 'th') for code in languages):
+        raise ValueError('Languages must be a list of vi, lo, th')
     # Mixed sessions on CPU use longer chunks: detection is more reliable and per-chunk overhead stays below real time.
     # On the GPU ASR takes ~0.3 s per chunk, so chunks end at the first pause after 3 s and text arrives sooner (30/10).
     min_chunk_seconds = 6 if len(languages) > 1 else 3
     stop = threading.Event()  # leave the worker
     pause = threading.Event()  # end this listening, keep the models
+    drain = threading.Event()  # --follow: read and transcribe what is on disk, then leave
+    follow_pause = threading.Event()  # --follow: ASR holds, the read position is kept
     lines = queue.Queue()
 
     def read_commands():
         # stdin carries `stop`, `pause`, and (warm mode) one JSON source line per listening.
+        # With --follow the files are the buffer: `stop` drains instead of leaving, and `pause`/`resume` hold and release ASR.
         for line in sys.stdin:
             line = line.strip()
             if line == 'stop':
                 break
+            if args.follow:
+                if line in ('pause', 'resume'):
+                    follow_pause.set() if line == 'pause' else follow_pause.clear()
+                    emit({'type': 'status', 'followPaused': line == 'pause'})
+                continue
             if line == 'pause':
                 pause.set()
             else:
                 lines.put(line)
-        stop.set()
+        if args.follow:
+            follow_pause.clear()
+            drain.set()
+            emit({'type': 'status', 'draining': True})
+        else:
+            stop.set()
         lines.put(None)
 
     threading.Thread(target=read_commands, daemon=True).start()
@@ -591,11 +607,21 @@ def capture(args):
         listening_over = threading.Event()
         chunks = queue.Queue(maxsize=6)
         speaker_levels = {}  # 0.1 s slot since capture start -> speaker RMS, for the mic echo check
+        speaker_progress = [0]  # samples the speaker reader has taken in: a followed mic chunk waits for its slots to exist
+        speaker_over = threading.Event()
+        followers = {}
+        reader_lock = threading.Lock()
 
         def ending():
             return stop.is_set() or pause.is_set() or listening_over.is_set()
 
-        if listening.replay:
+        if listening.follow:
+            # The recorder's files (Q-1), read from sample 0 as fast as ASR takes them; no device is opened and no pacing.
+            timeline = Timeline(listening.follow)
+            followers = {name: ChannelFollower(timeline, name, draining=drain.is_set, holding=follow_pause.is_set) for name in ('speaker', 'mic')}
+            rate, channels, source_name, keepalive_note = RATE16, 1, 'FOLLOW:' + listening.follow.name, 'FOLLOW_FILES'
+            inputs = [(name, follower.read_block, rate, channels, follower.locate) for name, follower in followers.items()]
+        elif listening.replay:
             # Replay a recording through the same chunking and ASR, paced like a live source. No device is opened.
             pcm = load_recording(listening.replay)
             rate, channels, source_name, keepalive_note = 16000, 1, Path(listening.replay).name, 'REPLAY_FILE'
@@ -655,7 +681,15 @@ def capture(args):
                     emit({'type': 'status', 'micDevice': None, 'micError': listening.mic_error})
         capture_started = time.monotonic()
 
-        def reader(channel, read_block, rate, channels):
+        readers_left = [len(inputs)]
+
+        def reader_finished():
+            with reader_lock:
+                readers_left[0] -= 1
+                if readers_left[0] <= 0:
+                    source_done.set()
+
+        def reader(channel, read_block, rate, channels, locate=None):
             primary = channel == 'speaker'
             samples = 0
             block_start = 0
@@ -675,6 +709,10 @@ def capture(args):
                 nonlocal blocks, block_rms, block_sizes, block_samples, block_peak_rms, block_start
                 cut_samples = sum(block_sizes[:cut + 1])
                 keep = max(block_rms[:cut + 1]) >= SOUND_RMS
+                if keep and not primary and listening.follow:
+                    # Both channels run ahead of the clock here: the speaker levels for this chunk must exist before the check.
+                    while speaker_progress[0] < block_start + cut_samples and not speaker_over.is_set() and not stop.is_set() and not listening_over.is_set():
+                        time.sleep(0.02)
                 if keep and not primary:
                     # Mic chunk: drop it when it is mostly the meeting coming back through the speakers.
                     offsets = [block_start + sum(block_sizes[:i]) for i in range(cut + 1)]
@@ -682,11 +720,11 @@ def capture(args):
                     keep = mic_is_own_voice(block_rms[:cut + 1], speaker)
                 # Pure digital/room silence is not sent to ASR; it only costs CPU and backlog.
                 if keep:
-                    chunk = (np.concatenate(blocks[:cut + 1]), block_start / rate, (block_start + cut_samples) / rate, boundary, channel, rate)
+                    chunk = (np.concatenate(blocks[:cut + 1]), block_start / rate, (block_start + cut_samples) / rate, boundary, channel, rate, locate(block_start) if locate else None)
                     try:
-                        if listening.replay or final:
-                            # A recording can wait for ASR, and a paused tail is drained by the main loop; nothing is lost.
-                            while not stop.is_set():
+                        if listening.replay or listening.follow or final:
+                            # A recording or the recorder's files can wait for ASR, and a paused tail is drained by the main loop; nothing is lost.
+                            while not stop.is_set() and not listening_over.is_set():
                                 try:
                                     chunks.put(chunk, timeout=0.5)
                                     break
@@ -715,19 +753,27 @@ def capture(args):
                     except OSError as exc:
                         emit({'type': 'status', 'audioSaveError': f'{channel}: {exc}'[:200]})
                 while not ending():
-                    if time.monotonic() - capture_started > listening.max_seconds:
+                    if not listening.follow and time.monotonic() - capture_started > listening.max_seconds:
                         raise RuntimeError('Authorized capture duration reached; source stopped.')
                     try:
                         raw = read_block()
                     except EOFError:
-                        if block_samples and block_peak_rms >= SOUND_RMS:
-                            chunks.put((np.concatenate(blocks), block_start / rate, samples / rate, 'END_OF_RECORDING', channel, rate))
+                        if block_samples:
+                            cut_chunk(len(blocks) - 1, 'END_OF_RECORDING', final=True)
                         block_samples = 0
-                        source_done.set()
+                        reader_finished()
                         return
+                    if raw is SEGMENT_END:
+                        # A recorded segment is over: what is left of it is a chunk of its own (the next one may differ in time).
+                        if block_samples:
+                            cut_chunk(len(blocks) - 1, 'SEGMENT_END', final=True)
+                        silence_samples = 0
+                        continue
                     if primary and not ready:
-                        emit({'type': 'ready', 'device': source_name, 'micDevice': listening.mic_name if listening.mic_device is not None else None, 'micSelectedBy': listening.mic_by, 'micError': listening.mic_error, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'asr': asr, 'modelLoadSeconds': load_seconds, 'waitedForSourceSeconds': round(waited_seconds, 1), 'audioStorage': 'WAV_ON_DISK' if listening.save_dir else 'RAM_ONLY', 'maxQueuedChunks': 6, 'maxChunkSeconds': MAX_CHUNK_SECONDS, 'maxSessionSeconds': listening.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
+                        emit({'type': 'ready', 'device': source_name, 'micDevice': listening.mic_name if listening.mic_device is not None else None, 'micSelectedBy': listening.mic_by, 'micError': listening.mic_error, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'asr': asr, 'modelLoadSeconds': load_seconds, 'waitedForSourceSeconds': round(waited_seconds, 1), 'audioStorage': 'WAV_ON_DISK' if listening.save_dir or listening.follow else 'RAM_ONLY', 'follow': bool(listening.follow), 'maxQueuedChunks': 6, 'maxChunkSeconds': MAX_CHUNK_SECONDS, 'maxSessionSeconds': listening.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
                         ready = True
+                    if not raw:
+                        continue  # a followed file has nothing new yet (or ASR is on hold); look again
                     mono = np.frombuffer(raw, dtype=np.float32).reshape(-1, channels).mean(axis=1)
                     if writer:
                         try:
@@ -751,6 +797,7 @@ def capture(args):
                     if primary:
                         slot = int(samples / rate * 10)
                         speaker_levels[slot] = max(rms, speaker_levels.get(slot, 0.0))
+                        speaker_progress[0] = samples
                     block_peak_rms = max(block_peak_rms, rms)
                     silence_samples = silence_samples + len(mono) if rms < SOUND_RMS else 0
                     if primary and time.monotonic() - last_meter > 1:
@@ -772,6 +819,8 @@ def capture(args):
                 emit({'type': 'error', 'message': f'{channel}: {exc}'})
                 stop.set()
             finally:
+                if primary:
+                    speaker_over.set()
                 if writer:
                     writer.close()
 
@@ -782,11 +831,14 @@ def capture(args):
         pause_seen = None
         try:
             while not stop.is_set():
+                if listening.follow and follow_pause.is_set():
+                    time.sleep(0.1)  # paused: the chunks wait in the queue, the readers wait in the files; nothing is lost
+                    continue
                 try:
-                    waveform, begin, end, boundary, channel, chunk_rate = chunks.get(timeout=0.2)
+                    waveform, begin, end, boundary, channel, chunk_rate, where = chunks.get(timeout=0.2)
                 except queue.Empty:
                     if source_done.is_set():
-                        emit({'type': 'status', 'replayEnded': True})
+                        emit({'type': 'status', 'followEnded' if listening.follow else 'replayEnded': True})
                         return 'ended'
                     if pause.is_set():
                         # A reader blocked on a silent device cannot flush; do not wait for it forever.
@@ -794,26 +846,35 @@ def capture(args):
                         if not any(thread.is_alive() for thread in threads) or time.monotonic() - pause_seen > PAUSE_GRACE_SECONDS:
                             return 'pause'
                     continue
-                frame = av.AudioFrame.from_ndarray(waveform.reshape(1, -1), format='flt', layout='mono')
-                frame.sample_rate = chunk_rate
-                resampler = av.AudioResampler(format='flt', layout='mono', rate=16000)
-                converted = resampler.resample(frame) + resampler.resample(None)
-                waveform16 = np.concatenate([f.to_ndarray().reshape(-1) for f in converted]).astype(np.float32)
                 inference_started = time.monotonic()
-                segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model, vi_model)
-                for segment in segments:
-                    if stop.is_set():
-                        break
-                    text = segment.text.strip()
-                    if text:
-                        marks = ''.join('; ' + flag for flag in segment_flags(text, segment, language, language_probability))
-                        if channel == 'mic':
-                            marks += '; CHANNEL_MIC'
-                        emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel})
+                # Where the chunk begins in real time and in the recorder's files (followed sources only).
+                place = {'wall': where[0], 'seg': where[1]} if where and where[0] else {}
+                try:
+                    frame = av.AudioFrame.from_ndarray(waveform.reshape(1, -1), format='flt', layout='mono')
+                    frame.sample_rate = chunk_rate
+                    resampler = av.AudioResampler(format='flt', layout='mono', rate=16000)
+                    converted = resampler.resample(frame) + resampler.resample(None)
+                    waveform16 = np.concatenate([f.to_ndarray().reshape(-1) for f in converted]).astype(np.float32)
+                    segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model, vi_model)
+                    for segment in segments:
+                        if stop.is_set():
+                            break
+                        text = segment.text.strip()
+                        if text:
+                            marks = ''.join('; ' + flag for flag in segment_flags(text, segment, language, language_probability))
+                            if channel == 'mic':
+                                marks += '; CHANNEL_MIC'
+                            emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place})
+                except Exception as exc:
+                    # One bad chunk must not end the meeting: say which stretch has no text and go on with the next.
+                    emit({'type': 'gap', 'start': begin, 'end': end, 'reason': 'ASR_ERROR', 'channel': channel, 'message': f'{type(exc).__name__}: {exc}'[:200], **place})
                 # How far the text lags behind the audio (seconds of meeting not yet transcribed when this chunk finished).
-                lag = round((time.monotonic() - capture_started) * (listening.speed if listening.replay else 1) - end, 1)
+                if listening.follow:
+                    lag = round(followers[channel].disk_samples / RATE16 - end, 1)  # what is on disk but not yet transcribed
+                else:
+                    lag = round((time.monotonic() - capture_started) * (listening.speed if listening.replay else 1) - end, 1)
                 emit({'type': 'status', 'lastASRSeconds': round(time.monotonic() - inference_started, 3), 'lastChunkSeconds': round(end - begin, 3), 'queuedChunks': chunks.qsize(), 'lagSeconds': lag})
-                del waveform, waveform16
+                del waveform
             return 'stop'
         finally:
             listening_over.set()
@@ -844,12 +905,60 @@ def capture(args):
             command_loop(lines.get, lambda line: run_listening(listening_from_request(json.loads(line), args.max_seconds), time.monotonic() - warm_since[0]), lambda: warm(True))
         elif not stop.is_set():
             run_listening(listening_from_request({'device': args.device, 'deviceName': args.device_name, 'micDevice': args.mic_device, 'micName': args.mic_name, 'micAuto': args.mic_auto,
-                                                  'replay': args.replay, 'speed': args.speed, 'captureId': args.capture_id, 'saveAudioDir': args.save_audio_dir}, args.max_seconds), 0.0)
+                                                  'replay': args.replay, 'follow': args.follow, 'speed': args.speed, 'captureId': args.capture_id, 'saveAudioDir': args.save_audio_dir}, args.max_seconds), 0.0)
     finally:
         if mic_watch[0]:
             mic_watch[0].stop()
 
-if __name__ == '__main__':
+def silent_audio(waveform16, block=1600):
+    # True when no 0.1 s block reaches SOUND_RMS (an empty window counts as silent).
+    import numpy as np
+    return all(float(np.sqrt(np.mean(waveform16[i:i + block] ** 2))) < SOUND_RMS for i in range(0, len(waveform16), block))
+
+
+def recheck_window(model, lao_model, vi_model, directory, start, end, channel='speaker', languages=('vi', 'lo', 'th'), beam=8):
+    # Cut a wall-time window out of the recorder's files and transcribe it again with a wider beam. `text`/`language` are the
+    # usual detection and pick over all languages; `alternatives` is one forced decode per language with its confidence
+    # (mean log-probability), so the agent can read the stretch the way it is meant when the detector is unsure.
+    timeline = Timeline(directory)
+    timeline.refresh()
+    waveform = cut_window(timeline, channel, parse_iso(start), parse_iso(end))
+    result = {'text': '', 'language': None, 'alternatives': [], 'silent': silent_audio(waveform), 'seconds': round(len(waveform) / RATE16, 3)}
+    if result['silent']:
+        return result
+
+    def text_of(segments):
+        return collapse_repeats(' '.join(segment.text.strip() for segment in segments if segment.text.strip()))
+
+    for code in languages:
+        try:
+            segments, _, _ = transcribe_chunk(model, waveform, [code], lao_model, vi_model, beam=beam)
+            segments = list(segments)
+        except Exception:
+            continue  # a language this build cannot decode (th before it is wired in) is left out, not fatal
+        score = segments_score(segments)
+        result['alternatives'].append({'language': code, 'text': text_of(segments), 'score': round(score, 3) if score > float('-inf') else None})
+    try:
+        segments, language, _ = transcribe_chunk(model, waveform, list(languages), lao_model, vi_model, beam=beam)
+        result.update(text=text_of(list(segments)), language=language)
+    except Exception:
+        best = max(result['alternatives'], key=lambda item: item['score'] if item['score'] is not None else float('-inf'), default=None)
+        if best:
+            result.update(text=best['text'], language=best['language'])
+    return result
+
+
+def recheck(args):
+    languages = (args.languages or 'vi,lo,th').split(',')
+    if not args.from_ or not args.to or args.channel not in ('speaker', 'mic'):
+        raise ValueError('--recheck needs --from, --to (ISO times) and --channel speaker or mic')
+    profile = asr_profile()
+    model_path = Path(args.model or profile['main']).resolve(strict=True)
+    model, lao_model, vi_model, _ = load_models(model_path, args.lao_model or profile['lo'], args.asr_device, 6, args.vi_model or profile['vi'])
+    emit(recheck_window(model, lao_model, vi_model, args.recheck, args.from_, args.to, args.channel, languages, args.beam))
+
+
+def build_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument('--list', action='store_true')
     parser.add_argument('--levels', action='store_true')
@@ -859,7 +968,7 @@ if __name__ == '__main__':
     parser.add_argument('--model')
     parser.add_argument('--parent', type=int)
     parser.add_argument('--max-seconds', type=int, default=7200)
-    parser.add_argument('--languages', default='vi,lo')
+    parser.add_argument('--languages')  # default vi,lo; vi,lo,th for --recheck
     parser.add_argument('--replay')
     parser.add_argument('--speed', type=float, default=1.0)
     parser.add_argument('--asr-device', default='auto', choices=['auto', 'cuda', 'cpu'])
@@ -871,16 +980,30 @@ if __name__ == '__main__':
     parser.add_argument('--mic-auto', action='store_true')
     parser.add_argument('--capture-id')
     parser.add_argument('--save-audio-dir')
+    parser.add_argument('--follow', help='session audio folder (seg-NNNN-<channel>.wav + timeline.jsonl) to transcribe from sample 0 and tail')
+    parser.add_argument('--recheck', help='session audio folder to cut a window from and transcribe again')
+    parser.add_argument('--from', dest='from_')
+    parser.add_argument('--to')
+    parser.add_argument('--channel', default='speaker')
+    parser.add_argument('--beam', type=int, default=8)
+    return parser
+
+
+if __name__ == '__main__':
+    parser = build_parser()
     args = parser.parse_args()
     try:
         if args.list:
             emit(list_devices(args.levels))
-        elif args.capture:
-            if not 1 <= args.max_seconds <= 7200:
+        elif args.recheck:
+            recheck(args)
+        elif args.follow or args.capture:
+            args.languages = args.languages or 'vi,lo'
+            if args.capture and not args.follow and not 1 <= args.max_seconds <= 7200:
                 raise ValueError('Capture duration must be between 1 and 7200 seconds')
             capture(args)
         else:
-            parser.error('Select --list or --capture')
+            parser.error('Select --list, --capture, --follow or --recheck')
     except Exception as exc:
         emit({'type': 'error', 'message': str(exc)})
         sys.exit(1)

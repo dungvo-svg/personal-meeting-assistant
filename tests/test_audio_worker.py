@@ -1,9 +1,11 @@
 """No device capture: verify format conversion and orphan-watch termination."""
 import ctypes
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 
 
@@ -564,6 +566,406 @@ def mix_has_tone(data, freq):
     import numpy as np
     spectrum = np.abs(np.fft.rfft(data[:16000]))
     return abs(int(np.argmax(spectrum)) - freq) <= 1
+
+
+class FakeSession:
+    """A session audio folder the way the recorder writes it (Q-1): seg-NNNN-<channel>.wav with the header patched on every
+    write, and timeline.jsonl with open / tick / close / end lines. Times are offsets in seconds from a fixed start."""
+    START = None
+
+    def __init__(self, directory, rate=16000):
+        from datetime import datetime, timedelta, timezone
+        self.directory = Path(directory)
+        self.rate = rate
+        self.start = datetime(2026, 10, 31, 9, 0, 0, tzinfo=timezone(timedelta(hours=7)))
+        self.samples = {}
+        self.timeline = self.directory / 'timeline.jsonl'
+        self.timeline.write_bytes(b'')
+
+    def iso(self, offset):
+        from datetime import timedelta
+        return (self.start + timedelta(seconds=offset)).isoformat(timespec='milliseconds')
+
+    def event(self, kind, offset, **fields):
+        with open(self.timeline, 'a', encoding='utf-8') as file:
+            file.write(json.dumps({'t': self.iso(offset), 'type': kind, **fields}) + '\n')
+
+    def path(self, seg, channel):
+        return self.directory / f'seg-{seg:04d}-{channel}.wav'
+
+    def begin(self, seg, channel, offset):
+        self.samples[(seg, channel)] = 0
+        self.write_header(seg, channel)
+        self.event('open', offset, seg=seg, channel=channel, rate=self.rate, device='fake')
+
+    def write_header(self, seg, channel):
+        import struct
+        size = self.samples[(seg, channel)] * 2
+        header = b'RIFF' + struct.pack('<I', 36 + size) + b'WAVEfmt ' + struct.pack('<IHHIIHH', 16, 1, 1, self.rate, self.rate * 2, 2, 16) + b'data' + struct.pack('<I', size)
+        path = self.path(seg, channel)
+        mode = 'r+b' if path.exists() else 'wb'
+        with open(path, mode) as file:
+            file.write(header)
+
+    def add(self, seg, channel, pcm, offset):
+        # Append float samples, patch the header, tick.
+        import numpy as np
+        with open(self.path(seg, channel), 'ab') as file:
+            file.write((np.clip(pcm, -1, 1) * 32767).astype('<i2').tobytes())
+        self.samples[(seg, channel)] += len(pcm)
+        self.write_header(seg, channel)
+        self.event('tick', offset, seg=seg, channel=channel, samples=self.samples[(seg, channel)])
+
+    def finish(self, seg, channel, offset):
+        self.event('close', offset, seg=seg, channel=channel, samples=self.samples[(seg, channel)])
+
+    def end(self, offset):
+        self.event('end', offset)
+
+    def segment(self, seg, channel, offset, parts, close=True):
+        # A whole segment: parts is [(seconds, amplitude)], one tick per part.
+        self.begin(seg, channel, offset)
+        at = offset
+        for seconds, amplitude in parts:
+            at += seconds
+            self.add(seg, channel, self.wave(seconds, amplitude), at)
+        if close:
+            self.finish(seg, channel, at)
+        return at
+
+    def wave(self, seconds, amplitude):
+        import numpy as np
+        count = int(seconds * self.rate)
+        if not amplitude:
+            return np.zeros(count, dtype=np.float32)
+        return (amplitude * np.sin(2 * np.pi * 220 * np.arange(count) / self.rate)).astype(np.float32)
+
+
+class FakeStdin:
+    def __init__(self):
+        import queue
+        self.lines = queue.Queue()
+
+    def __iter__(self):
+        return iter(self.lines.get, None)
+
+    def send(self, line):
+        self.lines.put(line + '\n')
+
+    def close(self):
+        self.lines.put(None)
+
+
+class FollowTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        self.worker = audio_worker
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.dir = Path(self.tmp.name) / 'audio'
+        self.dir.mkdir()
+        self.session = FakeSession(self.dir)
+        self.events = []
+        self.calls = []
+        self.fail_on = set()
+        self.stdin = FakeStdin()
+        self.load_delay = 0.0
+        self.thread = None
+        self.error = None
+
+        def transcribe(model, waveform16, languages, lao_model=None, vi_model=None, pick=None, beam=None):
+            self.calls.append(len(waveform16) / 16000)
+            if len(self.calls) in self.fail_on:
+                raise RuntimeError('CUDA error: out of memory')
+            segment = type('Segment', (), {'text': f'đoạn {len(self.calls)}', 'no_speech_prob': 0.1, 'compression_ratio': 1.2, 'avg_logprob': -0.3})()
+            return [segment], 'vi', 0.95
+
+        def load_models(*args, **kwargs):
+            time.sleep(self.load_delay)
+            return object(), None, None, {'device': 'cpu', 'mainModel': 'fake'}
+
+        for name, value in (('transcribe_chunk', transcribe), ('load_models', load_models), ('emit', self.events.append),
+                            ('raise_priority', lambda: None), ('asr_profile', lambda: {'main': self.tmp.name, 'lo': None, 'vi': None})):
+            patcher = mock.patch.object(audio_worker, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(sys, 'stdin', self.stdin)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(lambda: (self.stdin.close(), time.sleep(0.1)))  # let the command thread finish before the patches are undone
+
+    def start(self, languages='vi'):
+        import threading
+        args = self.worker.build_parser().parse_args(['--follow', str(self.dir), '--languages', languages, '--asr-device', 'cpu'])
+
+        def run():
+            try:
+                self.worker.capture(args)
+            except BaseException as exc:  # a failure in the worker must show in the test, not hang it
+                self.error = exc
+        self.thread = threading.Thread(target=run, daemon=True)
+        self.thread.start()
+
+    def finish(self, timeout=20):
+        self.thread.join(timeout)
+        self.assertFalse(self.thread.is_alive(), 'worker did not end')
+        self.assertIsNone(self.error)
+
+    def sources(self, channel=None):
+        return [e for e in self.events if e.get('type') == 'source' and (channel is None or e['channel'] == channel)]
+
+    def until(self, condition, what, seconds=10):
+        end = time.monotonic() + seconds
+        while not condition():
+            self.assertLess(time.monotonic(), end, 'timeout: ' + what)
+            time.sleep(0.02)
+
+    def wall(self, event):
+        return self.worker.parse_iso(event['wall']) - self.worker.parse_iso(self.session.iso(0))
+
+    def test_two_segments_are_read_in_order_and_the_worker_ends_on_end(self):
+        at = self.session.segment(1, 'speaker', 0.0, [(4, 0.2), (1, 0)])
+        at = self.session.segment(2, 'speaker', at, [(4, 0.2), (1, 0)])
+        self.session.end(at)
+        self.start()
+        self.finish()
+        sources = self.sources()
+        self.assertEqual([s['text'] for s in sources], ['đoạn 1', 'đoạn 2'])
+        self.assertEqual([s['seg'] for s in sources], [1, 2])
+        self.assertAlmostEqual(self.wall(sources[0]), 0.0, delta=0.05)
+        self.assertAlmostEqual(self.wall(sources[1]), 5.0, delta=0.05)
+        self.assertAlmostEqual(sources[1]['start'], 5.0, delta=0.05)
+        self.assertGreater(sources[0]['end'], 4.0)
+        for key in ('boundary', 'language', 'languageProbability', 'channel', 'start', 'end', 'text'):
+            self.assertIn(key, sources[0])
+        self.assertIn({'type': 'status', 'followEnded': True}, self.events)
+        ready = [e for e in self.events if e.get('type') == 'ready']
+        self.assertEqual(len(ready), 1)
+        self.assertEqual(ready[0]['audioStorage'], 'WAV_ON_DISK')
+
+    def test_a_growing_file_is_tailed_and_the_worker_waits_for_more(self):
+        self.session.begin(1, 'speaker', 0.0)
+        self.session.add(1, 'speaker', self.session.wave(1.5, 0.2), 1.5)
+        self.start()
+        time.sleep(0.6)
+        self.assertEqual(self.sources(), [])
+        self.session.add(1, 'speaker', self.session.wave(2.5, 0.2), 4.0)
+        self.session.add(1, 'speaker', self.session.wave(1.0, 0), 5.0)
+        self.until(lambda: self.sources(), 'first text from the growing file')
+        self.assertTrue(self.thread.is_alive())  # no close and no end yet: it keeps waiting
+        self.assertEqual(self.sources()[0]['seg'], 1)
+        self.session.add(1, 'speaker', self.session.wave(4, 0.2), 9.0)
+        self.session.add(1, 'speaker', self.session.wave(1, 0), 10.0)
+        self.until(lambda: len(self.sources()) == 2, 'second text')
+        self.session.finish(1, 'speaker', 10.0)
+        self.session.end(10.0)
+        self.finish()
+
+    def test_stop_drains_what_is_on_disk_then_exits(self):
+        self.session.begin(1, 'speaker', 0.0)
+        self.session.add(1, 'speaker', self.session.wave(4, 0.2), 4.0)
+        self.session.add(1, 'speaker', self.session.wave(1, 0), 5.0)
+        self.session.add(1, 'speaker', self.session.wave(4, 0.2), 9.0)  # the tail the chunker is still holding
+        self.start()
+        self.until(lambda: self.sources(), 'first text')
+        self.assertTrue(self.thread.is_alive())
+        self.stdin.send('stop')
+        self.finish()
+        sources = self.sources()
+        self.assertEqual(len(sources), 2)
+        self.assertIn('SEGMENT_END', sources[1]['boundary'])
+        self.assertAlmostEqual(sources[1]['end'], 9.0, delta=0.05)
+
+    def test_an_asr_error_on_one_chunk_becomes_a_gap_and_the_next_chunk_is_read(self):
+        self.fail_on = {2}
+        at = self.session.segment(1, 'speaker', 0.0, [(4, 0.2), (1, 0), (4, 0.2), (1, 0), (4, 0.2), (1, 0)])
+        self.session.end(at)
+        self.start()
+        self.finish()
+        gaps = [e for e in self.events if e.get('type') == 'gap']
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual(gaps[0]['reason'], 'ASR_ERROR')
+        self.assertEqual((gaps[0]['channel'], gaps[0]['seg']), ('speaker', 1))
+        self.assertAlmostEqual(gaps[0]['start'], 5.0, delta=0.7)
+        self.assertGreater(gaps[0]['end'], gaps[0]['start'] + 3)
+        self.assertAlmostEqual(self.wall(gaps[0]), gaps[0]['start'], delta=0.05)
+        self.assertIn('out of memory', gaps[0]['message'])
+        self.assertEqual([s['text'] for s in self.sources()], ['đoạn 1', 'đoạn 3'])
+
+    def test_pause_holds_asr_without_losing_position_and_resume_goes_on(self):
+        self.load_delay = 0.3
+        at = self.session.segment(1, 'speaker', 0.0, [(4, 0.2), (1, 0), (4, 0.2), (1, 0)])
+        self.session.end(at)
+        self.stdin.send('pause')
+        self.start()
+        time.sleep(1.0)
+        self.assertEqual(self.sources(), [])
+        self.assertTrue(self.thread.is_alive())
+        self.stdin.send('resume')
+        self.finish()
+        self.assertEqual([s['text'] for s in self.sources()], ['đoạn 1', 'đoạn 2'])
+        self.assertIn({'type': 'status', 'followPaused': True}, self.events)
+        self.assertIn({'type': 'status', 'followPaused': False}, self.events)
+
+    def test_a_late_mic_shares_the_speakers_time_axis_and_echo_is_dropped(self):
+        self.session.segment(1, 'speaker', 0.0, [(6, 0.2), (9, 0)])
+        # The mic opens 3 s late: its first tone is the meeting coming back through the speakers, the second is the user.
+        self.session.segment(1, 'mic', 3.0, [(3, 0.2), (4, 0), (3, 0.2), (2, 0)])
+        self.session.end(15.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertEqual(len(mic), 1)
+        self.assertIn('CHANNEL_MIC', mic[0]['boundary'])
+        self.assertGreater(mic[0]['start'], 7.0)
+        self.assertAlmostEqual(self.wall(mic[0]), mic[0]['start'], delta=0.05)
+        self.assertEqual(len(self.sources('speaker')), 1)
+
+    def test_the_timeline_may_be_read_while_a_line_is_half_written(self):
+        self.session.begin(1, 'speaker', 0.0)
+        with open(self.session.timeline, 'a', encoding='utf-8') as file:
+            file.write('{"t": "' + self.session.iso(1.0) + '", "type": "tick", "seg": 1, "chan')
+        timeline = self.worker.Timeline(self.dir)
+        timeline.refresh()
+        info = timeline.segments[(1, 'speaker')]
+        self.assertEqual(info.points, [(self.worker.parse_iso(self.session.iso(0.0)), 0)])
+        with open(self.session.timeline, 'a', encoding='utf-8') as file:
+            file.write('nel": "speaker", "samples": 16000}\nnot json\n')
+        timeline.refresh()
+        self.assertEqual(info.points[-1][1], 16000)
+        self.assertFalse(timeline.ended)
+
+    def test_wall_time_between_ticks_and_across_a_lost_stretch(self):
+        self.session.begin(1, 'speaker', 0.0)
+        self.session.add(1, 'speaker', self.session.wave(1, 0.2), 1.0)
+        self.session.add(1, 'speaker', self.session.wave(1, 0.2), 5.0)  # 3 s lost between the ticks: 1 s of audio took 4 s
+        timeline = self.worker.Timeline(self.dir)
+        timeline.refresh()
+        info = timeline.segments[(1, 'speaker')]
+        base = self.worker.parse_iso(self.session.iso(0))
+        self.assertAlmostEqual(timeline.wall_at(info, 8000) - base, 0.5, delta=0.001)
+        self.assertAlmostEqual(timeline.wall_at(info, 24000) - base, 3.0, delta=0.001)
+        self.assertAlmostEqual(timeline.wall_at(info, 48000) - base, 6.0, delta=0.001)  # past the last tick: at the device's rate
+        self.assertAlmostEqual(timeline.sample_at(info, base + 3.0), 24000, delta=1)
+        self.assertEqual(timeline.sample_at(info, base - 5), 0)
+
+    def test_a_stale_wav_header_does_not_hide_samples_that_are_on_disk(self):
+        self.session.begin(1, 'speaker', 0.0)
+        self.session.add(1, 'speaker', self.session.wave(2, 0.2), 2.0)
+        with open(self.session.path(1, 'speaker'), 'r+b') as file:
+            file.seek(40)
+            file.write(b'\x00\x00\x00\x00')  # header still says no data
+        import follow_source
+        tail = follow_source.WavTail(self.session.path(1, 'speaker'))
+        self.assertEqual(tail.available(), 32000)
+        self.assertEqual(len(tail.read(31000, 5000)), 1000)
+        tail.close()
+
+    def test_follower_resamples_to_16k_pads_a_late_segment_and_flushes_at_a_segment_end(self):
+        import numpy as np
+        import follow_source
+        session = FakeSession(self.dir, rate=48000)
+        session.segment(1, 'speaker', 0.0, [(1, 0.2)])
+        session.segment(2, 'speaker', 3.0, [(1, 0.2)])  # opens 2 s after segment 1 closed
+        session.end(4.0)
+        timeline = follow_source.Timeline(self.dir)
+        follower = follow_source.ChannelFollower(timeline, 'speaker', sleep=lambda seconds: None)
+        total, flushes, blocks = 0, 0, []
+        while True:
+            try:
+                block = follower.read_block()
+            except EOFError:
+                break
+            if block is follow_source.SEGMENT_END:
+                flushes += 1
+            else:
+                total += len(block) // 4
+                blocks.append(np.frombuffer(block, dtype=np.float32))
+        self.assertEqual(flushes, 2)
+        self.assertAlmostEqual(total / 16000, 4.0, delta=0.05)  # 1 s + 2 s of silence + 1 s
+        data = np.concatenate(blocks)
+        self.assertLess(float(np.abs(data[20000:44000]).max()), 1e-6)  # the hole is silence
+        self.assertGreater(float(np.abs(data[:16000]).max()), 0.1)
+        wall, seg = follower.locate(3.5 * 16000)
+        self.assertEqual(seg, 2)
+        self.assertAlmostEqual(self.worker.parse_iso(wall) - self.worker.parse_iso(session.iso(0)), 3.5, delta=0.02)
+
+
+class RecheckTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        self.worker = audio_worker
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.session = FakeSession(self.tmp.name)
+        self.calls = []
+
+    def run_recheck(self, start, end, channel='speaker', languages=('vi', 'lo'), fail=()):
+        from unittest import mock
+        import numpy as np
+
+        def transcribe(model, waveform16, langs, lao_model=None, vi_model=None, pick=None, beam=None):
+            if langs[0] in fail and len(langs) == 1:
+                raise ValueError('no such language')
+            self.calls.append((list(langs), len(waveform16) / 16000, beam, float(np.sqrt(np.mean(waveform16 ** 2)))))
+            segment = type('Segment', (), {'text': 'xin chào ' + '/'.join(langs), 'avg_logprob': -0.2 if langs[0] == 'vi' else -0.6, 'tokens': [1, 2, 3]})()
+            return [segment], langs[0], None
+        with mock.patch.object(self.worker, 'transcribe_chunk', transcribe):
+            return self.worker.recheck_window(object(), None, None, self.tmp.name, self.session.iso(start), self.session.iso(end), channel, languages, 8)
+
+    def test_the_window_is_cut_by_wall_time_across_two_segments(self):
+        at = self.session.segment(1, 'speaker', 0.0, [(2, 0), (3, 0.1)])
+        self.session.segment(2, 'speaker', at, [(2, 0.3), (3, 0)])
+        self.session.end(10.0)
+        result = self.run_recheck(4.0, 7.0)  # 1 s of the first segment's tone, 2 s of the second's
+        self.assertEqual(self.calls[0][1], 3.0)
+        self.assertFalse(result['silent'])
+        self.assertEqual(result['seconds'], 3.0)
+        timeline = self.worker.Timeline(self.tmp.name)
+        timeline.refresh()
+        wave = self.worker.cut_window(timeline, 'speaker', self.worker.parse_iso(self.session.iso(4.0)), self.worker.parse_iso(self.session.iso(7.0)))
+        import numpy as np
+        self.assertEqual(len(wave), 48000)
+        self.assertAlmostEqual(float(np.sqrt(np.mean(wave[:16000] ** 2))), 0.1 / 2 ** 0.5, delta=0.005)
+        self.assertAlmostEqual(float(np.sqrt(np.mean(wave[16000:] ** 2))), 0.3 / 2 ** 0.5, delta=0.005)
+
+    def test_alternatives_per_language_use_the_wide_beam_and_a_missing_language_is_left_out(self):
+        self.session.segment(1, 'speaker', 0.0, [(5, 0.2)])
+        self.session.end(5.0)
+        result = self.run_recheck(0.0, 4.0, languages=('vi', 'lo', 'th'), fail=('th',))
+        self.assertEqual([a['language'] for a in result['alternatives']], ['vi', 'lo'])
+        self.assertEqual(result['alternatives'][0]['score'], -0.2)
+        self.assertTrue(all(call[2] == 8 for call in self.calls))
+        self.assertEqual(result['language'], 'vi')
+        self.assertEqual(result['text'], 'xin chào vi/lo/th')
+        self.assertEqual(set(result), {'text', 'language', 'alternatives', 'silent', 'seconds'})
+
+    def test_a_window_with_no_sound_is_silent_and_costs_no_transcription(self):
+        self.session.segment(1, 'speaker', 0.0, [(2, 0), (3, 0.2)])
+        self.session.end(5.0)
+        result = self.run_recheck(0.0, 1.5)
+        self.assertTrue(result['silent'])
+        self.assertEqual((result['text'], result['alternatives']), ('', []))
+        self.assertEqual(self.calls, [])
+        self.assertFalse(self.run_recheck(1.0, 3.0)['silent'])  # half of it is tone
+
+    def test_a_window_outside_the_recording_or_on_a_missing_channel_is_empty_and_silent(self):
+        self.session.segment(1, 'speaker', 0.0, [(3, 0.2)])
+        self.session.end(3.0)
+        self.assertTrue(self.run_recheck(10.0, 12.0)['silent'])
+        result = self.run_recheck(0.0, 3.0, channel='mic')
+        self.assertTrue(result['silent'])
+        self.assertEqual(result['seconds'], 0.0)
+
+    def test_cli_accepts_follow_and_recheck(self):
+        args = self.worker.build_parser().parse_args(['--recheck', 'dir', '--from', '2026-10-31T09:00:00Z', '--to', '2026-10-31T09:00:05Z', '--channel', 'mic', '--beam', '8'])
+        self.assertEqual((args.recheck, args.from_, args.channel, args.beam), ('dir', '2026-10-31T09:00:00Z', 'mic', 8))
+        self.assertEqual(self.worker.build_parser().parse_args(['--follow', 'dir', '--languages', 'vi,lo,th']).follow, 'dir')
 
 
 if __name__ == '__main__':
