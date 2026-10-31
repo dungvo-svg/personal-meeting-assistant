@@ -140,12 +140,13 @@ test('finish writes RAW; summary and tasks need real source IDs and work after t
     assert.throws(() => r.reportFile(id, 'other'), /UNKNOWN_REPORT/);
   });
 });
-test('mixed Vietnamese/Lao: default languages, per-source language label, unknown languages rejected', async () => {
+test('mixed Vietnamese/Lao/Thai: default languages, per-source language label, unknown languages rejected', async () => {
   await withRuntime(async r => {
-    assert.throws(() => r.prepare('x', false, undefined, ['th']), /LANGUAGES_MUST_BE_VI_LO/);
-    r.prepare('Họp Việt Lào'); assert.deepEqual(r.session.languages, ['vi', 'lo']); assert.equal(r.session.mode, 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION');
+    assert.throws(() => r.prepare('x', false, undefined, ['xx']), /LANGUAGES_MUST_BE_VI_LO_TH/);
+    r.prepare('Họp Việt Lào'); assert.deepEqual(r.session.languages, ['vi', 'lo', 'th']); assert.equal(r.session.mode, 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION');
     const vi = r.ingest('Kho số hai đủ hàng.', 'local_asr_unverified', 0, 3, '', 'cap-1', 'vi'); const lo = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 3, 6, '', 'cap-1', 'lo');
-    assert.throws(() => r.ingest('x', 'local_asr_unverified', 0, 1, '', 'cap-1', 'th'), /INVALID_SOURCE_LANGUAGE/);
+    assert.throws(() => r.ingest('x', 'local_asr_unverified', 0, 1, '', 'cap-1', 'xx'), /INVALID_SOURCE_LANGUAGE/);
+    const th = r.ingest('สวัสดีครับ', 'local_asr_unverified', 6, 9, '', 'cap-1', 'th'); assert.equal(r.sources(r.session.id).at(-1).language, 'th'); assert.equal(r.translate(r.session.id, [{ sourceId: th, text: 'Xin chào mọi người.' }]).saved, 1);
     const rows = r.sources(r.session.id); assert.equal(rows[0].language, 'vi'); assert.equal(rows[1].language, 'lo');
     const raw = readFileSync(r.writeRaw(r.session.id).path, 'utf8'); assert.ok(raw.includes(`#${lo} (nghe · lo) ສະບາຍດີ`)); assert.ok(raw.includes(`#${vi} (nghe · vi)`));
     await r.finish(r.session.id); r.prepare('Chỉ tiếng Việt', false, undefined, ['vi']); assert.equal(r.session.mode, 'VI_TRANSCRIPT_NO_TRANSLATION');
@@ -272,5 +273,15 @@ test('translations: saved for Lao segments, replaced on retry, rejected for othe
     r.prepare('Họp khác'); const other = r.session.id; const foreign = r.ingest('ລາວ', 'local_asr_unverified', 0, 1, '', 'cap', 'lo');
     assert.throws(() => r.translate(id, [{ sourceId: foreign, text: 'x' }]), /SESSION_NOT_ACTIVE/);
     assert.throws(() => r.translate(other, [{ sourceId: lo, text: 'x' }]), /SOURCE_OUTSIDE_SESSION/);
+  });
+});
+test('an unsure Lao/Thai chunk keeps its other reading for the translation session and RAW', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp Việt Lào Thái'); const id = r.session.id;
+    const lo = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 0, 3, 'LANG_UNSURE', 'cap', 'lo', '', null, [{ language: 'th', text: 'สบายดี', score: -0.4 }, { language: 'xx', text: 'bỏ' }]);
+    assert.deepEqual(r.sources(id).find(s => s.id === lo).alternatives, [{ language: 'th', text: 'สบายดี', score: -0.4 }]);
+    const raw = readFileSync(r.writeRaw(id).path, 'utf8');
+    assert.ok(raw.includes(`#${lo} (nghe · lo · ngôn ngữ không chắc) ສະບາຍດີ\n  ↳ th (cách nghe khác): สบายดี`));
+    assert.equal(r.translate(id, [{ sourceId: lo, text: 'Xin chào.' }]).saved, 1);
   });
 });

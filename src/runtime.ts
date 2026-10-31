@@ -58,7 +58,14 @@ const localDate = (iso: string) => new Date(iso).toLocaleDateString('vi-VN');
 const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
 
 export type Source = { id: number; sessionId: string; text: string; origin: string; start: number; end: number; createdAt: string; boundary: string; captureId: string; language: string; wall: string; seg: number | null; shown?: string };
-export type Language = 'vi' | 'lo';
+export type Language = 'vi' | 'lo' | 'th';
+export type Alternative = { language: Language; text: string; score?: number };
+// Stored or sent alternatives, cleaned: known languages only, short text, at most 3.
+export function parseAlternatives(value: unknown): Alternative[] {
+  let list: any = value; if (typeof list === 'string') { try { list = list ? JSON.parse(list) : []; } catch { list = []; } }
+  return (Array.isArray(list) ? list : []).filter(a => a && ['vi', 'lo', 'th'].includes(a.language) && typeof a.text === 'string' && a.text.trim())
+    .slice(0, 3).map(a => ({ language: a.language, text: String(a.text).trim().slice(0, 2000), ...(Number.isFinite(a.score) ? { score: a.score } : {}) }));
+}
 export type CoverageItem = { kind: string; from: string; to: string; fromClock: string; toClock: string; seconds: number; sourceId?: number; why: string; rechecked: boolean; recheck: string };
 // What the host leaves in daemon.json for the next host (Q-3): enough to find the session's recorder again after a crash.
 export type Registry = { sessionId: string | null; recorderPid: number | null; workerPid: number | null; asr: 'listening' | 'paused'; speaker: string | null };
@@ -133,6 +140,8 @@ export class MeetingRuntime extends EventEmitter {
     // Real (wall-clock) time of the start of the audio a row was made from, and the recorder segment it came from.
     if (!columns.includes('wall')) this.db.exec("ALTER TABLE sources ADD COLUMN wall TEXT NOT NULL DEFAULT ''");
     if (!columns.includes('seg')) this.db.exec('ALTER TABLE sources ADD COLUMN seg INTEGER');
+    // The other Lao/Thai reading of an unsure chunk (JSON [{language,text,score}]), for Claude to translate by meaning.
+    if (!columns.includes('alternatives')) this.db.exec("ALTER TABLE sources ADD COLUMN alternatives TEXT NOT NULL DEFAULT ''");
     try { this.glossary = JSON.parse(readFileSync(join(dataDir, 'glossary.json'), 'utf8')); } catch { this.glossary = []; }
     try { this.profile = JSON.parse(readFileSync(join(dataDir, 'profile.json'), 'utf8')); } catch { this.profile = {}; }
     // A previous host that died while its recorder kept recording leaves that recorder's PID in daemon.json: this host takes
@@ -158,7 +167,7 @@ export class MeetingRuntime extends EventEmitter {
   private reattach(previous: Registry) {
     const row: any = this.db.prepare('SELECT id,title,created,mode,context FROM sessions WHERE id=?').get(previous.sessionId); if (!row) return;
     const context = JSON.parse(row.context);
-    this.session = { id: row.id, title: row.title, created: row.created, ended: null, mode: row.mode, languages: context.languages ?? ['vi', 'lo'], context };
+    this.session = { id: row.id, title: row.title, created: row.created, ended: null, mode: row.mode, languages: context.languages ?? ['vi', 'lo', 'th'], context };
     this.armedDevice = { index: -1, name: previous.speaker ?? this.profile.speaker?.name ?? 'nguồn đang ghi', kind: 'speaker_loopback_all_device_audio', grantedAt: new Date().toISOString(), expiresAt: null, reattached: true };
     this.asrWanted = previous.asr === 'listening'; this.everListened = this.asrWanted;
     this.asrPosition = this.lastProcessedWall(row.id);
@@ -193,12 +202,12 @@ export class MeetingRuntime extends EventEmitter {
   }
   shown(text: string) { return applyGlossary(collapseLoops(text), this.glossary); }
   ping() { this.emit('change'); }
-  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo'], extra: { me?: string; at?: string; warm?: boolean } = {}) {
+  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
     if (this.session && !this.session.ended) return this.snapshot();
     if (this.capture || this.stoppingCapture || this.recorderAlive() || this.captureState === 'CLEANUP_UNCONFIRMED') throw new Error('PREVIOUS_CAPTURE_NOT_CLOSED');
     if (fixture && !this.testMode) throw new Error('FIXTURE_DISABLED');
-    languages = [...new Set(languages)]; if (!languages.length || languages.some(code => code !== 'vi' && code !== 'lo')) throw new Error('LANGUAGES_MUST_BE_VI_LO');
+    languages = [...new Set(languages)]; if (!languages.length || languages.some(code => code !== 'vi' && code !== 'lo' && code !== 'th')) throw new Error('LANGUAGES_MUST_BE_VI_LO_TH');
     const created = new Date().toISOString();
     // A saved agenda from another day must not be presented as context for today's meeting.
     const savedIsCurrent = !this.context.date || this.context.date === new Date().toLocaleDateString('sv-SE');
@@ -223,18 +232,19 @@ export class MeetingRuntime extends EventEmitter {
   }
   sources(id: string, after = 0, limit = 20): Source[] {
     if (!Number.isSafeInteger(after) || after < 0) throw new Error('INVALID_CURSOR');
-    const rows = this.db.prepare('SELECT id,session_id AS sessionId,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language,wall,seg FROM sources WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(id, after, Math.max(1, Math.min(100, limit))) as Source[];
-    return rows.map(row => ({ ...row, shown: this.shown(row.text) }));
+    const rows = this.db.prepare('SELECT id,session_id AS sessionId,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language,wall,seg,alternatives FROM sources WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(id, after, Math.max(1, Math.min(100, limit))) as any[];
+    return rows.map(row => ({ ...row, alternatives: parseAlternatives(row.alternatives), shown: this.shown(row.text) }));
   }
-  ingest(text: string, origin: 'operator_text' | 'local_asr_unverified' | 'synthetic_fixture' | 'system_gap', start = 0, end = 0, boundary = '', captureId = '', language = '', wall = '', seg: number | null = null) {
+  ingest(text: string, origin: 'operator_text' | 'local_asr_unverified' | 'synthetic_fixture' | 'system_gap', start = 0, end = 0, boundary = '', captureId = '', language = '', wall = '', seg: number | null = null, alternatives: unknown = undefined) {
     this.requireSession(this.session?.id, true);
     if (origin === 'synthetic_fixture' && this.session.mode !== 'FIXTURE_NOT_MEETING') throw new Error('FIXTURE_SOURCE_REJECTED');
     text = text.trim(); if (!text || text.length > 8000 || !Number.isFinite(start) || !Number.isFinite(end) || end < start) throw new Error('INVALID_SOURCE');
     const size: any = this.db.prepare('SELECT COUNT(*) AS n,COALESCE(SUM(length(text)),0) AS chars FROM sources WHERE session_id=?').get(this.session.id);
     if (size.n >= 10000 || size.chars + text.length > 5_000_000) throw new Error('TEXT_CAPACITY_REACHED');
-    if (language && language !== 'vi' && language !== 'lo') throw new Error('INVALID_SOURCE_LANGUAGE');
+    if (language && language !== 'vi' && language !== 'lo' && language !== 'th') throw new Error('INVALID_SOURCE_LANGUAGE');
     wall = wall && Number.isFinite(Date.parse(wall)) ? new Date(wall).toISOString() : ''; seg = Number.isInteger(seg) ? seg : null;
-    const row = this.db.prepare('INSERT INTO sources(session_id,text,origin,start,end,created,boundary,capture_id,language,wall,seg) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(this.session.id, text, origin, start, end, new Date().toISOString(), boundary, captureId, language, wall, seg);
+    const others = parseAlternatives(alternatives);
+    const row = this.db.prepare('INSERT INTO sources(session_id,text,origin,start,end,created,boundary,capture_id,language,wall,seg,alternatives) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(this.session.id, text, origin, start, end, new Date().toISOString(), boundary, captureId, language, wall, seg, others.length ? JSON.stringify(others) : '');
     this.ping(); return Number(row.lastInsertRowid);
   }
   async next(id: string, after = 0, waitMs = 20000, limit = 12, follower = false, name = MAIN_FOLLOWER) {
@@ -588,7 +598,7 @@ export class MeetingRuntime extends EventEmitter {
       this.ingest(text, 'system_gap', event.start, event.end, reason, this.captureId, '', event.wall, event.seg);
       this.notePosition(event);
     }
-    if (event.type === 'source') { this.ingest(event.text, 'local_asr_unverified', event.start, event.end, event.boundary || '', this.captureId, event.language || '', event.wall, event.seg); this.notePosition(event); }
+    if (event.type === 'source') { this.ingest(event.text, 'local_asr_unverified', event.start, event.end, event.boundary || '', this.captureId, event.language || '', event.wall, event.seg, event.alternatives); this.notePosition(event); }
     // A follow worker that fails exits, and the supervisor restarts it; only a replay stops on the first error.
     if (event.type === 'error') { this.lastError = event.message; if (!follow) { this.captureState = 'ERROR'; void this.stopCapture(); } }
     this.ping();
@@ -755,7 +765,7 @@ export class MeetingRuntime extends EventEmitter {
       if (!(to > from) || to - from > 30 * 60000) throw new Error('INVALID_RANGE: khoảng nghe lại phải dài hơn 0 và không quá 30 phút');
     }
     const fromIso = new Date(from).toISOString(); const toIso = new Date(to).toISOString();
-    const args = [join(this.root, 'tools', 'audio_worker.py'), '--recheck', dir, '--from', fromIso, '--to', toIso, ...(channel ? ['--channel', channel] : []), '--beam', String(input.beam ?? 8), '--languages', (session.context.languages ?? ['vi', 'lo']).join(','), ...this.laoModelArgs()];
+    const args = [join(this.root, 'tools', 'audio_worker.py'), '--recheck', dir, '--from', fromIso, '--to', toIso, ...(channel ? ['--channel', channel] : []), '--beam', String(input.beam ?? 8), '--languages', (session.context.languages ?? ['vi', 'lo', 'th']).join(','), ...this.laoModelArgs()];
     const child = spawn(this.python(), args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = ''; let error = '';
     child.stdout.on('data', d => { output += d; }); child.stderr.on('data', d => { error = (error + d).slice(-2000); });
@@ -874,7 +884,7 @@ export class MeetingRuntime extends EventEmitter {
   }
   writeRaw(id: string) {
     const session = this.sessionRow(id);
-    const rows: any[] = this.db.prepare('SELECT s.id,s.text,s.origin,s.created,s.wall,s.capture_id,s.language,s.boundary,t.text AS translation FROM sources s LEFT JOIN translations t ON t.source_id=s.id WHERE s.session_id=? ORDER BY s.id').all(id);
+    const rows: any[] = this.db.prepare('SELECT s.id,s.text,s.origin,s.created,s.wall,s.capture_id,s.language,s.boundary,s.alternatives,t.text AS translation FROM sources s LEFT JOIN translations t ON t.source_id=s.id WHERE s.session_id=? ORDER BY s.id').all(id);
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
     const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là giờ thật của lời nói theo bản ghi âm (đoạn không có giờ thật thì là lúc text được ghi nhận, trễ vài giây). Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. ' + this.audioNote(id), ''];
     if (rows.some(row => row.translation)) lines.push('> Dòng "→ (Claude dịch)" là bản dịch tiếng Việt do Claude viết cho đoạn tiếng Lào, chưa ai kiểm; chữ Lào ở trên mới là nguồn.', '');
@@ -893,6 +903,7 @@ export class MeetingRuntime extends EventEmitter {
       lines.push(group.count > 1
         ? `[${when(row)}] #${row.id}–#${group.last.id} (${label(row)} · lặp ${group.count} đoạn liền) ${this.shown(row.text)} [×${group.count}]`
         : `[${when(row)}] #${row.id} (${label(row)}) ${this.shown(row.text)}`);
+      for (const other of parseAlternatives(row.alternatives)) lines.push(`  ↳ ${other.language} (cách nghe khác): ${other.text.replace(/\r?\n/g, ' ')}`);
       const rechecked = again.get(row.id); if (rechecked) lines.push(`  (đã nghe lại: ${phrase(rechecked).replace(/\r?\n/g, ' ')})`);
       const translation = row.translation ?? group.last.translation; if (translation) lines.push(`  → (Claude dịch) ${translation.replace(/\r?\n/g, ' ')}`);
     }
@@ -958,7 +969,7 @@ export class MeetingRuntime extends EventEmitter {
       if (!Number.isSafeInteger(item?.sourceId) || !text || text.length > 2000) throw new Error('INVALID_TRANSLATION: #' + item?.sourceId);
       const row: any = this.db.prepare('SELECT language FROM sources WHERE session_id=? AND id=?').get(id, item.sourceId);
       if (!row) throw new Error('SOURCE_OUTSIDE_SESSION: ' + item.sourceId);
-      if (row.language !== 'lo') throw new Error('TRANSLATE_ONLY_LAO: #' + item.sourceId + ' không phải đoạn tiếng Lào');
+      if (row.language !== 'lo' && row.language !== 'th') throw new Error('TRANSLATE_ONLY_LAO: #' + item.sourceId + ' không phải đoạn tiếng Lào/Thái');
       return { sourceId: item.sourceId, text };
     });
     const now = new Date().toISOString(); let replaced = 0;

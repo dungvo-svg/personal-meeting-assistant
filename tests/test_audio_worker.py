@@ -423,6 +423,153 @@ class LanguagePickTests(unittest.TestCase):
         self.assertEqual(main.options[0]['beam_size'], self.worker.ASR_BEAM_CUDA)
 
 
+class TaiRoutingTests(unittest.TestCase):
+    """Three-way vi / lo / th routing with fake models (no ASR): which decoders run, which reading is primary, what comes back as alternatives."""
+
+    def setUp(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+        import audio_worker
+        import numpy as np
+        self.worker = audio_worker
+        self.long = np.zeros(16000 * 6, dtype=np.float32)
+        self.short = np.zeros(16000 * 2, dtype=np.float32)
+
+    def fake(self, detected=None, probs=(), scores=None, texts=None):
+        # scores/texts: language -> value used when the model is asked to decode that language.
+        calls = []
+        scores = scores or {}
+        texts = texts or {}
+
+        class Model:
+            def transcribe(self, audio, language=None, **options):
+                calls.append(language)
+                code = language or detected
+                info = type('Info', (), {'language': code, 'all_language_probs': list(probs)})()
+                segment = type('Segment', (), {'text': texts.get(code, f'text-{code}'), 'avg_logprob': scores.get(code, -0.5), 'tokens': list(range(10)), 'no_speech_prob': 0.1, 'compression_ratio': 1.2})()
+                return [segment], info
+        model = Model()
+        model.calls = calls
+        return model
+
+    def run_chunk(self, main, lao, audio, languages=('vi', 'lo', 'th'), vi=None, **kw):
+        segments, language, probability = self.worker.transcribe_chunk(main, audio, list(languages), lao, vi, **kw)
+        return segments, language, probability, self.worker.chunk_alternatives(segments)
+
+    def test_a_long_chunk_the_lao_decoder_clearly_wins_is_lao_with_no_alternative(self):
+        main = self.fake('th', [('th', 0.9), ('vi', 0.02)], {'th': -0.4})
+        lao = self.fake(scores={'lo': -0.15}, texts={'lo': 'ສະບາຍດີ'})
+        segments, language, probability, alternatives = self.run_chunk(main, lao, self.long)
+        self.assertEqual((language, [s.text for s in segments], alternatives), ('lo', ['ສະບາຍດີ'], []))
+        self.assertEqual((main.calls, lao.calls), ([None], ['lo']))  # the detection pass is the Thai decode: nothing is decoded twice
+        self.assertGreater(probability, 0.9)
+
+    def test_a_long_chunk_the_thai_decoder_clearly_wins_is_thai_with_no_alternative(self):
+        main = self.fake('th', [('th', 0.95), ('vi', 0.01)], {'th': -0.15})
+        lao = self.fake(scores={'lo': -0.18})
+        segments, language, _, alternatives = self.run_chunk(main, lao, self.long)
+        self.assertEqual((language, [s.text for s in segments], alternatives), ('th', ['text-th'], []))
+
+    def test_close_scores_keep_the_other_reading_as_an_alternative_and_flag_the_language_as_unsure(self):
+        main = self.fake('th', [('th', 0.95), ('vi', 0.01)], {'th': -0.30}, {'th': 'สวัสดี'})
+        lao = self.fake(scores={'lo': -0.25}, texts={'lo': 'ສະບາຍດີ'})
+        segments, language, probability, alternatives = self.run_chunk(main, lao, self.long)
+        self.assertEqual((language, [s.text for s in segments]), ('th', ['สวัสดี']))  # lo wins by 0.05 only: below LANG_TAI_LO_MARGIN
+        self.assertEqual(alternatives, [{'language': 'lo', 'text': 'ສະບາຍດີ', 'score': -0.25}])
+        self.assertEqual(probability, self.worker.LANG_TAI_UNSURE_PROB)
+        flags = self.worker.segment_flags('สวัสดี', segments[0], language, probability)
+        self.assertIn('LANG_UNSURE', flags)
+
+    def test_a_short_chunk_always_returns_the_other_reading_even_when_one_wins_clearly(self):
+        main = self.fake('th', [('th', 0.9), ('vi', 0.02)], {'th': -0.6}, {'th': 'สวัสดี'})
+        lao = self.fake(scores={'lo': -0.1}, texts={'lo': 'ສະບາຍດີ'})
+        segments, language, _, alternatives = self.run_chunk(main, lao, self.short)
+        self.assertEqual((language, [a['language'] for a in alternatives], [a['text'] for a in alternatives]), ('lo', ['th'], ['สวัสดี']))
+
+    def test_clear_vietnamese_decodes_no_tai_reading(self):
+        main, lao = self.fake('vi', [('vi', 0.97)]), self.fake()
+        segments, language, _, alternatives = self.run_chunk(main, lao, self.long)
+        self.assertEqual((language, main.calls, lao.calls, alternatives), ('vi', [None], [], []))
+
+    def test_vietnamese_still_beats_a_weaker_tai_reading_and_a_stock_phrase_still_loses(self):
+        main = self.fake('vi', [('vi', 0.3), ('th', 0.4)], {'vi': -0.2, 'th': -0.7})
+        lao = self.fake(scores={'lo': -0.8})
+        _, language, _, alternatives = self.run_chunk(main, lao, self.long)
+        self.assertEqual((language, alternatives), ('vi', []))
+        main = self.fake('vi', [('vi', 0.3), ('th', 0.4)], {'vi': -0.1, 'th': -0.5}, {'vi': 'Hãy subscribe cho kênh'})
+        lao = self.fake(scores={'lo': -0.6})
+        _, language, _, alternatives = self.run_chunk(main, lao, self.short)
+        self.assertEqual(language, 'th')  # the Vietnamese decode was an invented stock phrase
+
+    def test_lao_gets_its_bias_against_vietnamese_but_thai_does_not(self):
+        main = self.fake('vi', [('vi', 0.3), ('th', 0.4)], {'vi': -0.5, 'th': -0.55})
+        lao = self.fake(scores={'lo': -0.55})
+        _, language, _, _ = self.run_chunk(main, lao, self.short)
+        self.assertEqual(language, 'vi')  # th is 0.05 behind vi and gets no bias
+        main = self.fake('vi', [('vi', 0.3), ('th', 0.4)], {'vi': -0.5, 'th': -0.9})
+        lao = self.fake(scores={'lo': -0.45})
+        _, language, _, _ = self.run_chunk(main, lao, self.short)
+        self.assertEqual(language, 'lo')  # lo is 0.05 ahead of vi, and +0.1 bias applies
+
+    def test_a_session_without_vietnamese_skips_detection_and_decodes_both_readings(self):
+        main = self.fake(None, (), {'th': -0.3})
+        lao = self.fake(scores={'lo': -0.05}, texts={'lo': 'ສະບາຍດີ'})
+        segments, language, probability, alternatives = self.run_chunk(main, lao, self.long, ('lo', 'th'))
+        self.assertEqual((language, main.calls, lao.calls, alternatives), ('lo', ['th'], ['lo'], []))
+        self.assertIsNone(probability)
+        main = self.fake(None, (), {'th': -0.3})
+        lao = self.fake(scores={'lo': -0.28})
+        _, language, probability, alternatives = self.run_chunk(main, lao, self.long, ('lo', 'th'))
+        self.assertEqual((language, alternatives[0]['language'], probability), ('th', 'lo', self.worker.LANG_TAI_UNSURE_PROB))
+
+    def test_thai_without_lao_never_wakes_the_lao_model(self):
+        main = self.fake('th', [('th', 0.9), ('lo', 0.05), ('vi', 0.02)])
+        lao = self.fake()
+        segments, language, _, alternatives = self.run_chunk(main, lao, self.long, ('vi', 'th'))
+        self.assertEqual((language, main.calls, lao.calls, alternatives), ('th', [None], [], []))
+
+    def test_lao_without_thai_keeps_the_old_routing(self):
+        main = self.fake('th', [('th', 0.9), ('vi', 0.02)])
+        lao = self.fake(texts={'lo': 'ສະບາຍດີ'})
+        segments, language, _, alternatives = self.run_chunk(main, lao, self.long, ('vi', 'lo'))
+        self.assertEqual((language, [s.text for s in segments], main.calls, lao.calls, alternatives), ('lo', ['ສະບາຍດີ'], [None], ['lo'], []))
+
+    def test_a_session_with_both_but_no_lao_model_reads_tai_as_thai(self):
+        main = self.fake('th', [('th', 0.9), ('lo', 0.05), ('vi', 0.02)])
+        segments, language, _, alternatives = self.run_chunk(main, None, self.long)
+        self.assertEqual((language, main.calls, alternatives), ('th', [None], []))
+
+    def test_a_thai_only_session_goes_straight_to_the_main_model_and_a_plain_list_has_no_alternatives(self):
+        main = self.fake()
+        segments, language, probability = self.worker.transcribe_chunk(main, self.long, ['th'], self.fake())
+        self.assertEqual((language, probability, main.calls), ('th', None, ['th']))
+        self.assertEqual(self.worker.chunk_alternatives(list(segments)), [])
+
+    def test_pick_tai_ties_and_empty_decodes_stay_thai(self):
+        seg = lambda score: [type('Segment', (), {'text': 'x', 'avg_logprob': score, 'tokens': [1] * 5})()]
+        self.assertEqual(self.worker.pick_tai(seg(-0.3), seg(-0.2)), 'lo')
+        self.assertEqual(self.worker.pick_tai(seg(-0.3), seg(-0.25)), 'th')
+        self.assertEqual(self.worker.pick_tai(seg(-0.3), []), 'th')
+        self.assertEqual(self.worker.pick_tai([], seg(-0.9)), 'lo')
+        self.assertEqual(self.worker.pick_tai([], []), 'th')
+
+    def test_decisive_needs_length_and_a_clear_margin(self):
+        decisive = self.worker.tai_is_decisive
+        self.assertTrue(decisive('lo', -0.1, -0.35, 6))
+        self.assertFalse(decisive('lo', -0.1, -0.35, 3.9))
+        self.assertTrue(decisive('lo', -0.1, -0.35, None))
+        self.assertFalse(decisive('lo', -0.2, -0.3, 6))
+        self.assertTrue(decisive('th', -0.17, -0.19, 6))
+        self.assertFalse(decisive('th', -0.3, -0.31, 6))  # th decoded poorly
+        self.assertFalse(decisive('th', -0.15, -0.25, 6))  # lo decoded clearly better, so th is not a safe single reading
+
+    def test_thai_script_is_flagged_only_when_the_text_is_labelled_lao(self):
+        segment = type('Segment', (), {'no_speech_prob': 0.1, 'compression_ratio': 1.2, 'avg_logprob': -0.3})()
+        flags = self.worker.segment_flags
+        self.assertNotIn('LAO_WRITTEN_IN_THAI_SCRIPT', flags('สวัสดีครับ', segment, 'th'))
+        self.assertIn('LAO_WRITTEN_IN_THAI_SCRIPT', flags('สวัสดีครับ', segment, 'lo'))
+        self.assertEqual(flags('สวัสดีครับ', segment, 'th'), [])
+
+
 class AudioInfrastructureTests(unittest.TestCase):
     def test_resample_lengths(self):
         import av

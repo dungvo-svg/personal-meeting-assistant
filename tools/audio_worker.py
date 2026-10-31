@@ -149,6 +149,15 @@ LANG_LAO_SURE_SHARE = 0.85
 LANG_LAO_SURE_SECONDS = 4.0
 LANG_PICK_BIAS = 0.1  # added to the Lao score: its log-probs run a little lower than the main model's on the same speech
 LANG_PICK_DEFAULT = True
+# Three-way Tai routing (lo vs th). Measured 31/10 on FLEURS (40 clips per language, beam 5): the detector gives Lao audio a Thai-sounding
+# reading (th share of lo+th is 1.0 for both Lao and Thai clips, AUC 0.50), so it cannot separate them. What does: the decoders' own
+# scores. score(lo, BuzzASR) - score(th, main) is +0.13 (median) on Lao clips and -0.01 on Thai ones (AUC 0.91 on full clips, 0.72 on 1.5-3 s cuts).
+LANG_TAI_LO_MARGIN = 0.08  # the Lao reading is primary only when it beats the Thai one by this much
+LANG_TAI_DECISIVE_SECONDS = 4.0  # shorter chunks always keep the other reading as an alternative
+LANG_TAI_LO_DECISIVE_DIFF = 0.12  # lo is decisive when it beats th by this much...
+LANG_TAI_TH_DECISIVE_SCORE = -0.2  # ...th when its own score is at least this good and lo is not clearly better (diff below LANG_TAI_TH_DECISIVE_DIFF)
+LANG_TAI_TH_DECISIVE_DIFF = 0.05
+LANG_TAI_UNSURE_PROB = 0.5  # reported language probability when an alternative is returned (below LANG_UNSURE_BELOW, so the chunk is flagged)
 
 
 def split_point(block_rms, block_sizes, rate, window_seconds=3):
@@ -231,42 +240,109 @@ def pick_by_score(vi_segments, lo_segments, lao_bias=LANG_PICK_BIAS):
     return 'lo' if segments_score(lo_segments) + lao_bias > vi_score else 'vi'
 
 
+class ChunkSegments(list):
+    """The segments of one chunk plus `alternatives`: [{language, text, score}] for the other Tai reading (th vs lo) when
+    the chunk could not be told apart with confidence. Empty when the routing was decisive. A plain list subclass, so
+    existing callers (iteration, ==) work unchanged; read it with chunk_alternatives(segments)."""
+    alternatives = ()
+
+
+def chunk_alternatives(segments):
+    return list(getattr(segments, 'alternatives', ()))
+
+
+def segments_text(segments):
+    return ' '.join((getattr(segment, 'text', '') or '').strip() for segment in segments).strip()
+
+
+def pick_tai(th_segments, lo_segments, margin=LANG_TAI_LO_MARGIN):
+    # 'lo' only when the Lao decoder was clearly the more confident one; ties and anything unclear stay Thai (script
+    # Claude reads either way). The language detector cannot make this call: it hears Lao as Thai (AUC 0.50 on FLEURS).
+    return 'lo' if segments_score(lo_segments) - segments_score(th_segments) > margin else 'th'
+
+
+def tai_is_decisive(primary, lo_score, th_score, seconds):
+    # A long chunk where one reading clearly won needs no alternative. Short chunks (unknown length counts as long) never do.
+    if seconds is not None and seconds < LANG_TAI_DECISIVE_SECONDS:
+        return False
+    if primary == 'lo':
+        return lo_score - th_score >= LANG_TAI_LO_DECISIVE_DIFF
+    return th_score >= LANG_TAI_TH_DECISIVE_SCORE and lo_score - th_score < LANG_TAI_TH_DECISIVE_DIFF
+
+
 def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None, pick=None, beam=None):
+    """Returns (segments, language, language_probability). `segments` is a ChunkSegments when the routing decoded more than
+    one reading: `chunk_alternatives(segments)` gives [{language, text, score}] for the other Tai reading (th <-> lo), and the
+    probability is then capped at LANG_TAI_UNSURE_PROB so segment_flags marks LANG_UNSURE. Languages are any subset of vi, lo, th.
+    Tai chunks of a session with both lo and th are decoded twice (main model with th, Lao model with lo) and the primary is
+    the more confident one; see LANG_TAI_* for when the other is dropped."""
     # max_new_tokens stops repetition loops on noisy or misdetected chunks.
     options = {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': beam_for(model, beam), 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
-    if languages == ['lo'] and lao_model:
-        segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
-        return segments, 'lo', None
-    if languages == ['vi'] and vi_model:
-        segments, _ = vi_model.transcribe(waveform16, language='vi', **options)
-        return segments, 'vi', None
+
+    def decode(code):
+        if code == 'lo' and lao_model:
+            return lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)[0]
+        if code == 'vi' and vi_model:
+            return vi_model.transcribe(waveform16, language='vi', **options)[0]
+        return model.transcribe(waveform16, language=code, **options)[0]
+
     if len(languages) == 1:
-        segments, _ = model.transcribe(waveform16, language=languages[0], **options)
-        return segments, languages[0], None
-    # Detection reuses the first encoder pass. Whisper often hears Lao as Thai, so Thai
-    # counts toward Lao. A detected language other than vi/lo costs a second, forced pass.
-    segments, info = model.transcribe(waveform16, language=None, **options)
-    probabilities = dict(info.all_language_probs or [])
-    scores = {'vi': probabilities.get('vi', 0.0), 'lo': probabilities.get('lo', 0.0) + probabilities.get('th', 0.0)}
-    language = max(languages, key=lambda code: scores[code])
-    total = scores['vi'] + scores['lo']
-    share = scores[language] / total if total else None
+        return decode(languages[0]), languages[0], None
+    has_vi = 'vi' in languages
+    pair = 'lo' in languages and 'th' in languages and bool(lao_model)  # both Tai readings are decodable and comparable
+    # Without the Lao model a session that has Thai reads every Tai chunk as Thai; one that only has Lao forces lo on the main model.
+    single = None if pair else ('th' if 'th' in languages else 'lo')
     seconds = len(waveform16) / 16000 if waveform16 is not None else None
-    if (LANG_PICK_DEFAULT if pick is None else pick) and lao_model and should_pick_language(language, share, probabilities.get('vi'), seconds):
-        # Reuse the detection pass when it already decoded Vietnamese with the main model.
-        vi_segments = list(segments) if language == 'vi' and not vi_model and info.language == 'vi' else list((vi_model or model).transcribe(waveform16, language='vi', **options)[0])
-        lo_segments = list(lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)[0])
-        language = pick_by_score(vi_segments, lo_segments)
-        return (lo_segments if language == 'lo' else vi_segments), language, round(scores[language] / total, 3) if total else None
-    if language == 'lo' and lao_model:
-        # Lao goes to the Lao model (Lao script); the multilingual model would write Thai script.
-        segments, _ = lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)
-    elif language == 'vi' and vi_model:
-        # A Vietnamese-specialised model, when configured, transcribes what the detector called Vietnamese.
-        segments, _ = vi_model.transcribe(waveform16, language='vi', **options)
-    elif language != info.language:
-        segments, _ = model.transcribe(waveform16, language=language, **options)
-    return segments, language, round(scores[language] / total, 3) if total else None
+    detected, info, share = None, None, None
+    tai_detected = not has_vi
+    unsure = False
+    if has_vi:
+        # Detection reuses the first encoder pass. Whisper hears Lao as Thai, so every Tai probability counts toward Tai.
+        detected, info = model.transcribe(waveform16, language=None, **options)
+        probabilities = dict(info.all_language_probs or [])
+        scores = {'vi': probabilities.get('vi', 0.0), 'tai': probabilities.get('lo', 0.0) + probabilities.get('th', 0.0)}
+        tai_detected = scores['tai'] > scores['vi']
+        total = scores['vi'] + scores['tai']
+        share = scores['tai' if tai_detected else 'vi'] / total if total else None
+        can_pick = pair or single != 'lo' or bool(lao_model)
+        unsure = bool((LANG_PICK_DEFAULT if pick is None else pick) and can_pick and should_pick_language('lo' if tai_detected else 'vi', share, probabilities.get('vi'), seconds))
+    cache = {}
+
+    def segments_of(code):
+        if code not in cache:
+            # The detection pass already decoded the language it heard; reuse it instead of decoding twice (a dedicated model for that language is used as before).
+            reusable = detected is not None and info.language == code and not (code == 'vi' and vi_model) and not (code == 'lo' and lao_model)
+            cache[code] = list(detected if reusable else decode(code))
+        return cache[code]
+
+    need_vi = has_vi and (not tai_detected or unsure)
+    need_tai = tai_detected or unsure
+    if need_vi:
+        segments_of('vi')
+    if need_tai:
+        for code in (('th', 'lo') if pair else (single,)):
+            segments_of(code)
+    alternatives = []
+    if need_tai:
+        tai = pick_tai(cache['th'], cache['lo']) if pair else single
+        if need_vi:
+            chosen = tai if pick_by_score(cache['vi'], cache[tai], LANG_PICK_BIAS if tai == 'lo' else 0.0) == 'lo' else 'vi'
+        else:
+            chosen = tai
+        if pair and chosen == tai:
+            other = 'lo' if tai == 'th' else 'th'
+            if not tai_is_decisive(tai, segments_score(cache['lo']), segments_score(cache['th']), seconds):
+                alternatives = [{'language': other, 'text': collapse_repeats(segments_text(cache[other])), 'score': round(segments_score(cache[other]), 3)}]
+    else:
+        chosen = 'vi'
+    result = ChunkSegments(segments_of(chosen))
+    result.alternatives = alternatives
+    probability = None
+    if share is not None:
+        probability = round(scores['tai' if chosen != 'vi' else 'vi'] / total, 3)
+    if alternatives:
+        probability = LANG_TAI_UNSURE_PROB if probability is None else min(probability, LANG_TAI_UNSURE_PROB)
+    return result, chosen, probability
 
 
 MODELS = Path(__file__).resolve().parents[1] / '.local' / 'models'
@@ -554,7 +630,7 @@ def capture(args):
     threading.Thread(target=parent_watch, args=(args.parent,), daemon=True).start()
     languages = args.languages.split(',')
     if not languages or any(code not in ('vi', 'lo', 'th') for code in languages):
-        raise ValueError('Languages must be a list of vi, lo, th')
+        raise ValueError('Languages must be a subset of vi, lo, th')
     # Mixed sessions on CPU use longer chunks: detection is more reliable and per-chunk overhead stays below real time.
     # On the GPU ASR takes ~0.3 s per chunk, so chunks end at the first pause after 3 s and text arrives sooner (30/10).
     min_chunk_seconds = 6 if len(languages) > 1 else 3
@@ -865,6 +941,9 @@ def capture(args):
                     converted = resampler.resample(frame) + resampler.resample(None)
                     waveform16 = np.concatenate([f.to_ndarray().reshape(-1) for f in converted]).astype(np.float32)
                     segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model, vi_model)
+                    # The other Lao/Thai reading when the routing was not sure: sent once per chunk, with its first text, for
+                    # Claude to translate by meaning (owner 31/10: Lao heard as Thai passes if the meaning holds).
+                    others = chunk_alternatives(segments)
                     for segment in segments:
                         if stop.is_set():
                             break
@@ -877,7 +956,8 @@ def capture(args):
                                     # Mic on in the meeting / muted ("nói riêng") / unknown, by what the recorder saw (owner Q7).
                                     begin_wall = parse_wall(place['wall'])
                                     marks += '; ' + label_mic_chunk(timeline.mic_states(), begin_wall, begin_wall + (end - begin))
-                            emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place})
+                            emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place, **({'alternatives': others} if others else {})})
+                            others = None
                 except Exception as exc:
                     # One bad chunk must not end the meeting: say which stretch has no text and go on with the next.
                     emit({'type': 'gap', 'start': begin, 'end': end, 'reason': 'ASR_ERROR', 'channel': channel, 'message': f'{type(exc).__name__}: {exc}'[:200], **place})
@@ -980,7 +1060,7 @@ def build_parser():
     parser.add_argument('--model')
     parser.add_argument('--parent', type=int)
     parser.add_argument('--max-seconds', type=int, default=7200)
-    parser.add_argument('--languages')  # default vi,lo; vi,lo,th for --recheck
+    parser.add_argument('--languages')  # default vi,lo,th
     parser.add_argument('--replay')
     parser.add_argument('--speed', type=float, default=1.0)
     parser.add_argument('--asr-device', default='auto', choices=['auto', 'cuda', 'cpu'])
@@ -1011,7 +1091,7 @@ if __name__ == '__main__':
         elif args.recheck:
             recheck(args)
         elif args.follow or args.capture:
-            args.languages = args.languages or 'vi,lo'
+            args.languages = args.languages or 'vi,lo,th'
             if args.capture and not args.follow and not 1 <= args.max_seconds <= 7200:
                 raise ValueError('Capture duration must be between 1 and 7200 seconds')
             capture(args)

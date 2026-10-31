@@ -142,7 +142,7 @@ test('a new host takes over a session whose recorder is still alive (nothing mar
     delete process.env.PMA_WARM;
     const next = new MeetingRuntime(root, dir, false); next.restartDelayMs = 30; next.mixer = () => {};
     try {
-      assert.equal(next.session.id, id); assert.equal(next.session.ended, null); assert.equal(next.history(id).session.ended, null); assert.deepEqual(next.session.languages, ['vi', 'lo']);
+      assert.equal(next.session.id, id); assert.equal(next.session.ended, null); assert.equal(next.history(id).session.ended, null); assert.deepEqual(next.session.languages, ['vi', 'lo', 'th']);
       assert.equal(next.recorder.attached, true); assert.equal(next.recorder.pid, recorderPid); assert.equal(next.recorder.state, 'RECORDING'); assert.equal(next.registry().recorderPid, recorderPid);
       await until(() => spawns(audio, 'worker-log.jsonl').length === 1, 'worker started by the new host');
       const argv = spawns(audio, 'worker-log.jsonl')[0].argv; assert.equal(after(argv, '--follow'), audio); assert.equal(Date.parse(after(argv, '--from-wall')), Date.parse(wall) + 4000);
@@ -217,7 +217,7 @@ test('recheck: the worker is asked for the stretch around a source (or a clock r
     const result = await r.recheck(id, { sourceId: heard });
     const args = JSON.parse(readFileSync(join(audio, 'recheck-args.json'), 'utf8'));
     assert.equal(after(args, '--recheck'), audio); assert.equal(after(args, '--from'), new Date(Date.parse(wall) - 1000).toISOString()); assert.equal(after(args, '--to'), new Date(Date.parse(wall) + 4000).toISOString());
-    assert.equal(after(args, '--channel'), 'speaker'); assert.equal(after(args, '--beam'), '8'); assert.equal(after(args, '--languages'), 'vi,lo');
+    assert.equal(after(args, '--channel'), 'speaker'); assert.equal(after(args, '--beam'), '8'); assert.equal(after(args, '--languages'), 'vi,lo,th');
     assert.equal(result.sourceId, heard); assert.equal(result.text, 'xin chào đã nghe lại'); assert.equal(result.language, 'lo'); assert.equal(result.alternatives[0].language, 'th'); assert.equal(result.silent, false);
     assert.equal(r.sources(id).find(row => row.id === heard).boundary, 'LANG_UNSURE; RECHECKED'); await r.recheck(id, { sourceId: heard, beam: 4 });
     assert.equal(r.sources(id).find(row => row.id === heard).boundary, 'LANG_UNSURE; RECHECKED', 'tagged once');

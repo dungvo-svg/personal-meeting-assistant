@@ -5,7 +5,7 @@ import { call } from './client.js';
 import { foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
-  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
+  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
                                    --link: Zoom (zoom.us/j/...) hoặc Google Meet (meet.google.com/abc-defg-hij)
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
@@ -20,7 +20,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma listen                       bật nhận dạng chữ (ASR), chờ tới LISTENING; bộ nghe đuổi kịp từ giây đầu của bản ghi. Không giới hạn thời lượng.
                                    Bản ghi âm (WAV) là hộp đen của cả buổi: ghi từ lúc có nguồn loa tới pma stop, giữ trên máy này (không gửi đi) cho tới
                                    khi bạn tự xoá bằng pma audio purge. Micro "Tôi" luôn ghi (tiếng loa lọt vào micro bị bỏ); không muốn thì pma select --no-mic
-  pma follow [--batch 15] [--max 40] [--after N] [--as TÊN] [--no-notes]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor
+  pma follow [--batch 15] [--max 40] [--after N] [--as TÊN] [--no-notes]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor; tự thoát ở phút 29 và in BẬT LẠI; phiên --as khác chinh gửi lô ngay khi có dòng lo/th
                                    --as: tên người theo dõi (mặc định chinh; hai phiên cùng theo dõi thì mỗi phiên một tên, vd. dich), mỗi tên giữ con trỏ đọc riêng
                                    --no-notes: bỏ nhắc ghi chú cuốn chiếu (phiên dịch không ghi chú); cảnh báo trễ và dòng micro vẫn giữ
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
@@ -37,7 +37,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma tasks --file tasks.json [--session ID]       [{"task","owner?","due?","sourceIds":[..]}]
   pma raw [--session ID] | history | context
   pma glossary [list | add <Tên đúng> --variants "nghe sai 1,nghe sai 2" [--force] | remove <Tên đúng>]
-  pma replay <file> [--speed 1] [--title T] [--agenda TEXT] [--languages vi,lo]
+  pma replay <file> [--speed 1] [--title T] [--agenda TEXT] [--languages vi,lo,th]
   pma shutdown`;
 
 function options(argv: string[]) {
@@ -67,7 +67,9 @@ function line(item: any) {
   if (isHallucination(item)) return `#${item.id} [bỏ: nghi câu ảo]`;
   const flags = Object.entries(FLAG_LABELS).filter(([code]) => item.boundary?.includes(code)).map(([, label]) => label);
   const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : '';
-  return `#${item.id} ${clock(item.wall || item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}`;
+  // The other Lao/Thai reading of an unsure chunk, for the translation session to read both (owner 31/10).
+  const others = (item.alternatives ?? []).map((a: any) => `\n  ↳ ${a.language}: ${a.text}`).join('');
+  return `#${item.id} ${clock(item.wall || item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}${others}`;
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
 const lines = (items: any[]) => foldRuns(items).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
@@ -85,6 +87,10 @@ async function follow(flags: Record<string, string>) {
   // Resume where this follower stopped; a new one starts at the main cursor (what the main follower has read).
   let after = flags.after ? Number(flags.after) : status.followers?.[name]?.cursor ?? status.agentCursor;
   let batch: any[] = []; let batchStarted = 0; let state = status.captureState; let failures = 0;
+  // Monitor ends a command after 30 minutes; leaving at 29 on our own terms tells Claude to start the same command again.
+  const followStarted = Date.now(); const followMs = Number(flags.minutes || 29) * 60000;
+  // A side follower (the raw translation session) hands a batch over as soon as it holds a Lao/Thai line.
+  const taiNow = name !== 'chinh' && flags['tai-now'] !== 'false';
   console.log(`FOLLOWING ${name} "${status.session.title}" từ #${after} · lô ${batchMs / 1000}s · trạng thái ${state}`);
   const flush = () => {
     if (!batch.length) return;
@@ -123,8 +129,13 @@ async function follow(flags: Record<string, string>) {
     }
     if (reply.items.length) { if (!batch.length) batchStarted = Date.now(); batch.push(...reply.items); after = reply.nextCursor; }
     if (reply.ended) { flush(); console.log('KẾT THÚC: phiên đã đóng'); return; }
-    if (batch.length && (batch.length >= maxLines || Date.now() - batchStarted >= batchMs)) { flush(); await checkHealth(); }
+    if (batch.length && (batch.length >= maxLines || Date.now() - batchStarted >= batchMs || (taiNow && batch.some(item => item.language === 'lo' || item.language === 'th')))) { flush(); await checkHealth(); }
     else if (Date.now() - lastCheck > 30000) await checkHealth();
+    if (Date.now() - followStarted > followMs) {
+      flush();
+      console.log(`BẬT LẠI: theo dõi đã chạy ${Math.round(followMs / 60000)} phút (Monitor giới hạn 30 phút). Bật lại ngay Monitor với đúng lệnh: pma follow${flags.batch ? ' --batch ' + flags.batch : ''}${name !== 'chinh' ? ' --as ' + name : ''}${flags['no-notes'] === 'true' ? ' --no-notes' : ''}`);
+      return;
+    }
   }
 }
 
