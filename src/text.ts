@@ -6,6 +6,16 @@ type Row = { id: number; text: string; boundary?: string };
 
 export const isHallucination = (row: Row) => !!row.boundary?.includes('LIKELY_HALLUCINATION');
 
+// The owner's own channel, with what the microphone was doing (flags set by the worker from the recorder's timeline, plan
+// 0.11 Q-4). Null for text from the speaker channel; without a flag it stays the plain "Tôi (micro)".
+export function micLabel(boundary: string | undefined, me?: string) {
+  const flags = boundary ?? '';
+  const mic = flags.includes('CHANNEL_MIC');
+  const state = flags.includes('MIC_STATE_ON') ? 'mic bật' : flags.includes('MIC_STATE_OFF') ? 'mic tắt — nói riêng' : flags.includes('MIC_STATE_UNKNOWN') ? '?' : null;
+  if (!mic && !state) return null;
+  return `Tôi${me ? ' — ' + me : ''} (${state ?? 'micro'})`;
+}
+
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // "Nam Phủ" heard by ASR becomes "Namfon (nghe: Nam Phủ)", so a wrong guess stays visible.
