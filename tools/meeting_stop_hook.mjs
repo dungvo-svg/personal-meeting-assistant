@@ -51,7 +51,7 @@ try {
 
 const session = state?.session;
 if (!session || session.ended) allow();
-const live = ['LOADING_ASR', 'WAITING_FOR_SOURCE', 'LISTENING'].includes(state.captureState);
+const live = ['LOADING_ASR', 'WAITING_FOR_SOURCE', 'LISTENING', 'ASR_RESTARTING'].includes(state.captureState);
 // This follower's own cursor and heartbeat. Without an entry (a runtime older than `followers`, or the main
 // follower reading over MCP) the main values apply; a named follower nobody has started is simply not followed.
 const own = state.followers?.[name] ?? (name === 'chinh' || !state.followers
