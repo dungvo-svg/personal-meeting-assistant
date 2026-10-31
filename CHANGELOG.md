@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1 —31/10/2026
+
+- Owner: "các đoạn là phần dịch theo dõi, còn wav phải ghi được đầy đủ". **WAV ghi mặc định** mỗi lần nghe (tắt bằng `--no-save-audio` hoặc `PMA_SAVE_AUDIO=0`), tự xoá sau 7 ngày (`--keep-days`). Worker ghi mọi khối âm thô trước khi lọc im lặng/nhận dạng, nên WAV đủ cả phần ASR bỏ qua.
+- **File ghép `<lượt nghe>-mix.wav`** (16 kHz mono) do `tools/mix_audio.py` làm sau khi tạm dừng/kết thúc, chạy tiến trình riêng, không làm chậm `pause`/`stop`: loa + micro, micro chỉ cộng vào lúc người dùng nói (tránh tiếng loa lọt vào bị đôi). Dùng file này cho `pma replay`. `pma audio list` chỉ file ghép.
+- Thử thật 10 s: loa 44,1 kHz 10,68 s, micro 10,59 s, file ghép 16 kHz 10,68 s. Test: 49 Node, 49 Python.
+
 ## 0.10.0 —30/10/2026
 
 Sửa theo buổi thử thật 30/10 trên Google Meet (`docs/PLAN_0_10.md`). Opus chốt kiến trúc, 5 agent Sonnet làm song song (A–E), Opus gộp.
