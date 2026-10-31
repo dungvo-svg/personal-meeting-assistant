@@ -578,6 +578,8 @@ export class MeetingRuntime extends EventEmitter {
       this.captureInfo = { ...event, ...Object.fromEntries(Object.entries(loaded).filter(([, value]) => value !== undefined)), captureId: this.captureId, listeningSince: follow ? this.captureInfo.listeningSince ?? now : now };
     }
     if (event.type === 'status') this.captureInfo = { ...this.captureInfo, ...event };
+    // A follow worker answers `pause` with followPaused: the pause is done, the models stay loaded.
+    if (event.type === 'status' && event.followPaused === true && this.captureState === 'PAUSING') this.captureState = this.modelReady ? 'WARM_READY' : 'WARMING';
     if (event.type === 'gap') {
       const seconds = Math.max(0, Math.round(event.end - event.start)); const reason = String(event.reason || 'GAP');
       const text = reason.startsWith('ASR_ERROR')

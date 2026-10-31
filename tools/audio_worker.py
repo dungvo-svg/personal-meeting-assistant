@@ -599,6 +599,11 @@ def capture(args):
     # Model load only: in warm mode the wait for the source comes after this and is reported on its own (audit 30/10, A4).
     load_seconds = round(time.monotonic() - started, 3)
     mic_watch = [None]
+    if args.follow:
+        # The host starts a follow worker paused and needs to know the models are in memory before `resume` (pma start).
+        emit({'type': 'warm', 'asr': asr, 'modelLoadSeconds': load_seconds})
+    # A restarted follow worker reads the files from the start again (fast, no ASR) and transcribes only after this.
+    skip_until = parse_wall(args.from_wall) if getattr(args, 'from_wall', None) else None
 
     def run_listening(listening, waited_seconds):
         pause.clear()
@@ -851,6 +856,8 @@ def capture(args):
                 inference_started = time.monotonic()
                 # Where the chunk begins in real time and in the recorder's files (followed sources only).
                 place = {'wall': where[0], 'seg': where[1]} if where and where[0] else {}
+                if skip_until and place and parse_wall(place['wall']) + (end - begin) <= skip_until:
+                    continue  # transcribed by the worker that crashed, or inside the gap the host already recorded
                 try:
                     frame = av.AudioFrame.from_ndarray(waveform.reshape(1, -1), format='flt', layout='mono')
                     frame.sample_rate = chunk_rate
@@ -987,6 +994,7 @@ def build_parser():
     parser.add_argument('--save-audio-dir')
     parser.add_argument('--follow', help='session audio folder (seg-NNNN-<channel>.wav + timeline.jsonl) to transcribe from sample 0 and tail')
     parser.add_argument('--recheck', help='session audio folder to cut a window from and transcribe again')
+    parser.add_argument('--from-wall', help='with --follow: transcribe only audio after this ISO wall time (a restarted worker)')
     parser.add_argument('--from', dest='from_')
     parser.add_argument('--to')
     parser.add_argument('--channel', default='speaker')

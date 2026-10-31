@@ -704,9 +704,9 @@ class FollowTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.addCleanup(lambda: (self.stdin.close(), time.sleep(0.1)))  # let the command thread finish before the patches are undone
 
-    def start(self, languages='vi'):
+    def start(self, languages='vi', extra=()):
         import threading
-        args = self.worker.build_parser().parse_args(['--follow', str(self.dir), '--languages', languages, '--asr-device', 'cpu'])
+        args = self.worker.build_parser().parse_args(['--follow', str(self.dir), '--languages', languages, '--asr-device', 'cpu', *extra])
 
         def run():
             try:
@@ -830,6 +830,15 @@ class FollowTests(unittest.TestCase):
         self.assertGreater(mic[0]['start'], 7.0)
         self.assertAlmostEqual(self.wall(mic[0]), mic[0]['start'], delta=0.05)
         self.assertEqual(len(self.sources('speaker')), 1)
+
+    def test_a_restarted_worker_transcribes_only_after_from_wall_and_says_warm_first(self):
+        at = self.session.segment(1, 'speaker', 0.0, [(4, 0.2), (1, 0), (4, 0.2), (1, 0)])
+        self.session.end(at)
+        self.start(extra=('--from-wall', self.session.iso(5.0)))
+        self.finish()
+        self.assertEqual([s['text'] for s in self.sources()], ['đoạn 1'])  # the first chunk (0–5 s) is not transcribed again
+        self.assertAlmostEqual(self.wall(self.sources()[0]), 5.0, delta=0.5)  # chunks end at the silence just before 5 s
+        self.assertEqual(self.events[0]['type'], 'warm')
 
     def test_mic_chunks_carry_whether_the_mic_was_on_in_the_meeting_or_muted(self):
         self.session.segment(1, 'speaker', 0.0, [(20, 0)])
