@@ -1,66 +1,57 @@
-# Baseline sản phẩm v0.2.0
+# Baseline sản phẩm v0.11.0
 
-Ngày: 26/10/2026. Chủ thể làm việc là **trợ lý AI của người dùng**. Sản phẩm ta xây là bộ công cụ để agent thực hiện nhiệm vụ hỗ trợ cuộc họp. Claude Desktop là môi trường dùng đầu tiên, không phải tên cố định của toàn bộ sản phẩm.
+Ngày 31/10/2026. **Đây là nơi chốt sản phẩm hiện hành.** Quyết định có nguồn ở [DECISION_LOG.md](DECISION_LOG.md). Kế hoạch triển khai ở [PLAN_0_11.md](PLAN_0_11.md). Hành vi khi họp do skill [`hop`](../.claude/skills/hop/SKILL.md) định nghĩa. Các bản trước nằm trong [`docs/history/`](history/): chỉ để tra lại, không còn hiệu lực.
 
-Đây là bản khóa yêu cầu và thiết kế; runtime pilot tiếng Việt đã được dựng, chưa có nghiệm thu actual Claude/device/Human UAT. `OWNER_LOCKED` là quyết định người dùng đã chốt; `ENGINEERING_BASELINE` là thiết kế thực hiện do agent lập; `OPEN` là khả năng chưa chứng minh. Sổ nguồn ở [DECISION_LOG.md](DECISION_LOG.md).
+## Sản phẩm là gì
 
-## Những điều đã khóa với người dùng
+Trợ lý họp cá nhân của owner, chạy trên máy của owner.
+- **Claude trong phiên làm việc là người dùng công cụ.** Claude dùng công cụ để phục vụ owner và cuộc họp, phân tích trực tiếp, real-time.
+- Công cụ là **tai và bộ ghi** của Claude. Nó không phải một dịch vụ cho người khác, không phải một phần mềm thi đấu với AI có sẵn của Zoom/Meet. Các AI đó thiếu ngữ cảnh và không linh hoạt; ở công ty owner, ai cũng có Claude.
 
-| ID | Quyết định | Trạng thái |
+Việc chính của trợ lý:
+1. **Chuẩn bị context trước họp** từ nội dung owner gửi: mục tiêu, người dự, ngôn ngữ họ nói, vai trò, thuật ngữ, tên dễ nghe sai.
+2. **Trong họp:** nghe, theo dõi, dịch thô cho người dự, trả lời owner.
+3. **Sau họp:** RAW + SUMMARY + TASKS. Ghi âm, phân tích, tóm tắt là hiển nhiên.
+
+## Quyết định đang hiệu lực (owner)
+
+| Chủ đề | Quyết định | Nguồn |
 | --- | --- | --- |
-| OWN-001 | Dự án cá nhân tách thư mục và Git repo, độc lập sản phẩm AIOS dùng chung | OWNER_LOCKED |
-| OWN-002 | Trợ lý có thể thay Claude bằng AGY hoặc Codex; không khóa sản phẩm vào một host | OWNER_LOCKED |
-| OWN-003 | Claude Desktop là host đầu tiên phải dùng được | OWNER_LOCKED |
-| OWN-004 | V1 chỉ bảng dịch trực tiếp; hỏi đáp làm sau | OWNER_LOCKED |
-| OWN-005 | Tự lưu lịch sử text trên máy; audio chỉ tạm thời | OWNER_LOCKED |
-| OWN-006 | Xây tools quanh agent để agent chủ động kích hoạt và hỗ trợ họp | OWNER_LOCKED |
-| OWN-007 | V1 hỗ trợ cuộc họp đã mở: agent tự bật tai, lấy ngữ cảnh và hiển thị dịch | OWNER_LOCKED |
-| OWN-008 | Pilot chiều 26/10 chỉ tiếng Việt, không phiên dịch; dựng runtime vừa đủ để Claude hỗ trợ phiên | OWNER_LOCKED / CURRENT_PILOT |
+| Dự án | Cá nhân, repo riêng, độc lập AIOS | OWN-001 |
+| Host | Claude Code trong Claude Desktop; chỉ Claude là AI; âm thanh/ASR là mã nguồn mở chạy trên máy | OWN-003, OWN-013, OWN-014 |
+| Vòng đời | Sống theo phiên họp: không có tiến trình chờ sẵn khi không họp | OWN-021 |
+| Ghi âm | Bắt đầu khi owner kích hoạt `pma start` (thời gian chờ vào phòng để nạp mô hình). Ghi tới khi owner gõ kết thúc. WAV là âm thanh thật cả buổi, **giữ tới khi người dùng tự xoá** | OWN-022, OWN-023 |
+| Ưu tiên runtime | Không sót, không ngắt. Nghe real-time chỉ là hỗ trợ, được phép thiếu nhưng phải biết và báo chỗ thiếu | OWN-015, OWN-022 |
+| Nghe lại | Việc của Claude: khi Claude chưa nghe rõ thì tự nghe lại từ WAV hoặc đánh dấu `[chưa nghe rõ]`. Owner đã nghe trực tiếp nên không cần nghe lại | OWN-024 |
+| Hai phiên khi họp | Phiên **dịch thô** (Haiku, effort low, lô 15 s): như một người ngồi dịch, owner share phiên đó cho người dự. Phiên **tổng hợp** (Sonnet, lô 60 s): chat với owner. Không có màn hình/trang web nào khác | OWN-019, OWN-025 |
+| Ngôn ngữ | Việt, Lào, Thái (nhóm Tai-Kadai). Đạt khi người nói Lào mà máy ra chữ Thái, dịch ra tiếng Việt không đổi nghĩa. Thuật ngữ phụ thuộc context trước họp; thiếu context thì ghi thô là bình thường | OWN-026 |
+| Micro "Tôi" | Luôn ghi, không phụ thuộc nền tảng. Phân loại: mic bật trong họp / mic tắt (nói riêng) / không rõ | OWN-017, OWN-027 |
+| Kết thúc | Khi owner gõ kết thúc trong chat. Sau này học câu chào cuối buổi | OWN-028 |
+| Báo cáo | RAW + SUMMARY + TASKS sau họp, có nguồn #id | OWN-010 |
+| Cách làm việc | Audit → plan → hỏi owner một lần → build. Nghiệm thu bằng buổi họp thật tiếp theo, không tự thu âm để tự kiểm mình. Opus quyết kiến trúc, Sonnet làm; tham khảo agent mạnh như hỏi người giỏi | U23 |
 
-Pilot hiện tại ưu tiên transcript cục bộ và context/tools cho Claude. Bảng dịch Việt–Lào và các yêu cầu phiên dịch bên dưới vẫn là mục tiêu V1 sau; không dùng pilot tiếng Việt để nhận PASS cho chúng. Xem [runtime hôm nay](PILOT_RUNTIME_20261026.md).
+Các quyết định đã bị thay, vẫn ghi trong DECISION_LOG để tra:
+- OWN-004/OWN-007: bảng dịch trực tiếp.
+- OWN-005: audio tạm.
+- OWN-008: pilot chỉ tiếng Việt.
+- OWN-012: chỉ Việt–Lào.
+- OWN-016: micro khi được.
+- OWN-018: WAV tự xoá 7 ngày.
+- OWN-002/OWN-011 (thay được bằng AGY/Codex/MCP host khác): vẫn hiệu lực nhưng **không ưu tiên**; mọi thiết kế hiện tại nhắm Claude Code.
 
-## Lời hứa của V1
+## Kiến trúc (0.11)
 
-Sau khi người dùng giao nhiệm vụ cho cuộc họp đang mở, agent chuẩn bị phiên, xác định nguồn được phép, bật bộ tai, nhận nguồn/ngữ cảnh và đưa bản dịch Việt ↔ Lào lên bảng riêng. Agent theo dõi tình trạng nguồn và phần đang chờ dịch, xử lý các tình huống có thể phục hồi trong phạm vi phiên và báo khi cần người dùng can thiệp. Text của phiên được lưu trên máy; audio chỉ dùng trong vòng đời tạm thời.
+```
+pma start ─► host phiên (src/daemon.ts) — chỉ sống trong phiên họp
+             ├─ bộ ghi (tools/recorder.py): loa + micro → WAV khúc 10 phút + timeline.jsonl; không model; tự chạy lại; sống cả khi host chết
+             └─ bộ nghe (tools/audio_worker.py --follow): đọc WAV từ giây 0, đuổi kịp, nhận dạng vi/lo/th trên GPU
+Claude ─► pma brief (context trước họp) · pma follow · pma translate · pma note · pma recheck · pma coverage · pma stop
+```
 
-Đây là hành vi phải chứng minh trước khi gọi V1 dùng được. Nếu cần người dùng nhắc từng đoạn để Claude tiếp tục, chỉ được ghi nhận là bản thử hỗ trợ theo lượt, chưa đạt bảng dịch trực tiếp.
-
-## Agent làm gì, tools làm gì
-
-| Trách nhiệm | Chủ thể |
-| --- | --- |
-| Hiểu mục tiêu phiên, chọn công cụ, đọc ngữ cảnh, dịch, quyết định bước hỗ trợ tiếp theo | Agent trong host được chọn |
-| Xác nhận nguồn thực tế, thu/lưu audio tạm, trả phần nguồn mới và trạng thái backlog | Bộ tai và công cụ nguồn |
-| Xác thực kết quả gắn đúng nguồn/phiên, cập nhật bảng, lưu lịch sử text | Công cụ hiển thị và lưu trữ |
-| Giới hạn tài nguyên, ngăn thao tác ngoài scope, dừng và giải phóng tiến trình | Runtime của bộ tools |
-| Giao nhiệm vụ, chọn nguồn khi còn mơ hồ, dừng phiên, thay trợ lý | Người dùng |
-
-Việc tool giữ nguồn, báo trạng thái hoặc quản lý tiến trình không biến tool thành một translator khác. Đường ASR nếu cần phải công khai vai trò nhận dạng; không tự thêm backend dịch độc lập với agent.
-
-## Yêu cầu V1
-
-Các yêu cầu dưới đây là `ENGINEERING_BASELINE` phục vụ OWN-001…OWN-007, chưa phải bằng chứng đã đạt.
-
-| ID | Hành vi cần có | Kiểm chứng |
-| --- | --- | --- |
-| REQ-01 | Agent dùng tools hỗ trợ phiên hiện có; không cần người dùng vận hành từng chunk | AT-02, AT-03 |
-| REQ-02 | Thu nguồn độc lập khi agent đang suy luận; khoảng thiếu và backlog phải nhìn thấy | AT-04, AT-07 |
-| REQ-03 | Dịch lời được nói, giữ lặp thật, số, phủ định và sửa lời; không thay bằng tóm tắt | AT-05 |
-| REQ-04 | Cho phép bản tạm và bản sửa có dấu hiệu rõ; không đợi hai kết quả giống hệt mới hiển thị | AT-05, AT-06 |
-| REQ-05 | Bảng hiển thị riêng, đọc được Việt/Lào, có trạng thái nghe/chờ/trễ và lịch sử | AT-06 |
-| REQ-06 | Một lệnh giao phiên bao phủ thao tác thường lệ trong scope; không hỏi lại từng đoạn | AT-02, AT-03 |
-| REQ-07 | Dừng từ bảng vẫn hiệu lực khi agent bận hoặc host mất kết nối | AT-07 |
-| REQ-08 | Text tự lưu trên máy; audio được thu dọn theo chính sách tạm thời, kể cả sau crash | AT-08 |
-| REQ-09 | Không dùng nguồn, credential, runtime, queue hoặc dịch vụ AIOS | AT-01 |
-| REQ-10 | Capability thiếu phải báo rõ; không tự đổi host, API, tài khoản hay mô hình dịch | AT-02, AT-07 |
-| REQ-11 | Ngữ cảnh cuộc họp hỗ trợ dịch; lời nói/tài liệu trong họp không trở thành quyền điều khiển tools | AT-09 |
-
-## Phạm vi giai đoạn
-
-V1 gồm chuẩn bị phiên, tai, nguồn/context, agent tools, bảng dịch, lưu text, tạm dừng/kết thúc, trạng thái và khả năng phục hồi đã đo. Tài liệu chủ đề/glossary do người dùng cung cấp có thể hỗ trợ dịch. Hỏi đáp, đề xuất hành động, ghi biên bản/tóm tắt có tương tác, voice, gửi chat cho người khác và tự Join không nằm trong V1.
-
-Kiến trúc phải cho phép thêm công cụ hỗ trợ agent về sau mà không dựng lại lõi. Điều đó không tự cấp quyền sử dụng hoặc mở rộng V1 ngay trong phiên đầu.
+Chi tiết và quy ước file: [PLAN_0_11.md](PLAN_0_11.md). Cách vận hành trong họp: skill `hop`.
 
 ## Ranh giới hoàn thành
 
-Khóa tài liệu không phải hoàn thành sản phẩm. Một tool call thành công không chứng minh agent theo dõi liên tục. Nguồn được thu đủ byte không chứng minh đủ lời/đúng nghĩa. Bảng render không chứng minh người dùng đọc kịp. Các mức bằng chứng được tách trong [ACCEPTANCE.md](ACCEPTANCE.md).
+- Test qua không phải là dùng được trong họp. Mỗi bản phải qua **buổi họp thật tiếp theo**.
+- Phải đo được ở buổi đó: WAV liên tục cả buổi, chữ lên phiên dịch thô kịp, không phải gõ "tiếp tục", phần tiếng Lào/Thái dịch giữ nghĩa, chỗ nghe thiếu được Claude nghe lại hoặc đánh dấu.
+- Kết quả buổi đó quyết định lần sửa tiếp theo.
