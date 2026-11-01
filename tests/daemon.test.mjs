@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
@@ -134,6 +135,65 @@ test('pma translate saves a Claude translation for a Lao segment and refuses Vie
   assert.match(await pma('translate', '--source', String(lo), '--text', 'Xin chào mọi người.'), /"saved":1/);
   const bad = await run(process.execPath, [resolve('dist/cli.js'), 'translate', '--source', String(vi), '--text', 'x'], { env }).catch(e => e);
   assert.match(bad.stdout, /TRANSLATE_ONLY_LAO/);
-  assert.equal((await fetch(daemonInfo().url + '/live')).status, 403);
   await call('finish');
+});
+
+test('no web panel: every path other than /rpc is a 404, with or without a cookie', async () => {
+  const { url } = daemonInfo();
+  for (const path of ['/live', '/', '/api/state', '/api/events', '/api/manual', '/index.html']) {
+    const reply = await fetch(url + path); assert.equal(reply.status, 404, path); assert.equal((await reply.json()).error, 'NOT_FOUND');
+    assert.equal(reply.headers.get('set-cookie'), null, path);
+  }
+  const post = await fetch(url + '/api/manual', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: url, Cookie: 'pma=x' }, body: JSON.stringify({ text: 'x' }) });
+  assert.equal(post.status, 404);
+});
+
+test('manual text: `pma say` ingests operator_text, RAW shows "nhập tay", bad input is refused', async () => {
+  await assert.rejects(call('manual', { text: 'chưa có phiên' }), /INVALID_INPUT|SESSION/);
+  await call('prepare', { title: 'Phiên nhập tay', fixture: true });
+  const said = await json('say', '--text', '  Anh Nam báo kho số 3 hết hàng.  ');
+  assert.ok(said.id > 0);
+  const via = await call('manual', { text: 'Chị Lan xác nhận lại sau.' });
+  assert.equal(via.id, said.id + 1);
+  const { items } = await call('read', {});
+  assert.deepEqual(items.map(i => [i.origin, i.text]), [['operator_text', 'Anh Nam báo kho số 3 hết hàng.'], ['operator_text', 'Chị Lan xác nhận lại sau.']]);
+  assert.ok(items.every(i => !i.language));
+  for (const text of ['', '   ', 'x'.repeat(8001), 5, undefined]) await assert.rejects(call('manual', { text }), /INVALID_INPUT/, JSON.stringify(text)?.slice(0, 30));
+  await assert.rejects(call('manual', { sessionId: '00000000-0000-4000-8000-000000000000', text: 'phiên lạ' }), /SESSION|INVALID/);
+  assert.equal((await call('manual', { text: 'x'.repeat(8000) })).id > via.id, true);
+  assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'say'], { env }).catch(e => e)).stdout, /INVALID_INPUT/);
+  const finished = await call('finish');
+  const raw = readFileSync(finished.raw.path, 'utf8');
+  assert.match(raw, /nhập tay/); assert.match(raw, /Anh Nam báo kho số 3 hết hàng\./);
+  await assert.rejects(call('manual', { text: 'sau khi đóng' }), /SESSION_NOT_ACTIVE|SESSION|INVALID/);
+});
+
+test('Stop hook: no daemon.json means allow; a live-looking session with nobody following means block', async () => {
+  const run1 = (dataDir, lines) => new Promise((res, rej) => {
+    const transcript = join(directory, 'transcript-nodaemon.jsonl'); writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n'));
+    const child = spawn(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '', PMA_DATA_DIR: dataDir } });
+    let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript }));
+  });
+  const follower = [{ type: 'tool_use', name: 'Bash', input: { command: './pma follow --batch 60' } }];
+  const empty = mkdtempSync(join(tmpdir(), 'pma-hook-empty-'));
+  try {
+    assert.equal(await run1(empty, follower), '');
+    // The retired panel.json is no longer a fallback: a lone panel.json does not make the hook query anything.
+    writeFileSync(join(empty, 'panel.json'), JSON.stringify({ url: daemonInfo().url }));
+    assert.equal(await run1(empty, follower), '');
+  } finally { rmSync(empty, { recursive: true, force: true }); }
+  // A fake host that looks live (LISTENING, 3 unread) and is not followed: block. A fresh heartbeat of the main follower: allow.
+  let status = { session: { title: 'Phiên giả đang họp', ended: null }, captureState: 'LISTENING', unread: 3, agentCursor: 0, lastFollowAt: null, followers: {} };
+  const fake = createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, result: status })); }); });
+  await new Promise(r => fake.listen(0, '127.0.0.1', r));
+  const fakeDir = mkdtempSync(join(tmpdir(), 'pma-hook-fake-'));
+  try {
+    writeFileSync(join(fakeDir, 'daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:' + fake.address().port, token: 'fake' }));
+    const reason = JSON.parse(await run1(fakeDir, follower)).reason;
+    assert.match(reason, /Phiên giả đang họp/); assert.match(reason, /đang diễn ra \(LISTENING, 3 đoạn chưa đọc\) mà không có ai theo dõi/);
+    status = { ...status, lastFollowAt: new Date().toISOString() };
+    assert.equal(await run1(fakeDir, follower), '');
+    status = { ...status, lastFollowAt: null, session: { ...status.session, ended: new Date().toISOString() } };
+    assert.equal(await run1(fakeDir, follower), '');
+  } finally { fake.close(); rmSync(fakeDir, { recursive: true, force: true }); }
 });
