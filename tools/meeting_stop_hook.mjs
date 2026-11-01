@@ -36,17 +36,9 @@ const read = name => { try { return JSON.parse(readFileSync(join(dataDir, name),
 let state;
 try {
   const daemon = read('daemon.json');
-  if (daemon) {
-    const reply = await http(daemon.url + '/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` }, body: JSON.stringify({ method: 'status' }) });
-    state = JSON.parse(reply.text).result;
-  } else {
-    // Pre-0.5 MCP server (panel only): same state through the panel API.
-    const { url } = read('panel.json');
-    const home = await http(url + '/');
-    const cookie = String(home.headers['set-cookie'] ?? '').split(';')[0];
-    state = JSON.parse((await http(url + '/api/state', { headers: { Cookie: cookie } })).text);
-    state.unread = state.backlog?.count;
-  }
+  if (!daemon) allow();   // no host running: nothing to follow
+  const reply = await http(daemon.url + '/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${daemon.token}` }, body: JSON.stringify({ method: 'status' }) });
+  state = JSON.parse(reply.text).result;
 } catch { allow(); }
 
 const session = state?.session;

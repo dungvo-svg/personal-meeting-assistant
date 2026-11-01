@@ -1,10 +1,12 @@
 // The session host of this machine (0.11). `pma start` creates it; it lives as long as the meeting: it owns the recorder
 // (WAV of the whole session), the ASR worker, history and reports, and exits after `stop` once the mix is made. Any other
 // command that finds no host starts one only to read history, and that one leaves after PMA_IDLE_MINUTES (2) idle.
-// It is independent of any Claude session: the CLI (`pma`) and the thin MCP adapter talk to it over loopback.
+// It is independent of any Claude session: the CLI (`pma`) and the thin MCP adapter talk to it over loopback, through
+// POST /rpc with the bearer token in daemon.json. There is no web panel any more (removed in 0.12); manual text goes in
+// through the `manual` RPC (`pma say`).
 import { z } from 'zod';
 import { createServer } from 'node:http';
-import { readFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -26,10 +28,7 @@ const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
 const port = Number(process.env.PMA_PORT || 8796);
 const idleMinutes = Number(process.env.PMA_IDLE_MINUTES || 2);
 const origin = `http://127.0.0.1:${port}`;
-const cookie = randomBytes(32).toString('hex');
 const token = randomBytes(32).toString('hex');
-const panel = readFileSync(join(root, 'web', 'index.html'));
-const events = new Set<import('node:http').ServerResponse>();
 // Constructed only after this process owns the port: a second instance must not touch the shared history.
 let runtime: MeetingRuntime;
 let lastActivity = Date.now();
@@ -58,6 +57,8 @@ const methods: Record<string, (input: any) => any> = {
   read: input => { const a = z.object({ sessionId: sid.optional(), after: z.number().int().nonnegative().default(0), limit: z.number().int().min(1).max(100).default(100) }).parse(input); const items = runtime.sources(current(a.sessionId), a.after, a.limit); return { items, nextCursor: items.at(-1)?.id ?? a.after, done: items.length < a.limit }; },
   context: () => ({ agenda: runtime.session?.context ?? null, session: runtime.compact().session }),
   note: input => { const a = z.object({ sessionId: sid.optional(), key: z.string().regex(/^[\w-]{1,80}$/), revision: z.number().int().min(1), kind: z.enum(['observation', 'decision', 'action', 'question', 'correction']), text: z.string().min(1).max(8000), sourceIds: ids.min(1).max(50) }).parse(input); return runtime.publish(current(a.sessionId), a.key, a.revision, a.kind, a.text, a.sourceIds); },
+  // Text typed by the owner (was the panel's /api/manual): origin operator_text, shown as "nhập tay" in RAW; never ASR, never remote.
+  manual: input => { const a = z.object({ sessionId: sid.optional(), text: z.string().trim().min(1).max(8000) }).parse(input); runtime.requireSession(current(a.sessionId)); return { id: runtime.ingest(a.text, 'operator_text') }; },
   // Listening again from the WAV, and the list of what is worth listening to again. Both work on a finished session too:
   // without an ID they take the open session, else the latest one.
   recheck: input => { const a = z.object({ sessionId: sid.optional(), sourceId: z.number().int().positive().optional(), from: z.string().max(40).optional(), to: z.string().max(40).optional(), channel: z.enum(['speaker', 'mic']).optional(), beam: z.number().int().min(1).max(16).optional() }).parse(input); return runtime.recheck(sid.parse(a.sessionId ?? runtime.session?.id ?? runtime.latestSessionId()), a); },
@@ -106,28 +107,7 @@ const http = createServer(async (request, response) => {
       try { return json(response, 200, { ok: true, result: await methods[method](args ?? {}) }); }
       catch (error: any) { return json(response, 200, { ok: false, error: error instanceof z.ZodError ? 'INVALID_INPUT: ' + error.issues.map(i => `${i.path.join('.')} ${i.message}`).join('; ') : String(error?.message ?? error) }); }
     }
-    if (request.method === 'GET' && path === '/') {
-      response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Set-Cookie': `pma=${cookie}; HttpOnly; SameSite=Strict; Path=/`, 'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'" }); return response.end(panel);
-    }
-    if (!request.headers.cookie?.split(';').some(c => c.trim() === `pma=${cookie}`)) return json(response, 403, { error: 'OPEN_PERSONAL_PANEL_FIRST' });
-    if (request.method === 'GET' && path === '/api/state') return json(response, 200, runtime.snapshot());
-    if (request.method === 'GET' && path === '/api/history-list') return json(response, 200, runtime.historyList());
-    if (request.method === 'GET' && path === '/api/history') return json(response, 200, runtime.history(new URL(request.url!, origin).searchParams.get('id') || ''));
-    if (request.method === 'GET' && path === '/api/export') { const id = sid.parse(new URL(request.url!, origin).searchParams.get('id')); const content = runtime.exportText(id); response.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Content-Disposition': `attachment; filename="meeting-${id}.txt"`, 'Cache-Control': 'no-store' }); return response.end(content); }
-    if (request.method === 'GET' && path === '/api/devices') return json(response, 200, await runtime.listDevices(true));
-    if (request.method === 'GET' && path === '/api/report') { const params = new URL(request.url!, origin).searchParams; const report = runtime.reportFile(sid.parse(params.get('id')), params.get('kind') || ''); response.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Content-Disposition': `attachment; filename="${report.name}"`, 'Cache-Control': 'no-store' }); return response.end(report.content); }
-    if (request.method === 'GET' && path === '/api/events') {
-      response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'Connection': 'keep-alive' }); response.write('event: update\ndata: {}\n\n'); events.add(response);
-      const keepAlive = setInterval(() => response.write(': keepalive\n\n'), 15000); request.on('close', () => { clearInterval(keepAlive); events.delete(response); }); return;
-    }
-    if (request.method !== 'POST' || request.headers.origin !== origin || !request.headers['content-type']?.startsWith('application/json')) return json(response, 403, { error: 'CONTROL_REQUIRES_SAME_ORIGIN_JSON' });
-    const input = await body(request, 32000);
-    if (path === '/api/prepare') return json(response, 200, runtime.prepare());
-    if (path === '/api/arm') return json(response, 200, runtime.arm(input.sessionId, input.deviceIndex));
-    if (path === '/api/start') return json(response, 200, await runtime.start(input.sessionId));
-    if (path === '/api/pause') { runtime.requireSession(input.sessionId); await runtime.pause(); return json(response, 200, runtime.snapshot()); }
-    if (path === '/api/finish') { await runtime.finish(input.sessionId); return json(response, 200, runtime.snapshot()); }
-    if (path === '/api/manual') { runtime.requireSession(input.sessionId); return json(response, 200, { id: runtime.ingest(String(input.text || ''), 'operator_text') }); }
+    // /rpc is the only door (0.12): no page, no cookie, no /api/*, no event stream.
     return json(response, 404, { error: 'NOT_FOUND' });
   } catch (error) { if (!response.headersSent) json(response, 400, { error: String(error) }); else response.end(); }
 });
@@ -139,7 +119,7 @@ catch (error: any) { console.error(`Meeting runtime already running on ${origin}
 runtime = new MeetingRuntime(root, dataDir, process.env.PMA_TEST_MODE === '1');
 // A diagnostic instance must never launch Zoom.
 if (runtime.testMode) runtime.opener = () => {};
-runtime.on('change', () => { writeRegistry(); for (const response of events) response.write('event: update\ndata: {}\n\n'); });
+runtime.on('change', () => writeRegistry());
 mkdirSync(dataDir, { recursive: true });
 const startedAt = new Date().toISOString();
 // daemon.json says who this host is and (Q-3) which session, recorder and worker it is running, so the next host can take a
@@ -150,7 +130,6 @@ function writeRegistry() {
   try { writeFileSync(join(dataDir, 'daemon.json'), JSON.stringify({ url: origin, pid: process.pid, token, version: VERSION, startedAt, ...registry })); } catch (error) { console.error('daemon.json not written:', error); }
 }
 writeRegistry();
-writeFileSync(join(dataDir, 'panel.json'), JSON.stringify({ url: origin, pid: process.pid, startedAt }));
 console.error(`Meeting runtime ${VERSION}: ${origin} (capture OFF)`);
 
 // Saved audio never expires and is never deleted here: only `pma audio purge` removes it (owner, 31/10/2026).
@@ -165,7 +144,7 @@ async function shutdown() {
   if (stopping) return; stopping = true;
   await runtime.close();
   // Gone from daemon.json before the port is released, so a command that comes right after starts a new host instead of calling this one.
-  try { rmSync(join(dataDir, 'daemon.json'), { force: true }); rmSync(join(dataDir, 'panel.json'), { force: true }); } catch {}
-  for (const response of events) response.end(); http.close(); setTimeout(() => process.exit(0), 100).unref();
+  try { rmSync(join(dataDir, 'daemon.json'), { force: true }); } catch {}
+  http.close(); setTimeout(() => process.exit(0), 100).unref();
 }
 process.on('SIGINT', () => void shutdown()); process.on('SIGTERM', () => void shutdown());

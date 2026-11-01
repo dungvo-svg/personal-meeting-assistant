@@ -20,12 +20,20 @@ if config.is_file():
     report['claude_entry_points_to_this_build'] = bool(entry and str(root/'dist/server.js') in entry.get('args', []))
 else:
     report['claude_entry_points_to_this_build'] = False
+# The runtime host is reached over POST /rpc with the token in daemon.json (no web panel, no fixed port).
+data_dir = Path(os.environ.get('PMA_DATA_DIR') or root/'.local/runtime')
+report['host_responding'] = False
 try:
-    with urllib.request.urlopen('http://127.0.0.1:8796/', timeout=2) as response:
-        report['panel_responding'] = response.status == 200 and 'Personal Meeting Assistant' in response.read().decode('utf-8')
-except OSError:
-    report['panel_responding'] = False
-receipt = root/'.local/runtime/client-connection.json'
+    daemon = json.loads((data_dir/'daemon.json').read_text(encoding='utf-8'))
+    request = urllib.request.Request(daemon['url'] + '/rpc', data=json.dumps({'method': 'status'}).encode('utf-8'), method='POST', headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + daemon['token']})
+    with urllib.request.urlopen(request, timeout=2) as response:
+        reply = json.loads(response.read().decode('utf-8'))
+    report['host_responding'] = response.status == 200 and reply.get('ok') is True
+    if report['host_responding']:
+        report['host'] = {'version': daemon.get('version'), 'pid': daemon.get('pid'), 'capture_state': reply['result'].get('captureState'), 'session_open': bool(reply['result'].get('session')) and not reply['result']['session'].get('ended')}
+except (OSError, ValueError, KeyError):
+    pass
+receipt = data_dir/'client-connection.json'
 report['mcp_initialization_receipt'] = json.loads(receipt.read_text(encoding='utf-8')) if receipt.is_file() else None
 report['meaning'] = 'Installed files/config and device enumeration only. A connection receipt is not evidence that Claude executed tools or that device capture/meeting assistance worked.'
 print(json.dumps(report, ensure_ascii=True, indent=2))
