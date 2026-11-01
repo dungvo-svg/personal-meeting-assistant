@@ -1,6 +1,6 @@
 # Personal Meeting Assistant
 
-Read `docs/PRODUCT_BASELINE.md` (v0.11, current authority) and `docs/DECISION_LOG.md` first, then `.claude/skills/hop/SKILL.md`. `docs/PLAN_0_11.md` holds the architecture and the file conventions (Q-1..Q-4). `docs/history/` is past material only.
+Read `docs/PRODUCT_BASELINE.md` (v0.12, current authority) and `docs/DECISION_LOG.md` first, then `.claude/skills/hop/SKILL.md`. `docs/PLAN_0_11.md` holds the architecture and the file conventions (Q-1..Q-4); `docs/PLAN_0_12.md` the 0.12 changes. `docs/history/` is past material only.
 
 ## Owner direction (31/10/2026)
 
@@ -17,7 +17,8 @@ Read `docs/PRODUCT_BASELINE.md` (v0.11, current authority) and `docs/DECISION_LO
   - synthesis (Sonnet, batch 60 s) chats with the owner.
   - Build no web screen.
 - **Languages:** Vietnamese, Lao, Thai. Lao heard as Thai script passes if the Vietnamese translation keeps the meaning. Terminology depends on the pre-meeting context.
-- **Mic "Tôi":** always recorded, classified as mic on / mic off (private) / unknown.
+- **Mic "Tôi":** always recorded, classified as mic on / mic off (private) / unknown. Off and unknown speech never reaches the shared raw-translation session (owner 01/11, OWN-030); the host filters it before delivery. Speaker audio is unaffected; WAV/RAW unchanged.
+- **The owner only types `/hop`.** The only thing shared with attendees is the raw-translation session window. There is no web panel (removed in 0.12).
 - **Way of working:** audit → plan → ask the owner once → build → push. Opus decides architecture; Sonnet implements in parallel worktrees. Consult strong agents like experts; do not copy their decisions. Acceptance is the owner's next real meeting; do not record audio to test yourself.
 
 ## Implementation boundaries

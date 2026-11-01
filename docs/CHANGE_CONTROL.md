@@ -8,7 +8,7 @@
 
 `OPEN`: chưa đủ bằng chứng hoặc chưa lựa chọn. Không đổi OPEN thành PASS chỉ vì protocol/library có tính năng tương tự.
 
-## Snapshot v0.2.0
+## Snapshot
 
 `baseline.lock.json` chứa version và SHA-256 của bộ tài liệu/cấu hình/hướng dẫn/tool kiểm tra hiện hành. `python tools/verify_baseline.py` kiểm tra nội dung đúng snapshot và version khớp project.json. Lệnh không chạy app, capture, inference hoặc mạng.
 

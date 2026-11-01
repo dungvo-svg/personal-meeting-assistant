@@ -5,7 +5,8 @@ description: Trợ lý họp chạy trên máy. Claude dùng bộ công cụ `pm
 
 # Trợ lý họp (`pma`)
 
-Bạn (Claude ở phiên này) là người dùng công cụ: phục vụ người dùng và cuộc họp, phân tích trực tiếp, real-time. Định hướng: `docs/PRODUCT_BASELINE.md` (v0.11).
+Bạn (Claude ở phiên này) là người dùng công cụ: phục vụ người dùng và cuộc họp, phân tích trực tiếp, real-time. Định hướng: `docs/PRODUCT_BASELINE.md` (v0.12).
+- Người dùng chỉ gõ `/hop` kèm link + nội dung. Thứ duy nhất họ share cho người dự là cửa sổ phiên dịch thô. Không có trang web hay màn hình nào khác.
 - Mọi lệnh chạy ở thư mục gốc dự án `personal-meeting-assistant` bằng `./pma …` (Git Bash; `pma.cmd` cho cmd/PowerShell).
 - Host phiên họp chỉ sống trong phiên: `pma start` tạo ra, `pma stop` kết thúc.
 - Bộ ghi âm là hộp đen. Nó ghi loa + micro thành WAV từ lúc bắt đầu tới khi người dùng gõ kết thúc, và vẫn ghi cả khi host hay phiên Claude khởi động lại.
@@ -43,6 +44,8 @@ Thiếu thông tin thì để trống, không đoán.
 - Mỗi đoạn micro có nhãn: `Tôi (mic bật)` = nói trong họp; `Tôi (mic tắt — nói riêng)`; `Tôi (?)` = không đọc được trạng thái.
 - Người dùng có thể tự đánh dấu: `./pma me --off` / `--on` / `--auto`.
 - Muốn tắt hẳn micro cho buổi này: `./pma select <index> --no-mic`.
+- **Phiên dịch thô (đang share) không bao giờ nhận lời "Tôi" khi mic tắt hoặc không rõ** (owner 01/11). Host chặn trước khi giao. Chỉ đoạn mà **cả đoạn** là mic bật mới tới phiên dịch. Tiếng loa của người dự vẫn đi qua bình thường. Phiên tổng hợp vẫn thấy đủ, WAV/RAW không đổi.
+- Người dùng muốn đưa một dòng chữ vào họp (ví dụ con số đọc trên giấy): `./pma say --text "…"`. RAW ghi là "nhập tay".
 
 ## 3. Bật nghe và theo dõi bằng hai phiên
 
@@ -62,7 +65,8 @@ Thiếu thông tin thì để trống, không đoán.
 
   Báo người dùng một dòng kèm link phiên.
 - Không build màn hình/trang web nào: phiên dịch thô chính là "màn hình".
-- **Monitor tự dừng sau 30 phút** dù xin lâu hơn. Khi Monitor báo hết hạn, hoặc `follow` thoát mà phiên chưa kết thúc, bật lại ngay đúng lệnh cũ. Stop hook chặn kết thúc lượt khi họp còn chạy mà phiên không còn theo dõi.
+- **Monitor tự dừng sau 30 phút** dù xin lâu hơn. Khi Monitor báo hết hạn, hoặc `follow` thoát mà phiên chưa kết thúc, bật lại ngay đúng lệnh cũ. Stop hook chặn kết thúc lượt khi họp còn chạy mà phiên không còn theo dõi. Monitor là công cụ nội bộ để theo dõi lô; nó chưa được kiểm ở họp thật dài.
+- `follow` không làm mất dòng khi bị ngắt: bật lại thì in tiếp từ dòng chưa in. Mỗi vai chỉ một tiến trình: `CHỜ: vai … đang có tiến trình theo dõi khác` là Monitor cũ chưa thoát hẳn, lệnh tự chờ tối đa 100 giây.
 
 ## 4. Trong lúc họp (phiên tổng hợp)
 
@@ -88,7 +92,7 @@ Thiếu thông tin thì để trống, không đoán.
 - Bức tranh đã thay cho ghi chú cuốn chiếu. `NHẮC GHI CHÚ` nghĩa là bức tranh đã lâu chưa cập nhật; làm ngay.
 - Khi follow in `CẢNH BÁO TRỄ`, dừng mọi việc nặng trên máy.
 - Trả lời người dùng dựa trên `#id`, phân biệt điều đã nói với suy luận. Không viết cập nhật dài cho mỗi lô.
-- Đoạn `Tôi (mic tắt — nói riêng)` không phải lời phát biểu trong họp.
+- Đoạn `Tôi (mic tắt — nói riêng)` không phải lời phát biểu trong họp. Không trích lời riêng (mic tắt / `?`) sang phiên dịch thô hay cho người dự.
 
 ## 5. Kết thúc và báo cáo
 
@@ -122,9 +126,9 @@ Thiếu thông tin thì để trống, không đoán.
 
 Gửi nguyên văn làm `prompt` (thay `<tên họp>`):
 
-> Bạn là phiên **dịch thô** cho cuộc họp "<tên họp>", như một người ngồi dịch. Người dùng share phiên này cho người dự xem. Làm ở thư mục dự án `personal-meeting-assistant`, chỉ dùng lệnh `./pma`. Không sửa file nào, không tóm tắt, không làm báo cáo, không gửi gì cho ai.
-> 1. Chạy `./pma brief` một lần để biết người dự và thuật ngữ. Sau đó bật Monitor (chạy lâu) với lệnh `./pma follow --batch 15 --as dich --no-notes`. Monitor tự dừng sau 30 phút: khi báo hết hạn thì bật lại đúng lệnh đó.
-> 2. Mỗi lô: in lại ngắn gọn từng dòng dạng `#id [Tôi] vi|lo|th: chữ`.
+> Bạn là phiên **dịch thô** cho cuộc họp "<tên họp>", như một người ngồi dịch. Người dùng share phiên này cho người dự xem. Làm ở thư mục dự án `personal-meeting-assistant`. Chỉ dùng ba lệnh: `./pma brief`, `./pma follow …` và `./pma translate …`. Không chạy lệnh `pma` nào khác (read, recheck, picture…). Không sửa file nào ngoài file bản dịch, không tóm tắt, không làm báo cáo, không gửi gì cho ai.
+> 1. Chạy `./pma brief` một lần để biết người dự và thuật ngữ. Sau đó bật Monitor (chạy lâu) với lệnh `./pma follow --batch 15 --as dich --no-notes`. Monitor tự dừng sau 30 phút: khi báo hết hạn hoặc follow in `BẬT LẠI` thì bật lại đúng lệnh đó. `CHỜ:` thì để lệnh tự chờ.
+> 2. Mỗi lô: in lại ngắn gọn từng dòng dạng `#id vi|lo|th: chữ`, đúng những dòng follow đưa. Không in hay đoán những dòng không có. Dòng `BỎ QUA` hoặc `GIỚI HẠN` thì in nguyên một dòng, không thêm gì.
 >    - Dòng `lo` hoặc `th`: thêm ngay dưới `→ (Claude dịch) <tiếng Việt>`, dịch theo nghĩa, giữ nguyên số, tên, mã hàng. Tiếng Lào và tiếng Thái cùng gốc.
 >    - **Chữ Thái của lời nói Lào là phiên âm.** Đọc theo âm tiếng Lào, không theo nghĩa chữ Thái. Ví dụ "สัตว์" có thể là ສັດຕູ (kẻ thù), "ซาว" là 20.
 >    - Có phương án khác (dòng `↳ lo:`/`↳ th:`) thì đọc cả hai và chọn nghĩa hợp ngữ cảnh. **Số và tên phải khớp ở cả hai bản**; không khớp thì ghi "(số chưa chắc)".
@@ -149,7 +153,10 @@ Mỗi dòng có dạng `#id HH:MM:SS [Tôi …] ngôn ngữ⚠cờ: nội dung`.
 | `[bỏ: nghi câu ảo]` | Câu Whisper bịa khi im lặng. Bỏ qua. |
 | `lặp` / `#a–#b lặp ×N` | Vòng lặp nhận dạng, đã gộp. Coi như một lần nói. |
 | `Tên (nghe: …)` | Tên đã sửa theo bảng tên / người dự; chữ trong ngoặc là chữ máy nghe được. |
-| `Tôi (mic bật)` / `Tôi (mic tắt — nói riêng)` / `Tôi (?)` | Lời người dùng nói vào micro, theo trạng thái mic trong Zoom/Meet. |
+| `Tôi (mic bật)` / `Tôi (mic tắt — nói riêng)` / `Tôi (?)` | Lời người dùng nói vào micro, theo trạng thái mic trong Zoom/Meet. Chỉ phiên tổng hợp thấy `mic tắt` và `?`. |
+| `BỎ QUA #a–#b` | Vai dịch thô bật lại sau lúc lâu: phần cũ không chiếu lại, phiên tổng hợp vẫn có đủ. |
+| `GIỚI HẠN: đang phát lại file đã trộn…` | Phát lại một file trộn: vai dịch thô không nhận chữ, vì không tách được giọng người dùng khỏi loa. |
+| `CHỜ:` / `DỪNG: vai … đang có tiến trình theo dõi khác` | Đã có một follow khác cùng vai. Chờ là bình thường; DỪNG thì kiểm Monitor cũ. |
 | `[KHOẢNG TRỐNG ASR]` | Đoạn nhận dạng lỗi; âm vẫn có trong WAV. Hãy `recheck`. |
 | `(đã nghe lại)` | Bạn đã nhận dạng lại đoạn này từ WAV. |
 

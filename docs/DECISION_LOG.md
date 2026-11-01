@@ -1,6 +1,6 @@
 # Sổ quyết định
 
-Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
+Revision v0.12.0 — 01/11/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
 
 ## Nguồn quyết định
 
@@ -31,6 +31,9 @@ Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | U23 | 31/10, audit thiết kế: "có vẻ bạn đang làm sai thiết kế"; WAV là âm thanh thật cả buổi để audit/nghe lại, runtime ưu tiên không sót/ngắt; "đừng thiết kế nó giống như dịch vụ", Claude phải biết đang hỗ trợ ai, trạng thái, context; ba ngôn ngữ Việt/Thái/Lào, lỗi chủ yếu do thuật ngữ thiếu context; audit → plan → hỏi một lần → build → push |
 | U24 | 31/10, trả lời câu hỏi: sống theo phiên họp, chuẩn bị context là việc chính, không thi đấu AI của Zoom/Meet; thêm tiếng Thái, đạt khi dịch ra Việt không đổi nghĩa; ghi từ lúc kích hoạt bắt đầu họp, cải tiến tới khi không thể mới bắt mở sớm; WAV giữ tới khi người dùng xoá; dừng khi gõ kết thúc; giữ hai phiên (dịch thô = "màn hình" share cho người dự, tổng hợp = chat với owner); micro khi mute vẫn ghi nhưng phân loại; dọn tài liệu |
 | U25 | 31/10: "nghe lại dành cho bạn không phải cho người"; "đừng dùng màn hình như cách build thêm"; "claude ở phiên này dùng công cụ đó phục vụ cho tôi và phiên họp"; "sổ phiên thường là context trước họp"; kiểm qua lần họp tiếp theo, không tự kiểm mình; hỏi Fable như hỏi người giỏi, Opus độc lập; đem R2 A/B về dự án này, không hoàn thiện trong repo công khai |
+| U26 | 31/10, sau buổi thử trên máy: "lô 60s là phải đảm bảo được toàn bộ cảnh họp liên tục ra gì chứ không phải chỉ đóng khung 60s"; "tôi chỉ /họp để bạn biết chuẩn bị vào nghe… ta không xây hệ thống riêng mà nó được sử dụng ngay trên máy này" |
+| U27 | 01/11, qua phiên điều phối Codex (`OWNER-MIC-SHARE-DECISION.md`): "lời của anh lúc mic tắt không nhé vì phòng có khi nhiễu tiếng ồn k cần thiết hoặc âm thanh nhwungx người ngồi chung phòng"; với câu hỏi trạng thái không rõ (UNKNOWN): "đúng ẩn nhé" |
+| U28 | 01/11, trong phiên này: "bạn sửa đi tôi duyệt cho" — duyệt thu hẹp luật cấm ghi file của dự án để mở 4 worktree `v5-*` cho bản 0.12 |
 
 Ảnh định hướng trong U1 và tài liệu b15f178 của repo AIOS chỉ cung cấp bối cảnh hai sản phẩm độc lập. Không nhập runtime, quyền phiên họp hoặc tiêu chí nghiệm thu của repo đó vào đây.
 
@@ -66,6 +69,8 @@ Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là l
 | OWN-026 | U23, U24 | Ba ngôn ngữ Việt/Lào/Thái (Tai-Kadai). Đạt khi người nói Lào mà máy ra chữ Thái, dịch ra tiếng Việt không đổi nghĩa. Thay OWN-012 |
 | OWN-027 | U24 | Micro "Tôi" khi mute vẫn ghi nhưng phân loại: mic bật / mic tắt (nói riêng) / không rõ |
 | OWN-028 | U24 | Kết thúc phiên khi owner gõ kết thúc trong chat; học câu chào cuối buổi sau khi có thêm buổi họp |
+| OWN-029 | U26 | Phiên tổng hợp giữ **bức tranh cả cuộc họp** liên tục (đang bàn, diễn tiến, đã chốt, việc–người–hạn, câu hỏi mở, chỗ chưa nghe rõ), viết lại sau mỗi lô, không chỉ tóm khung 60 s; owner chỉ gõ `/hop`, mọi thứ chạy ngay trên máy và trong phiên Claude |
+| OWN-030 | U27 | Lời trên micro "Tôi" khi **mic tắt** hoặc **không rõ trạng thái** không được đưa tới phiên dịch thô đang share: không chữ gốc, không phương án `↳`, không bản dịch, không trích lại. Tiếng loa (người dự khác, âm hệ thống) vẫn nghe và dịch bình thường. Không đổi WAV/RAW/ghi âm (OWN-022, OWN-023, OWN-027); không suy ra quyền lưu thêm hay danh tính người nói |
 
 U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi máy. U11 là ranh giới vận hành lần này: không restart Claude hoặc thực hiện đề nghị thu thử thay người dùng. Claude đã ghi đè lần chỉnh config khi còn chạy; installer hiện yêu cầu app đóng trước khi apply. Host/device acceptance vẫn chờ. Hỏi đáp/ghi chú trong Claude khi người dùng yêu cầu là hỗ trợ theo scope pilot, không phải đã hoàn thành giao diện hỏi đáp hoặc V1 phiên dịch.
 
@@ -75,7 +80,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | --- | --- | --- |
 | ENG-01 | Local MCP tools là đường tích hợp Claude Desktop đầu tiên để chứng minh | Có đường desktop extension được công bố; kiểm tra host thật trước khi gọi là khả dụng |
 | ENG-02 | TypeScript/Node cho tool server và bảng web cục bộ; đóng gói extension sau phép thử | Một hệ ngôn ngữ cho tool và panel; phiên bản SDK/runtime được pin khi triển khai |
-| ENG-03 | Bảng web chỉ bind loopback; text/history thuộc máy người dùng | Phục vụ một người và không cần dịch vụ AIOS; đóng gói native UI chưa cần ở V1 |
+| ENG-03 | ~~Bảng web chỉ bind loopback~~ — **đã thay** bởi ENG-29 (0.12 gỡ bảng web). Text/history vẫn thuộc máy người dùng | Phục vụ một người và không cần dịch vụ AIOS |
 | ENG-04 | Agent điều phối nhiệm vụ; tools giữ state, resource bounds và STOP độc lập | Agent bận không được làm tai dừng đọc hoặc làm mất quyền dừng của người dùng |
 | ENG-05 | Text lưu bền theo session; audio tạm có giới hạn và cleanup khi hết phiên/crash | Thực hiện OWN-005; dung lượng/TTL cụ thể cần phép đo trước khi bật capture |
 | ENG-06 | Phiên bản snapshot tài liệu + SHA-256 + lịch sử Git | Phát hiện tài liệu bị đổi ngoài revision; không phải khóa bất biến hoặc bằng chứng sản phẩm |
@@ -88,7 +93,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-14 | Stop hook Claude Code theo project (`.claude/settings.local.json` → `tools/meeting_stop_hook.mjs`) chặn kết thúc lượt khi phiên họp còn chạy; chỉ áp dụng cho phiên đã gọi hearing_start/source_next | Thực hiện OWN-015; 28/10 phải nhắn “tiếp tục theo dõi” ~12 lần |
 | ENG-15 | `source_select` cho agent cấp quyền nguồn loa sau khi người dùng đồng ý trong chat; micro bị từ chối ở tool này | Thực hiện OWN-016; thay quyền chỉ-trên-bảng của bản 0.2/0.3 |
 | ENG-16 | Quá tải ASR: giữ khối tới 30 s rồi ghi khoảng trống rõ ràng thay vì dừng bộ thu; câu ảo/lặp từ gắn cờ, không xóa | 28/10 một lần ASR_BACKLOG_LIMIT làm dừng phiên |
-| ENG-17 | Lõi là dịch vụ nghe chạy nền một bản mỗi máy + CLI `pma` + skill `hop` + Monitor trên `pma follow`; MCP chỉ là lớp chuyển tiếp | Audit 28/10 (E1–E6): server mỗi phiên làm hỏng trạng thái phiên khác, bộ thu chết theo host, chỉ kéo được không đẩy được, 233 lần hỏi vòng/1,5 giờ |
+| ENG-17 | **Đã thay** bởi host sống theo phiên họp (OWN-021, 0.11); phần còn giữ: CLI `pma` + skill `hop` + Monitor trên `pma follow`, MCP chỉ là lớp chuyển tiếp. Bản gốc: lõi là dịch vụ nghe chạy nền một bản mỗi máy + CLI `pma` + skill `hop` + Monitor trên `pma follow`; MCP chỉ là lớp chuyển tiếp | Audit 28/10 (E1–E6): server mỗi phiên làm hỏng trạng thái phiên khác, bộ thu chết theo host, chỉ kéo được không đẩy được, 233 lần hỏi vòng/1,5 giờ |
 | ENG-18 | Tiếng Lào: Whisper small nhận diện vi/lo (th tính là lo), đoạn Lào sang BuzzASR/lao (MIT) trên CUDA; model Lào không chạy trên CPU khi họp trực tiếp | FLEURS 28/10: CER Lào 100,2% → 36,3%, chữ Thái → chữ Lào; nhận diện ngôn ngữ 100% trên 80 clip. Đáp ứng OWN-014 (mã nguồn mở, chạy trên máy) |
 | ENG-19 | GPU: Whisper large-v3-turbo là model chính (nhận diện vi/lo + tiếng Việt); PhoWhisper-large chỉ là tùy chọn `vi` | FLEURS vi 4,8% (small 9,9%); PhoWhisper-large 3,9% nhưng trên họp thật đọc số thành chữ, mất viết hoa/viết tắt, 5,4 GB VRAM |
 | ENG-20 | Micro “Tôi” (0.10): bỏ đọc nút mute (UI Automation) của 0.9.0. `tools/mic_in_use.ps1` (Core Audio, chỉ đọc) tìm micro mà ứng dụng họp (Zoom, trình duyệt, Teams…) đang giữ, kiểm lại mỗi 30 s và báo khi đổi, không đổi giữa chừng; không có thì micro mặc định Windows. `mic_is_own_voice` bỏ tiếng loa lọt vào | Thực hiện OWN-017 (U20); 0.9.0 cho `NO_MEETING` trên Google Meet. Hệ quả chấp nhận: lời nói khi đang tắt mic trong Zoom/Meet vẫn vào “Tôi” |
@@ -100,8 +105,11 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-26 | 0.11: nhãn micro theo `tools/mic_state.ps1` (UI Automation đọc nút micro Zoom và Meet trong Chrome/Edge, chỉ đọc) + `pma me --on/--off/--auto`; gắn `MIC_STATE_ON/OFF/UNKNOWN` cho đoạn "Tôi" | OWN-027; Meet cần kiểm ở họp thật |
 | ENG-27 | 0.11: context trước họp `pma brief` (≤ 2 KB: tôi là ai, người dự, mục tiêu, thuật ngữ, một dòng tình trạng), `pma participants`, `.local/context/owner.json` | OWN-021 |
 | ENG-12 | `meeting_open` chỉ nhận link Zoom, dựng lại URL từ phần đã kiểm tra, không lưu passcode; chế độ test không mở Zoom | Thực hiện OWN-009 mà không đưa chuỗi tùy ý tới trình mở URL của hệ điều hành |
+| ENG-28 | 0.12: lọc chia sẻ ở **host** trước khi giao cho mọi vai khác `chinh` (`next`, `read --as`). Một dòng chỉ được giao khi: nhập tay/khoảng trống; dòng loa có nguồn gốc nghe trực tiếp `SOURCE_LIVE_FOLLOW` (host gắn lúc ingest theo worker của nó); dòng micro có `MIC_SHARE_OK` (bộ nghe chỉ gắn khi **cả đoạn** là mic bật, không theo đa số). Dòng ẩn mất cả chữ lẫn `↳`; con trỏ vẫn đi qua. Replay file trộn không được giao (kênh loa của file trộn có thể chứa giọng owner). `as` là quy ước định tuyến, không phải ranh giới bảo mật | Thực hiện OWN-030; review độc lập S4 01/11 (5 điểm) |
+| ENG-29 | 0.12: gỡ bảng web cũ (`web/index.html`, `GET /`, cookie, `/api/*`, SSE, `panel.json`); mọi đường ngoài `/rpc` trả 404. Nhập chữ tay giữ nguyên bằng `pma say --text` (RPC `manual`, nguồn `operator_text`, RAW ghi "nhập tay"); probe/doctor/stop hook dùng `/rpc` | OWN-019/OWN-025: không có màn hình nào ngoài phiên Claude; giữ chức năng trước khi gỡ |
+| ENG-30 | 0.12: `follow` tin cậy hơn mà bề mặt model không đổi: con trỏ vai = chỗ đã **in** (`ack`), không phải chỗ đã xin; một tiến trình một vai (`lease`, hết hạn 90 s; MCP không lease thì không đổi tiến độ của vai đang có người giữ); `release` khi thoát; vai share bật lại chỉ chiếu lại 40 dòng gần nhất (phần cũ in `BỎ QUA`, không nội dung); `pma picture` lưu lại cùng nội dung không tạo bản mới. Tiến độ nằm trong bộ nhớ host, không bền qua host restart | Lỗi thật trên HEAD 0.11 (G1/G2/G3/G5); G6, G9–G12 của pilot không đưa lại |
 
-Các cap/timeout cụ thể cho pilot được ghi ở [runbook](PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
+Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 
 ## Điểm còn mở, ai giải quyết và bằng chứng cần có
 
