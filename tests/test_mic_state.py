@@ -1,4 +1,4 @@
-"""label_mic_chunk / split_points: pure functions, fake timeline, no device and no meeting."""
+"""label_mic_chunk / whole_on / split_points: pure functions, fake timeline, no device and no meeting."""
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -52,6 +52,82 @@ class LabelTests(unittest.TestCase):
         start = datetime.fromtimestamp(BASE + 1, timezone.utc)
         self.assertEqual(ms.label_mic_chunk(states, start, (BASE + 3)), ms.MIC_STATE_ON)
         self.assertEqual(ms.label_mic_chunk(states, start.isoformat().replace('+00:00', 'Z'), start.isoformat()), ms.MIC_STATE_ON)  # zero length
+
+
+class WholeOnTests(unittest.TestCase):
+    def test_on_for_the_whole_chunk(self):
+        states = [reading(0, 'on')]
+        self.assertTrue(ms.whole_on(states, BASE + 10, BASE + 20))
+        self.assertTrue(ms.whole_on(states, BASE, BASE + 20))  # a reading exactly at the start counts
+
+    def test_on_then_off_inside_the_chunk_is_not_whole_even_when_on_is_the_majority(self):
+        states = [reading(0, 'on'), reading(17, 'off')]  # chunk 10..20: 7 s on, 3 s off
+        self.assertEqual(ms.label_mic_chunk(states, BASE + 10, BASE + 20), ms.MIC_STATE_ON)  # majority label for RAW stays
+        self.assertFalse(ms.whole_on(states, BASE + 10, BASE + 20))
+
+    def test_on_then_unknown_inside_the_chunk_is_not_whole(self):
+        states = [reading(0, 'on'), reading(17, 'unknown')]
+        self.assertEqual(ms.label_mic_chunk(states, BASE + 10, BASE + 20), ms.MIC_STATE_ON)
+        self.assertFalse(ms.whole_on(states, BASE + 10, BASE + 20))
+
+    def test_a_transition_under_one_second_is_not_absorbed(self):
+        for state in ('off', 'unknown', 'none'):
+            states = [reading(0, 'on'), reading(19.5, state)]  # 0.5 s tail; split_points would absorb it
+            self.assertFalse(ms.whole_on(states, BASE + 10, BASE + 20), state)
+            states = [reading(0, 'on'), reading(10.3, state)]  # 0.3 s of off right after the start, then reading ends the chunk
+            self.assertFalse(ms.whole_on(states, BASE + 10, BASE + 20), state)
+        flicker = [reading(0, 'on'), reading(15, 'off'), reading(15.4, 'on')]  # an 0.4 s OFF flicker in the middle
+        self.assertEqual(ms.split_points(flicker, BASE + 10, BASE + 20), [])
+        self.assertFalse(ms.whole_on(flicker, BASE + 10, BASE + 20))
+
+    def test_off_then_back_on_is_not_whole(self):
+        states = [reading(0, 'off'), reading(12, 'on')]
+        self.assertFalse(ms.whole_on(states, BASE + 10, BASE + 20))
+        self.assertTrue(ms.whole_on(states, BASE + 12, BASE + 20))
+
+    def test_a_tie_is_unknown_and_not_whole(self):
+        states = [reading(0, 'on'), reading(5, 'off')]
+        self.assertEqual(ms.label_mic_chunk(states, BASE, BASE + 10), ms.MIC_STATE_UNKNOWN)
+        self.assertFalse(ms.whole_on(states, BASE, BASE + 10))
+
+    def test_manual_off_inside_an_automatic_on_stretch(self):
+        states = [reading(0, 'on'), reading(15, 'off', by='manual')]
+        self.assertFalse(ms.whole_on(states, BASE + 10, BASE + 20))
+        self.assertTrue(ms.whole_on(states, BASE + 10, BASE + 14))
+        self.assertFalse(ms.whole_on(states, BASE + 16, BASE + 20))
+
+    def test_manual_off_wins_over_automatic_on_until_released(self):
+        states = [reading(0, 'on'), reading(5, 'off', by='manual'), reading(10, 'on'), reading(30, 'unknown', by='manual', release=True)]
+        self.assertFalse(ms.whole_on(states, BASE + 12, BASE + 18))  # the automatic on does not override the manual off
+        self.assertTrue(ms.whole_on(states, BASE + 31, BASE + 40))  # released: the reader's latest reading (on)
+        self.assertFalse(ms.whole_on(states, BASE + 25, BASE + 35))  # the release happens inside: manual off before it
+
+    def test_manual_on_wins_over_automatic_off(self):
+        states = [reading(0, 'off'), reading(5, 'on', by='manual'), reading(10, 'off')]
+        self.assertTrue(ms.whole_on(states, BASE + 6, BASE + 20))
+
+    def test_chunk_beginning_before_the_first_reading_is_not_whole(self):
+        states = [reading(10, 'on')]
+        self.assertFalse(ms.whole_on(states, BASE + 8, BASE + 20))  # unknown before the first reading
+        self.assertTrue(ms.whole_on(states, BASE + 10, BASE + 20))
+        self.assertFalse(ms.whole_on(states, BASE, BASE + 5))
+        self.assertFalse(ms.whole_on([], BASE, BASE + 5))
+
+    def test_no_meeting_app_holding_the_mic_is_not_whole(self):
+        self.assertFalse(ms.whole_on([reading(0, 'none')], BASE, BASE + 5))
+        self.assertFalse(ms.whole_on([reading(0, 'on'), reading(2, 'none')], BASE, BASE + 5))
+        self.assertFalse(ms.whole_on([reading(0, 'unknown')], BASE, BASE + 5))
+
+    def test_zero_length_chunk_is_the_state_at_that_instant(self):
+        states = [reading(0, 'on'), reading(10, 'off')]
+        self.assertTrue(ms.whole_on(states, BASE + 5, BASE + 5))
+        self.assertFalse(ms.whole_on(states, BASE + 12, BASE + 12))
+        self.assertFalse(ms.whole_on([], BASE, BASE))
+
+    def test_the_span_may_be_given_reversed_or_as_iso_strings(self):
+        states = [reading(0, 'on')]
+        self.assertTrue(ms.whole_on(states, BASE + 20, BASE + 10))
+        self.assertTrue(ms.whole_on(states, datetime.fromtimestamp(BASE + 1, timezone.utc).isoformat(), BASE + 3))
 
 
 class SplitTests(unittest.TestCase):

@@ -90,6 +90,17 @@ def label_mic_chunk(states, start_wall, end_wall):
     return ranked[0][0]
 
 
+def whole_on(states, start_wall, end_wall):
+    """True only if the mic was MIC_STATE_ON for the whole chunk: every stretch of `effective_segments` is ON.
+
+    This is the evidence for sharing a mic chunk with the attendees. No majority and no smoothing: one second of OFF or
+    UNKNOWN anywhere in the chunk, however short (a flicker too), makes it False, and so does a chunk that begins before
+    the first reading (UNKNOWN there). A zero-length chunk is the state at that instant. `label_mic_chunk` stays the
+    majority label for RAW display and must never stand in for this.
+    """
+    return all(label == MIC_STATE_ON for _begin, _end, label in effective_segments(states, start_wall, end_wall))
+
+
 def split_points(states, start_wall, end_wall, min_segment=1.0):
     """Wall-clock times (epoch seconds) strictly inside the chunk where its label changes, so the worker can cut there.
 

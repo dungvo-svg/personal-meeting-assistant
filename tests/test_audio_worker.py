@@ -1001,6 +1001,49 @@ class FollowTests(unittest.TestCase):
         self.assertIn('MIC_STATE_ON', mic[0]['boundary'])
         self.assertIn('MIC_STATE_OFF', mic[1]['boundary'])
 
+    def test_only_a_mic_chunk_with_the_mic_on_for_all_of_it_gets_mic_share_ok(self):
+        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
+        self.session.event('mic_state', 9.5, state='off', app='zoom', by='uia')
+        self.session.segment(1, 'mic', 0.0, [(3, 0.2), (8, 0), (3, 0.2), (6, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertEqual(len(mic), 2)
+        self.assertIn('MIC_STATE_ON', mic[0]['boundary'])
+        self.assertIn('MIC_SHARE_OK', mic[0]['boundary'])  # on for the whole chunk
+        self.assertIn('MIC_STATE_OFF', mic[1]['boundary'])
+        self.assertNotIn('MIC_SHARE_OK', mic[1]['boundary'])
+        for row in self.sources('speaker'):
+            self.assertNotIn('MIC_SHARE_OK', row['boundary'])
+            self.assertNotIn('MIC_STATE', row['boundary'])
+
+    def test_a_mic_chunk_that_is_mostly_on_but_ends_muted_is_labelled_on_but_not_shared(self):
+        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
+        self.session.event('mic_state', 2.5, state='off', app='zoom', by='uia')  # inside the first chunk (about 0-3 s)
+        self.session.segment(1, 'mic', 0.0, [(3, 0.2), (8, 0), (3, 0.2), (6, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        first = self.sources('mic')[0]
+        self.assertIn('MIC_STATE_ON', first['boundary'])  # the majority label for RAW stays
+        self.assertNotIn('MIC_SHARE_OK', first['boundary'])
+
+    def test_mic_chunks_without_a_reading_or_without_a_meeting_app_are_not_shared(self):
+        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        self.session.event('mic_state', 5.0, state='on', app='zoom', by='uia')  # the first reading comes after the first chunk begins
+        self.session.event('mic_state', 10.5, state='none', app=None, by='uia')
+        self.session.segment(1, 'mic', 0.0, [(3, 0.2), (8, 0), (3, 0.2), (6, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertEqual(len(mic), 2)
+        self.assertNotIn('MIC_SHARE_OK', mic[0]['boundary'])
+        self.assertNotIn('MIC_SHARE_OK', mic[1]['boundary'])
+
     def test_a_stale_wav_header_does_not_hide_samples_that_are_on_disk(self):
         self.session.begin(1, 'speaker', 0.0)
         self.session.add(1, 'speaker', self.session.wave(2, 0.2), 2.0)
