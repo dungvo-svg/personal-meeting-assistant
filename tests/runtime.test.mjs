@@ -297,3 +297,10 @@ test('the synthesis session keeps one running picture of the whole meeting, vers
     assert.throws(() => r.savePicture(id, 'x', [b + 99]), /SOURCE_OUTSIDE_SESSION/);
   });
 });
+test('a published note says it stays local, and the "select a source first" error no longer points at a panel', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp'); const id = r.session.id; const source = r.ingest('Ba xe cần kiểm tra.', 'operator_text');
+    assert.equal(r.publish(id, 'n', 1, 'observation', 'Có ba xe cần kiểm tra.', [source]).scope, 'LOCAL_ONLY');
+    await assert.rejects(r.start(id), error => /SELECT_SOURCE_FIRST/.test(error.message) && !/panel/i.test(error.message));
+  });
+});

@@ -1,8 +1,9 @@
 // `pma`: how Claude (or a person) drives the meeting runtime. Replies are compact JSON, except
 // `follow` and `read`, which print transcript lines for Claude to read.
 import { readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { call } from './client.js';
-import { foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
+import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
   pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
@@ -22,6 +23,8 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    Bản ghi âm (WAV) là hộp đen của cả buổi: ghi từ lúc có nguồn loa tới pma stop, giữ trên máy này (không gửi đi) cho tới
                                    khi bạn tự xoá bằng pma audio purge. Micro "Tôi" luôn ghi (tiếng loa lọt vào micro bị bỏ); không muốn thì pma select --no-mic
   pma follow [--batch 15] [--max 40] [--after N] [--as TÊN] [--no-notes]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor; tự thoát ở phút 29 và in BẬT LẠI; phiên --as khác chinh gửi lô ngay khi có dòng lo/th
+                                   mỗi vai chỉ một tiến trình theo dõi (khoá 90 s): vai đang có người theo dõi thì CHỜ tới 100 s rồi DỪNG; vai khác chinh chỉ nhận chữ được phép chiếu (không có tiếng micro tắt/không rõ),
+                                   bật lại mà còn hơn --max đoạn chưa chiếu thì in BỎ QUA #a–#b (không kèm chữ) và chỉ chiếu --max đoạn cuối; chinh không bao giờ bị bỏ
                                    --as: tên người theo dõi (mặc định chinh; hai phiên cùng theo dõi thì mỗi phiên một tên, vd. dich), mỗi tên giữ con trỏ đọc riêng
                                    --no-notes: bỏ nhắc ghi chú cuốn chiếu (phiên dịch không ghi chú); cảnh báo trễ và dòng micro vẫn giữ
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
@@ -32,7 +35,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma coverage [--json] [--session ID]   chỗ bản ghi có tiếng mà chưa có chữ, đoạn ASR lỗi, đoạn cờ không chắc: mỗi dòng kèm lệnh pma recheck
   pma audio [list | purge [--older-than N]]   xem âm thanh đã lưu (mỗi phiên: meeting-mix.wav dùng cho pma replay, hoặc "đang ghép") / xoá: âm thanh KHÔNG tự hết hạn,
                                    chỉ xoá khi bạn gõ lệnh này: --older-than N xoá phiên cũ hơn N ngày (0 = tất cả; phiên đang họp luôn được giữ)
-  pma read [--after N] [--limit 100] [--session ID]
+  pma read [--after N] [--limit 100] [--session ID] [--as TÊN]   --as khác chinh: chỉ phần được phép chiếu cho vai đó (mặc định: đọc đủ như chủ)
   pma note --text T --sources 1,2 [--kind observation]
   pma summary --file SUMMARY.md --sources 1,2,3 [--session ID]
   pma tasks --file tasks.json [--session ID]       [{"task","owner?","due?","sourceIds":[..]}]
@@ -74,10 +77,15 @@ function line(item: any) {
   return `#${item.id} ${clock(item.wall || item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}${others}`;
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
-const lines = (items: any[]) => foldRuns(items).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
+// A group keeps the mic label (foldRuns never joins different ones): `#3–#5 Tôi (mic bật) lặp ×3: …`.
+const lines = (items: any[]) => foldRuns(items).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id}${micLabel(g.first.boundary) ? ' ' + micLabel(g.first.boundary) : ''} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
 
 function agenda(flags: Record<string, string>) { return flags['agenda-file'] ? readFileSync(flags['agenda-file'], 'utf8') : flags.agenda; }
 function languagesOf(flags: Record<string, string>) { return flags.languages ? flags.languages.split(',').map(v => v.trim()) : undefined; }
+
+// A role already followed by another live process is waited for (every 5 s, up to 100 s), then given up. Env: tests shorten both.
+const BUSY_RETRY_MS = Number(process.env.PMA_FOLLOW_RETRY_MS || 5000); const BUSY_MAX_MS = Number(process.env.PMA_FOLLOW_BUSY_MAX_MS || 100000);
+const isBusy = (error: unknown) => /FOLLOWER_BUSY/.test(String((error as any)?.message ?? error));
 
 async function follow(flags: Record<string, string>) {
   // 15 s by default: the 60 s batches of 29–30/10 made Claude's answers lag the meeting by a minute or more.
@@ -86,14 +94,20 @@ async function follow(flags: Record<string, string>) {
   if (!status.session || status.session.ended) { out({ error: 'NO_ACTIVE_SESSION' }); process.exitCode = 1; return; }
   const name = flags.as ?? 'chinh';
   if (!/^[a-z0-9-]{1,24}$/.test(name)) { out({ error: 'INVALID_FOLLOWER_NAME', hint: '--as chỉ gồm a-z, 0-9, dấu gạch ngang, tối đa 24 ký tự' }); process.exitCode = 1; return; }
+  // One lease per process: it is what keeps two followers of the same role from printing the same lines twice.
+  const lease = randomBytes(12).toString('hex');
   // Resume where this follower stopped; a new one starts at the main cursor (what the main follower has read).
-  let after = flags.after ? Number(flags.after) : status.followers?.[name]?.cursor ?? status.agentCursor;
+  const resumeAt = (s: any) => s.followers?.[name]?.cursor ?? s.agentCursor;
+  // `after`: scanned up to here (hidden lines included). `batch`: visible lines not yet printed. `ack` sent to the host is ackOf(batch, after).
+  let after = flags.after ? Number(flags.after) : resumeAt(status);
   let batch: any[] = []; let batchStarted = 0; let state = status.captureState; let failures = 0;
   // Monitor ends a command after 30 minutes; leaving at 29 on our own terms tells Claude to start the same command again.
   const followStarted = Date.now(); const followMs = Number(flags.minutes || 29) * 60000;
   // A side follower (the raw translation session) hands a batch over as soon as it holds a Lao/Thai line.
   const taiNow = name !== 'chinh' && flags['tai-now'] !== 'false';
   console.log(`FOLLOWING ${name} "${status.session.title}" từ #${after} · lô ${batchMs / 1000}s · trạng thái ${state}`);
+  // A replay is one mixed file: the user's microphone cannot be told from the speakers, so a share role gets no text from it (host side).
+  if (name !== MAIN && status.session.replay) console.log('GIỚI HẠN: đang phát lại file đã trộn — không tách được tiếng micro của người dùng khỏi loa, nên chữ không được chiếu ở vai này.');
   const flush = () => {
     if (!batch.length) return;
     console.log(`LÔ #${batch[0].id}–#${batch.at(-1).id} (${batch.length} đoạn):`);
@@ -101,6 +115,32 @@ async function follow(flags: Record<string, string>) {
     // The synthesis session keeps the whole meeting in view: after each batch it rewrites the picture, not a batch summary.
     if (name === MAIN && flags['no-notes'] !== 'true') console.log(`CẬP NHẬT BỨC TRANH: viết lại bức tranh CẢ cuộc họp tới #${batch.at(-1).id} (đang bàn · đã chốt · việc–người–hạn · câu hỏi mở · chỗ chưa nghe rõ), lưu: pma picture --file <f.md> --sources <id lô này>; trả lời người dùng chỉ phần mới.`);
     batch = [];
+  };
+  // Gives the role back before the process ends (and before BẬT LẠI is printed, so the next process finds it free). Errors do not matter.
+  const leave = () => call('release', { as: name, lease, ack: ackOf(batch, after) }, 5000).catch(() => {});
+  // Claims the role (a next call that only carries the lease). Busy: say so once, retry, give up after BUSY_MAX_MS. A claim after a wait
+  // starts from the cursor the other process left, not from the one this process read before waiting.
+  const acquire = async (first: boolean) => {
+    const waitStarted = Date.now(); let told = false;
+    for (let attempt = 0; ; attempt++) {
+      if (!(first && (attempt === 0 || flags.after))) after = resumeAt(await call('status'));
+      try { await call('next', { after, ack: after, waitMs: 0, limit: 1, follower: true, as: name, lease }, 15000); return true; }
+      catch (error) {
+        if (!isBusy(error)) throw error;
+        if (!told) { told = true; console.log(`CHỜ: vai ${name} đang có tiến trình theo dõi khác`); }
+        if (Date.now() - waitStarted >= BUSY_MAX_MS) return false;
+        await new Promise(r => setTimeout(r, BUSY_RETRY_MS));
+      }
+    }
+  };
+  const giveUp = async () => { await leave(); console.log(`DỪNG: vai ${name} vẫn đang có tiến trình theo dõi khác sau ${Math.round(BUSY_MAX_MS / 1000)} giây`); process.exitCode = 1; };
+  // A share role that comes back to more than --max printable lines does not replay them all: the oldest are dropped on purpose and
+  // named by number only; the synthesis session has them. "chinh" never skips.
+  const catchUp = async () => {
+    if (name === MAIN) return;
+    const pending: number[] = [];
+    for (let from = after; ;) { const page = await call('read', { after: from, limit: 100, as: name }); pending.push(...page.items.map((item: any) => item.id)); from = page.nextCursor; if (page.done) break; }
+    if (pending.length > maxLines) { const cut = pending.length - maxLines; console.log(`BỎ QUA #${pending[0]}–#${pending[cut - 1]}: quá cũ để chiếu lại (đọc ở phiên tổng hợp)`); after = pending[cut - 1]; }
   };
   // Sau mỗi lô: báo khi chữ ra chậm hơn lời nói, và nhắc ghi chú cuốn chiếu mỗi 10 phút nghe.
   let lastReminder = 0; let lastCheck = 0; let micDevice: string | undefined; let micChanged: string | undefined; let micError: string | undefined; let recorderError: string | undefined;
@@ -119,24 +159,32 @@ async function follow(flags: Record<string, string>) {
     const since = Math.max(Date.parse(s.lastNoteAt ?? '') || 0, Date.parse(s.captureInfo?.listeningSince ?? '') || 0);
     if (flags['no-notes'] !== 'true' && since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút chưa có ghi chú cuốn chiếu. Ghi tóm tắt khúc vừa rồi: pma note --text "..." --sources <id,...>`); }
   };
+  if (!await acquire(true)) return giveUp();
+  await catchUp();
   for (;;) {
     let reply: any;
     // With a batch pending, wait no longer than what is left of its window.
     const waitMs = batch.length ? Math.max(200, batchMs - (Date.now() - batchStarted)) : 20000;
-    try { reply = await call('next', { after, waitMs: Math.min(20000, waitMs), limit: 100, follower: true, as: name }, 40000); failures = 0; }
-    catch (error) { if (++failures >= 5) { flush(); console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return; } await new Promise(r => setTimeout(r, 3000)); continue; }
+    try { reply = await call('next', { after, ack: ackOf(batch, after), waitMs: Math.min(20000, waitMs), limit: 100, follower: true, as: name, lease }, 40000); failures = 0; }
+    catch (error) {
+      // Another process took the role while this one was away (a sleeping machine): what it holds is the new owner's to deliver.
+      if (isBusy(error)) { batch = []; if (!await acquire(false)) return giveUp(); await catchUp(); continue; }
+      if (++failures >= 5) { flush(); await leave(); console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return; }
+      await new Promise(r => setTimeout(r, 3000)); continue;
+    }
     // A state change is reported before the text that arrived with it.
     if (reply.captureState !== state) {
       flush(); state = reply.captureState;
       const s = await call('status').catch(() => null);
       console.log(`TRẠNG THÁI ${state}${s?.lastError ? ': ' + s.lastError : ''}${state === 'OFF' && s?.replay ? ' (phát lại đã hết)' : ''}`);
     }
-    if (reply.items.length) { if (!batch.length) batchStarted = Date.now(); batch.push(...reply.items); after = reply.nextCursor; }
-    if (reply.ended) { flush(); console.log('KẾT THÚC: phiên đã đóng'); return; }
+    if (reply.items.length) { if (!batch.length) batchStarted = Date.now(); batch.push(...reply.items); }
+    after = reply.nextCursor;  // scanned, hidden lines too; what the host is told is acknowledged is ackOf(batch, after)
+    if (reply.ended) { flush(); await leave(); console.log('KẾT THÚC: phiên đã đóng'); return; }
     if (batch.length && (batch.length >= maxLines || Date.now() - batchStarted >= batchMs || (taiNow && batch.some(item => item.language === 'lo' || item.language === 'th')))) { flush(); await checkHealth(); }
     else if (Date.now() - lastCheck > 30000) await checkHealth();
     if (Date.now() - followStarted > followMs) {
-      flush();
+      flush(); await leave();
       console.log(`BẬT LẠI: theo dõi đã chạy ${Math.round(followMs / 60000)} phút (Monitor giới hạn 30 phút). Bật lại ngay Monitor với đúng lệnh: pma follow${flags.batch ? ' --batch ' + flags.batch : ''}${name !== 'chinh' ? ' --as ' + name : ''}${flags['no-notes'] === 'true' ? ' --no-notes' : ''}`);
       return;
     }
@@ -224,10 +272,10 @@ async function main() {
       return console.log(r.total > r.items.length ? `CÒN ${r.total - r.items.length} mục nữa (xem --json)` : r.total ? 'HẾT DANH SÁCH' : 'KHÔNG CÓ CHỖ NÀO CẦN NGHE LẠI');
     }
     case 'read': {
-      const r = await call('read', { ...session, after: Number(flags.after || 0), limit: Number(flags.limit || 100) });
+      const r = await call('read', { ...session, after: Number(flags.after || 0), limit: Number(flags.limit || 100), ...(flags.as ? { as: flags.as } : {}) });
       if (flags.json) return out(r);
       for (const text of lines(r.items)) console.log(text);
-      return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}`);
+      return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}${flags.as ? ' --as ' + flags.as : ''}`);
     }
     case 'note': return out(await call('note', { ...session, key: flags.key || 'note-' + Date.now(), revision: Number(flags.revision || 1), kind: flags.kind || 'observation', text: flags.text, sourceIds: list(flags.sources) }));
     case 'summary': return out(await call('summary', { ...session, markdown: readFileSync(flags.file, 'utf8'), sourceIds: list(flags.sources) }));
