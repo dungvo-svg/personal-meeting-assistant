@@ -306,3 +306,21 @@ test('replay still runs through the old per-listening worker, with no meeting-le
     await r.finish(id); assert.equal(r.captureState, 'OFF'); assert.equal(r.capture, null);
   });
 });
+
+test('the follow worker\'s rows are stamped live by the host; what a recheck heard again and Claude\'s translations never reach what a share role (or anyone) reads through next/read', async () => {
+  await withFakes(async (r, dir) => {
+    const { id } = await openSession(r, dir); await r.start(id); await until(() => r.sources(id).length === 1, 'first text');
+    const [heard] = r.sources(id); assert.equal(heard.boundary, 'SILENCE_BOUNDARY_HEURISTIC; SOURCE_LIVE_FOLLOW', 'the follow worker of this host: live');
+    assert.deepEqual((await r.next(id, 0, 0, 100, true, 'dich')).items.map(item => item.id), [heard.id]);
+    const wall = new Date(Date.now() - 20000).toISOString();
+    const lo = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 0, 3, 'SOURCE_LIVE_FOLLOW', 'cap', 'lo', wall, 1);
+    const secret = r.ingest('ລັບ', 'local_asr_unverified', 0, 3, 'CHANNEL_MIC; MIC_STATE_OFF; SOURCE_LIVE_FOLLOW', 'cap', 'lo', wall, 1);
+    r.translate(id, [{ sourceId: lo, text: 'bản dịch công khai' }, { sourceId: secret, text: 'bản dịch dòng riêng' }]);
+    for (const sourceId of [lo, secret]) assert.equal((await r.recheck(id, { sourceId })).text, 'xin chào đã nghe lại');
+    assert.match(r.sources(id).find(row => row.id === secret).boundary, /RECHECKED$/);
+    const outputs = [await r.next(id, 0, 0, 100, true, 'dich'), await r.next(id, 0, 0, 100, true, 'chinh'), r.read(id, 0, 100, 'dich'), r.read(id, 0, 100), r.read(id, 0, 100, 'chinh')];
+    for (const output of outputs) { const text = JSON.stringify(output); assert.ok(!text.includes('đã nghe lại') && !text.includes('สวัสดี') && !text.includes('bản dịch'), 'recheck answers and translations live in their own tables and RAW only'); }
+    assert.deepEqual(outputs[0].items.map(item => item.id), [heard.id, lo], 'the mic-off row stays out, rechecked or not'); assert.deepEqual(outputs[2].items.map(item => item.id), [heard.id, lo]);
+    const raw = readFileSync(r.writeRaw(id).path, 'utf8'); assert.ok(raw.includes('(đã nghe lại: [lo] xin chào đã nghe lại') && raw.includes('bản dịch dòng riêng'), 'RAW keeps them for the owner');
+  });
+});

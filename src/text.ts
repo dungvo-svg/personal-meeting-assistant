@@ -16,6 +16,19 @@ export function micLabel(boundary: string | undefined, me?: string) {
   return `Tôi${me ? ' — ' + me : ''} (${state ?? 'micro'})`;
 }
 
+// May this row reach a share-role follower (`pma follow --as dich`, `pma read --as dich`)? Positive evidence only (plan 0.12 A): text
+// the host wrote itself, a speaker row heard live by a follow worker, or a mic row whose whole chunk had the mic ON. Everything else
+// (mic OFF/UNKNOWN, mixed chunks, replay of a mixed file, rows from before these flags, odd labels) stays out. synthetic_fixture is
+// test data of a fixture session, never audio.
+export function shareable(row: { origin?: string; boundary?: string }) {
+  if (row.origin === 'system_gap' || row.origin === 'operator_text' || row.origin === 'synthetic_fixture') return true;
+  const flags = row.boundary ?? '';
+  return flags.includes('CHANNEL_MIC') ? flags.includes('MIC_SHARE_OK') : flags.includes('SOURCE_LIVE_FOLLOW');
+}
+// What a follower may acknowledge: everything before its oldest line not yet printed, else everything scanned (hidden lines that
+// were scanned are safe to drop; a visible line is never acknowledged just because a later hidden one was scanned).
+export const ackOf = (batch: { id: number }[], after: number) => batch.length ? batch[0].id - 1 : after;
+
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // "Nam Phủ" heard by ASR becomes "Namfon (nghe: Nam Phủ)", so a wrong guess stays visible.
@@ -88,11 +101,14 @@ function loopKey(text: string) {
 
 // ASR loops ("cái", "cái", "cái"…) arrive as many segments; three or more identical short ones become one entry.
 // Segments that are mostly the same repeated phrase ("Thủy của Thủy của …", audit 30/10) fold from two.
+// A group never spans a change of channel or mic state ("Tôi (mic bật)" vs "Tôi (mic tắt — nói riêng)" vs the speakers): G7.
+const isMic = (row: Row) => !!row.boundary?.includes('CHANNEL_MIC');
+const sameVoice = (a: Row, b: Row) => isMic(a) === isMic(b) && micLabel(a.boundary) === micLabel(b.boundary);
 export function foldRuns<T extends Row>(rows: T[], minRun = 3, maxWords = 4) {
   const out: { first: T; last: T; count: number; loop: string | null }[] = [];
   for (const row of rows) {
     const previous = out.at(-1); const key = normalized(row.text); const loop = loopKey(row.text);
-    if (previous && key && ((loop && previous.loop === loop) || (key.split(' ').length <= maxWords && normalized(previous.first.text) === key))) { previous.last = row; previous.count++; }
+    if (previous && sameVoice(previous.first, row) && key && ((loop && previous.loop === loop) || (key.split(' ').length <= maxWords && normalized(previous.first.text) === key))) { previous.last = row; previous.count++; }
     else out.push({ first: row, last: row, count: 1, loop });
   }
   return out.flatMap(group => group.count >= (group.loop ? 2 : minRun) ? [group] : rowsOf(rows, group));
