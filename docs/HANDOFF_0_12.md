@@ -11,9 +11,9 @@
 | --- | --- |
 | Nền | owner HEAD `a771aeb` (v0.11.0) |
 | Nhánh tích hợp | `pma/v5-int` tại `.claude/worktrees/v5-int` |
-| Commit cuối | `9afe7ab`, tree `705db991d593b6db7ef74f75abe3e8ca71f9c94d` |
+| Bản đã test cuối | commit `9e1aef0`, tree `4b232d1169a94bc16c37a6d100f5161c00dbeb55`; sau đó chỉ có commit sửa riêng file handoff này |
 | Nhánh worker | `pma/v5-host` `54aabdd` (Sonnet A: host/CLI) · `pma/v5-worker` `927950e` (Sonnet B: bộ nghe) · `pma/v5-panel` `c6c36e3` (Sonnet C: gỡ panel) |
-| Gộp (local, theo thứ tự) | `ffffa2a` docs → `2a7aede` worker → `0c225f0` panel → `e1fb2c5` host → `724b474` sửa test → `9afe7ab` sửa theo review + bump + relock |
+| Gộp và sửa (local, theo thứ tự) | `ffffa2a` docs → `2a7aede` worker → `0c225f0` panel → `e1fb2c5` host → `724b474` sửa test → `9afe7ab` sửa theo review + bump + relock → `832bcc6` handoff → `214e99b` nhịp tim bộ đọc micro → `9e1aef0` tách nhãn thủ công khỏi bằng chứng chia sẻ |
 
 ## Quyết định kỹ thuật (Opus)
 
@@ -32,6 +32,10 @@
   - 2 vừa: nút micro đọc trễ; dòng `GIỚI HẠN` đọc sai chỗ nên không bao giờ in.
   - 3 nhẹ.
   - Đã sửa: 1, 2, 3, 5 (phần lỗi tạm thời) và 6. Điểm 4 và phần còn lại của 5 ghi thành giới hạn.
+- **Peer review Codex PMA-MIC-READER-LIVENESS, PMA-LIVENESS-BOUNDARY, PMA-MANUAL-LABEL-PUBLICATION:** chấp nhận cả ba sau khi kiểm mã.
+  - Bộ ghi viết nhịp tim mỗi 2 s.
+  - Muốn chia sẻ phải có lần đọc tự động sau mốc cuối đoạn + 1,5 s, không hở quá 4 s.
+  - `pma me` chỉ đổi nhãn RAW, không thành bằng chứng chia sẻ.
 - **Peer review Codex** (PMA-SESSION-ISOLATION-REVIEW-20261101): chấp nhận cả 3 điểm.
   1. `follow` ghim cuộc họp; test A→B.
   2. `release` sau khi phiên kết thúc; test.
