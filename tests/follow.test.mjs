@@ -61,7 +61,13 @@ test('follow acknowledges only what it has printed: a batch waiting for its wind
     assert.deepEqual([claim.after, claim.ack, claim.limit, claim.waitMs, claim.as, claim.follower], [9, 9, 1, 0, 'chinh', true]); assert.match(claim.lease, LEASE);
     assert.ok(nexts.every(args => args.lease === claim.lease), 'one lease for the whole process');
     assert.deepEqual(main.map(args => args.after), [9, 12, 15, 15, 15, 15, 15]);
-    assert.deepEqual(main.map(args => args.ack), [9, 9, 9, 9, 9, 15, 15], 'unprinted rows 10–12 hold the ack back even though 13–15 were scanned; once printed, the ack is the scan');
+    // How many polls fit in the 1 s window depends on machine load; the invariant does not: while 10–12 wait unprinted the
+    // ack stays at 9 although 13–15 were scanned, it never goes back, and once they are printed it is the scan (15).
+    const acks = main.map(args => args.ack);
+    assert.ok(acks.every(ack => ack === 9 || ack === 15) && acks.every((ack, i) => !i || ack >= acks[i - 1]), 'ack is 9 then 15, never in between or backwards: ' + acks);
+    assert.deepEqual(acks.slice(0, 3), [9, 9, 9], 'unprinted rows 10–12 hold the ack back even though 13–15 were scanned');
+    assert.equal(acks.at(-1), 15, 'once printed, the ack is the scan');
+    assert.ok(main.every(args => args.ack < 15 || args.after === 15), 'the ack never runs ahead of the scan');
     assert.equal(main[1].ack, ackOf([row(10, 'x')], 12));
     const [release] = host.calls('release'); assert.deepEqual([release.as, release.lease, release.ack], ['chinh', claim.lease, 15]);
   });
