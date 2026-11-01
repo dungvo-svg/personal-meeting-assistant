@@ -448,6 +448,16 @@ class MicStateTests(unittest.TestCase):
         recorder.copy_mic_state(lines, lambda state, app: written.append((state, app)))
         self.assertEqual(written, [('on', 'zoom'), ('off', 'zoom'), ('unknown', None)])
 
+    def test_an_unchanged_reading_is_written_again_as_a_beat_so_a_silent_reader_shows(self):
+        now = [0.0]; written = []
+        def lines():
+            for second in range(12):  # the reader says "on" once a second for 12 s
+                now[0] = float(second)
+                yield '{"mic":"on","app":"zoom"}'
+        recorder.copy_mic_state(lines(), lambda state, app: written.append(now[0]), clock=lambda: now[0])
+        self.assertEqual(written, [0.0, 2.0, 4.0, 6.0, 8.0, 10.0])  # every MIC_STATE_BEAT_SECONDS while nothing changes
+        self.assertEqual(recorder.MIC_STATE_BEAT_SECONDS, 2)
+
     def test_mic_state_is_in_the_timeline(self):
         with tempfile.TemporaryDirectory() as directory:
             clock = FakeClock()

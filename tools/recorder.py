@@ -45,6 +45,7 @@ RETRY_FIRST = 0.5
 RETRY_MAX = 5.0
 ERROR_REPEAT_SECONDS = 30  # the same open failure is logged again only this often
 STATUS_SECONDS = 10
+MIC_STATE_BEAT_SECONDS = 2  # an unchanged mic reading is written again this often: proof the reader is alive (worker allows 4 s)
 MAX_SECONDS = 12 * 3600
 STOP_FILE = 'STOP'
 PID_FILE = 'recorder.pid'
@@ -597,9 +598,13 @@ class Recorder:
         return 0
 
 
-def copy_mic_state(lines, write):
-    """JSON lines of tools/mic_state.ps1 ({"mic":"on|off|unknown","app":...}) -> write(state, app), repeats skipped."""
-    last = None
+def copy_mic_state(lines, write, clock=time.monotonic):
+    """JSON lines of tools/mic_state.ps1 ({"mic":"on|off|unknown","app":...}) -> write(state, app).
+
+    A repeat is written again once MIC_STATE_BEAT_SECONDS have passed since the last line: that beat is the proof the reader is still
+    alive. Without it a hung reader (alive, silent) would leave its last "on" standing for ever, and the worker would share mic speech
+    on it (review 01/11). Other repeats are skipped."""
+    last = None; written = None
     for line in lines:
         try:
             data = json.loads(line)
@@ -609,8 +614,8 @@ def copy_mic_state(lines, write):
             continue
         state = data.get('mic') if data.get('mic') in ('on', 'off', 'unknown') else 'unknown'
         key = (state, data.get('app'))
-        if key != last:
-            last = key
+        if key != last or clock() - written >= MIC_STATE_BEAT_SECONDS:
+            last = key; written = clock()
             write(state, data.get('app'))
 
 

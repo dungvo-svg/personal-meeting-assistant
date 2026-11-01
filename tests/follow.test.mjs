@@ -230,7 +230,9 @@ test('a real host: lease, ack, release and read --as through /rpc; a second foll
     const unleased = await call('next', { as: 'dich', after: 0, waitMs: 0, follower: true }); assert.equal(unleased.items.length, 1, 'a call without lease still reads');
     // the holder keeps printing; the unleased call did not move its cursor
     const second2 = (await call('fixture', { text: 'Đoạn hai.' })).id; for (let i = 0; i < 40 && !held.includes('Đoạn hai.'); i++) await sleep(100);
-    assert.match(held, /#2 .*Đoạn hai\./); assert.equal((await call('status')).followers.dich.cursor, second2);
+    // the ack of what it printed reaches the host with its next poll, a moment after the line appears
+    assert.match(held, /#2 .*Đoạn hai\./); for (let i = 0; i < 40 && (await call('status')).followers.dich.cursor !== second2; i++) await sleep(100);
+    assert.equal((await call('status')).followers.dich.cursor, second2);
     assert.equal((await call('read', { as: 'dich' })).items.length, 2); assert.equal((await call('read', {})).items.length, 2);
     assert.deepEqual(await call('release', { as: 'dich', lease: 'zzzzzzzz1', ack: 0 }), { released: false }); assert.equal((await call('status')).followers.dich.cursor, second2);
     await call('finish'); await stopped; assert.match(held, /KẾT THÚC/);

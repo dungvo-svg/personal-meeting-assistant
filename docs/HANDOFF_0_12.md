@@ -44,7 +44,7 @@ Chạy trong `.claude/worktrees/v5-int`, trên tree cuối.
 | Lệnh | Kết quả |
 | --- | --- |
 | `PMA_TEST_PORT=8931 PMA_CAPTURE_TEST_PORT=8932 PMA_SESSION_TEST_PORT=8933 npm test` | exit 0; Node 100 test, 100 qua |
-| `.venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py"` | exit 0; 140 test chạy: 139 qua, 1 bỏ qua (BuzzASR không cài) |
+| `.venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py"` | exit 0; 149 test chạy: 148 qua, 1 bỏ qua (BuzzASR không cài) |
 | `.venv/Scripts/python.exe -I tools/verify_baseline.py` | PASS 0.12.0, 65 file |
 
 Lịch sử lỗi:
@@ -58,7 +58,7 @@ Lịch sử lỗi:
 ## Giới hạn còn mở
 
 Xem CHANGELOG 0.12.0:
-- Bộ đọc nút micro treo thì trạng thái "bật" cuối cùng giữ nguyên, vì micro không có nhịp tim.
+- Không phát hiện tắt mic tức thời: bộ đọc hỏi nút micro khoảng mỗi giây (có nhịp tim 2 s; muốn chia sẻ phải có lần đọc sau cuối đoạn + 1,5 s). Bộ đọc còn sống mà đọc sai nút thì không phát hiện được.
 - Lời "Tôi" lúc mic bật có thể bị ẩn khi bộ nghe theo kịp sát thời gian thực.
 - MCP không có lease đúng lúc lease cũ hết hạn.
 - Tiến độ của follower không bền qua host restart.

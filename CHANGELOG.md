@@ -21,16 +21,18 @@ Refactor plan v5 (Codex audit → Opus quyết, 3 agent Sonnet làm song song tr
   - stop hook bảo vai dịch đọc bằng `./pma read --as <vai>` (trước đó là read đủ của owner: có thể in lời mic tắt lên màn hình share); `unread` của vai share chỉ đếm dòng nó được thấy;
   - `follow` ghim cuộc họp: mọi `next`/`read`/`release` mang `sessionId`; cuộc họp A kết thúc và B mở giữa hai lần gọi thì tiến trình A in nốt, nhả vai, `KẾT THÚC`, không bao giờ đọc/giữ/ack B; `--session` khác phiên đang mở bị từ chối;
   - `release` sau khi phiên vừa kết thúc vẫn ghi ack cuối nếu đúng phiên + vai + lease (không mở lại phiên); lease cũ hoặc phiên khác không đổi gì;
-  - micro: `MIC_SHARE_OK` chỉ khi mic còn đọc là bật thêm 1,5 s sau đoạn và bản ghi đã tới mốc đó (bộ đọc nút micro trễ ~1 s, chỉ ghi khi đổi); dòng micro cần cả `SOURCE_LIVE_FOLLOW`;
+  - micro: `MIC_SHARE_OK` chỉ khi mic còn đọc là bật thêm 1,5 s sau đoạn và bản ghi đã tới mốc đó (bộ đọc nút micro trễ ~1 s); dòng micro cần cả `SOURCE_LIVE_FOLLOW`;
+  - micro, sống của bộ đọc (peer review PMA-MIC-READER-LIVENESS): âm thanh còn chạy không chứng minh bộ đọc nút micro còn sống. Bộ ghi viết lại trạng thái không đổi mỗi 2 s (nhịp tim); bộ nghe chỉ gắn `MIC_SHARE_OK` khi thấy bộ đọc tự động đọc ở/trước đầu đoạn, **có một lần đọc ở/sau mốc cuối đoạn + 1,5 s** (quan sát dương qua mốc cuối, không phải lần đọc cũ kéo dài; peer review PMA-LIVENESS-BOUNDARY) và không hở quá 4 s giữa các lần đọc (`reader_alive`). Chưa có lần đọc đó lúc xử lý đoạn thì giữ lại, tiếng loa vẫn đi qua. Mục `pma me` thủ công không tính là dấu hiệu bộ đọc sống;
   - `GIỚI HẠN` đọc `status.replay` (trước đó đọc nhầm chỗ nên không bao giờ in);
   - lỗi gọi tạm thời lúc giành vai được thử lại như vòng chính rồi `DỪNG`, không văng ra ngoài;
   - test Python cho tiếng loa thật (không im) trong lúc mic tắt.
 - **Giới hạn còn mở (ghi rõ, chưa sửa):**
-  - nếu bộ đọc nút micro (UI Automation) treo mà không thoát, trạng thái "bật" cuối cùng giữ nguyên vì bộ ghi không có nhịp tim cho micro;
-  - lời "Tôi" lúc mic bật có thể không lên phiên dịch khi nhận dạng theo kịp sát thời gian thực (bản ghi chưa tới mốc +1,5 s): chọn ẩn khi thiếu bằng chứng;
+  - giới hạn cảm biến còn lại: không có phát hiện tắt mic tức thời: bộ đọc hỏi nút micro khoảng mỗi giây, nên một lần tắt mic chỉ thấy được ở lần hỏi sau (đã đệm 1,5 s và đòi lần đọc sau mốc đó); nếu giao diện Zoom/Meet chậm cập nhật nút hơn mức đó thì vẫn có thể lọt. Bộ đọc còn sống nhưng đọc sai nút (giao diện Zoom/Meet đổi) thì không phát hiện được: 1,5 s và nhịp tim chỉ chứng minh bộ đọc còn chạy, không chứng minh nút micro đúng;
+  - `pma me --on` (thủ công) không đủ để chia sẻ khi bộ đọc tự động không chạy: lời "Tôi" lúc đó chỉ ở phiên tổng hợp/RAW;
+  - lời "Tôi" lúc mic bật có thể không lên phiên dịch khi nhận dạng theo kịp sát thời gian thực (bản ghi hoặc lần đọc micro chưa tới mốc +1,5 s lúc xử lý đoạn): chọn ẩn khi thiếu bằng chứng; đo tỷ lệ này ở họp thật;
   - lệnh MCP không lease có thể đẩy con trỏ `chinh` đúng lúc lease cũ vừa hết hạn (90 s) mà tiến trình mới chưa giành lại; tiến trình cũ đang chờ có thể giành vai trước tiến trình bật lại ở phút 29;
   - tiến độ follower nằm trong bộ nhớ host, không bền qua host restart.
-- **Test (worktree `pma/v5-int`):** lần chạy tích hợp đầu Node 97 qua / 1 hỏng (test đếm số lần hỏi trong cửa sổ 1 s, phụ thuộc tải máy; sửa test giữ bất biến) → 98/98. Sau các sửa trên: Node 100/100 (exit 0); Python 140 chạy = 139 qua + 1 bỏ qua (BuzzASR không cài) (exit 0). Không có test âm thanh thật, micro, ASR hay host thật.
+- **Test (worktree `pma/v5-int`):** lần chạy tích hợp đầu Node 97 qua / 1 hỏng (test đếm số lần hỏi trong cửa sổ 1 s, phụ thuộc tải máy; sửa test giữ bất biến) → 98/98. Khi sửa theo peer review micro, test host thật hỏng 1/3 lần chạy riêng (đọc cursor trước khi ack của dòng vừa in tới host ở lần hỏi kế); sửa test chờ ack, 4/4 lần qua. Sau các sửa trên: Node 100/100 (exit 0); Python 149 chạy = 148 qua + 1 bỏ qua (BuzzASR không cài) (exit 0). Không có test âm thanh thật, micro, ASR hay host thật.
 - **Trạng thái:** implemented + tested trong worktree riêng. Chưa integrated vào nhánh chính của owner, chưa released, chưa used ở họp thật.
 
 ## 0.11.0 —31/10/2026

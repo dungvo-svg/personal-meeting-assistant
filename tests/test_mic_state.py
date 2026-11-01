@@ -54,6 +54,40 @@ class LabelTests(unittest.TestCase):
         self.assertEqual(ms.label_mic_chunk(states, start.isoformat().replace('+00:00', 'Z'), start.isoformat()), ms.MIC_STATE_ON)  # zero length
 
 
+class ReaderAliveTests(unittest.TestCase):
+    def at(self, seconds):
+        return 1_800_000_000.0 + seconds
+
+    def reading(self, seconds, state='on', by='mic_state.ps1'):
+        return {'type': 'mic_state', 't': self.at(seconds), 'state': state, 'by': by}
+
+    def test_steady_beats_through_the_chunk(self):
+        states = [self.reading(s) for s in (0, 2, 4, 6, 8, 10, 12, 14, 16)]
+        self.assertTrue(ms.reader_alive(states, self.at(5), self.at(15)))
+        self.assertFalse(ms.reader_alive(states, self.at(5), self.at(16.5)), 'nothing read yet after the end: no evidence')
+
+    def test_a_reader_that_stalls_without_exiting_is_not_alive(self):
+        # last "on" at 4 s, then nothing (hung, not exited) while the audio goes on
+        states = [self.reading(0), self.reading(2)]
+        self.assertTrue(ms.reader_alive(states, self.at(0.5), self.at(2)))
+        self.assertFalse(ms.reader_alive(states, self.at(1), self.at(4)), 'short chunk, last ON at its start, then the reader hangs')
+        self.assertFalse(ms.reader_alive(states, self.at(8), self.at(12)))
+        self.assertFalse(ms.reader_alive(states, self.at(30), self.at(33)))
+        self.assertTrue(ms.whole_on(states, self.at(30), self.at(33)))  # the label alone would still say on
+
+    def test_a_gap_inside_the_chunk_is_not_alive(self):
+        states = [self.reading(0), self.reading(2), self.reading(8), self.reading(12)]
+        self.assertFalse(ms.reader_alive(states, self.at(1), self.at(11)))
+
+    def test_no_reading_at_or_before_the_start(self):
+        self.assertFalse(ms.reader_alive([self.reading(3), self.reading(6)], self.at(1), self.at(7)))
+        self.assertFalse(ms.reader_alive([], self.at(1), self.at(2)))
+
+    def test_manual_entries_are_not_a_sign_of_life(self):
+        states = [self.reading(0), self.reading(5, by='manual'), self.reading(9, by='manual')]
+        self.assertFalse(ms.reader_alive(states, self.at(1), self.at(8)))
+
+
 class WholeOnTests(unittest.TestCase):
     def test_on_for_the_whole_chunk(self):
         states = [reading(0, 'on')]

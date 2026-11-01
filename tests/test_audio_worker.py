@@ -1006,7 +1006,8 @@ class FollowTests(unittest.TestCase):
         # not at the same time, or the worker would drop the mic as speaker bleed): the attendee comes through as ordinary speaker
         # text with no mic flag; only the owner's muted chunk is held back.
         self.session.segment(1, 'speaker', 0.0, [(15, 0), (4, 0.2), (1, 0)])
-        self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
+        for second in (0.0, 2.0, 4.0, 6.0, 8.0):  # the reader's beats while the mic stays on
+            self.session.event('mic_state', second, state='on', app='zoom', by='uia')
         self.session.event('mic_state', 9.5, state='off', app='zoom', by='uia')
         self.session.segment(1, 'mic', 0.0, [(3, 0.2), (8, 0), (3, 0.2), (6, 0)])
         self.session.end(20.0)
@@ -1024,6 +1025,45 @@ class FollowTests(unittest.TestCase):
             self.assertNotIn('MIC_SHARE_OK', row['boundary'])
             self.assertNotIn('MIC_STATE', row['boundary'])
             self.assertNotIn('CHANNEL_MIC', row['boundary'])
+
+    def test_a_mic_reader_that_stalls_without_exiting_does_not_let_its_last_on_share_later_speech(self):
+        # "on" at 0 s, then the reader hangs (no beat, no exit) while the recording and the attendees go on.
+        self.session.segment(1, 'speaker', 0.0, [(15, 0), (4, 0.2), (1, 0)])
+        self.session.event('mic_state', 0.0, state='on', app='zoom', by='mic_state.ps1')
+        self.session.segment(1, 'mic', 0.0, [(11, 0), (3, 0.2), (6, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertTrue(mic)
+        for row in mic:
+            self.assertIn('MIC_STATE_ON', row['boundary'])      # RAW keeps its label
+            self.assertNotIn('MIC_SHARE_OK', row['boundary'])   # but the stale "on" is no evidence for sharing
+        self.assertTrue(self.sources('speaker'), 'the attendees still come through')
+
+    def test_a_short_chunk_with_its_last_on_at_the_start_and_then_a_hung_reader_is_not_shared(self):
+        # on at 0 s, the reader hangs right after (no beat, no exit); a 3 s chunk at 0-3 s, audio goes on to 20 s
+        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
+        self.session.segment(1, 'mic', 0.0, [(3, 0.2), (17, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        first = self.sources('mic')[0]
+        self.assertIn('MIC_STATE_ON', first['boundary'])
+        self.assertNotIn('MIC_SHARE_OK', first['boundary'])
+
+    def test_steady_beats_of_the_mic_reader_let_a_mic_on_chunk_be_shared(self):
+        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        for second in (0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0):
+            self.session.event('mic_state', second, state='on', app='zoom', by='mic_state.ps1')
+        self.session.segment(1, 'mic', 0.0, [(11, 0), (3, 0.2), (6, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertTrue(mic)
+        self.assertIn('MIC_SHARE_OK', mic[0]['boundary'])
 
     def test_a_mute_read_just_after_a_mic_chunk_ends_keeps_it_from_being_shared(self):
         # The mic reader is about a second late: muted at 3.2 s, read at 4.0 s, for a chunk that ends at about 3 s.

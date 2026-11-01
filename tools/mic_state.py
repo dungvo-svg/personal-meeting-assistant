@@ -101,6 +101,26 @@ def whole_on(states, start_wall, end_wall):
     return all(label == MIC_STATE_ON for _begin, _end, label in effective_segments(states, start_wall, end_wall))
 
 
+def reader_alive(states, start_wall, end_wall, max_gap=4.0):
+    """True only if the automatic mic reader was seen alive all through the chunk AND after it: an automatic reading at or before
+    its start, one at or after its end (a positive observation past the covered end, not an old reading carried forward), and none
+    more than `max_gap` seconds after the previous one.
+
+    A change is written the moment the reader sees it, so with a reading at r >= end every change before r is already in the
+    timeline, and `whole_on` over the chunk is then based on what was seen, not on an extrapolation.
+
+    The recorder writes a reading on every change and, while nothing changes, again every few seconds (a beat). A hung reader stops
+    writing without exiting, so its last "on" would otherwise stand for ever: no recent reading means no evidence, not "still on".
+    Manual entries (`pma me`) are the owner's word, not a sign the reader is alive, and do not count here.
+    """
+    begin, end = sorted((to_epoch(start_wall), to_epoch(end_wall)))
+    times = [moment for moment, entry in _readings(states) if entry.get('by') != 'manual']
+    seen = [moment for moment in times if begin - max_gap <= moment <= end + max_gap]
+    if not seen or seen[0] > begin or seen[-1] < end:
+        return False
+    return all(later - earlier <= max_gap for earlier, later in zip(seen, seen[1:]))
+
+
 def split_points(states, start_wall, end_wall, min_segment=1.0):
     """Wall-clock times (epoch seconds) strictly inside the chunk where its label changes, so the worker can cut there.
 
