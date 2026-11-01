@@ -1053,6 +1053,23 @@ class FollowTests(unittest.TestCase):
         self.assertIn('MIC_STATE_ON', first['boundary'])
         self.assertNotIn('MIC_SHARE_OK', first['boundary'])
 
+    def test_a_manual_on_over_an_automatic_off_is_labelled_on_but_never_shared(self):
+        # the owner typed `pma me --on` but the meeting's mic button reads off: RAW shows "mic bật", the attendees get nothing
+        self.session.segment(1, 'speaker', 0.0, [(15, 0), (4, 0.2), (1, 0)])
+        self.session.event('mic_state', 0.0, state='on', app=None, by='manual')
+        for second in (0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0):
+            self.session.event('mic_state', second, state='off', app='zoom', by='mic_state.ps1')
+        self.session.segment(1, 'mic', 0.0, [(3, 0), (3, 0.2), (14, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertTrue(mic)
+        for row in mic:
+            self.assertIn('MIC_STATE_ON', row['boundary'])
+            self.assertNotIn('MIC_SHARE_OK', row['boundary'])
+        self.assertTrue(self.sources('speaker'), 'the attendees still come through')
+
     def test_steady_beats_of_the_mic_reader_let_a_mic_on_chunk_be_shared(self):
         self.session.segment(1, 'speaker', 0.0, [(20, 0)])
         for second in (0.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0):

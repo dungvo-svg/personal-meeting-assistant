@@ -88,6 +88,42 @@ class ReaderAliveTests(unittest.TestCase):
         self.assertFalse(ms.reader_alive(states, self.at(1), self.at(8)))
 
 
+class ShareOkTests(unittest.TestCase):
+    """The RAW label may follow `pma me`; publication follows only what the automatic reader saw."""
+
+    def at(self, seconds):
+        return 1_800_000_000.0 + seconds
+
+    def beats(self, state, by='mic_state.ps1', until=12):
+        return [{'type': 'mic_state', 't': self.at(s), 'state': state, 'by': by} for s in range(0, until + 1, 2)]
+
+    def manual(self, seconds, state):
+        return {'type': 'mic_state', 't': self.at(seconds), 'state': state, 'by': 'manual'}
+
+    def test_genuine_automatic_on_with_coverage_is_shared(self):
+        self.assertTrue(ms.share_ok(self.beats('on'), self.at(3), self.at(8)))
+
+    def test_manual_on_over_automatic_off_labels_on_but_is_not_shared(self):
+        states = [self.manual(0, 'on')] + self.beats('off')
+        self.assertEqual(ms.label_mic_chunk(states, self.at(3), self.at(8)), ms.MIC_STATE_ON)  # RAW keeps the owner's word
+        self.assertTrue(ms.reader_alive(states, self.at(3), self.at(8)))                       # fresh automatic samples
+        self.assertFalse(ms.share_ok(states, self.at(3), self.at(8)))
+
+    def test_manual_on_over_automatic_unknown_is_not_shared(self):
+        states = [self.manual(0, 'on')] + self.beats('unknown')
+        self.assertEqual(ms.label_mic_chunk(states, self.at(3), self.at(8)), ms.MIC_STATE_ON)
+        self.assertFalse(ms.share_ok(states, self.at(3), self.at(8)))
+
+    def test_manual_off_over_automatic_on_is_not_shared(self):
+        states = self.beats('on') + [self.manual(1, 'off')]
+        self.assertEqual(ms.label_mic_chunk(states, self.at(3), self.at(8)), ms.MIC_STATE_OFF)
+        self.assertFalse(ms.share_ok(states, self.at(3), self.at(8)))
+
+    def test_manual_release_returns_to_the_automatic_reading(self):
+        states = [self.manual(0, 'on')] + self.beats('on') + [{'type': 'mic_state', 't': self.at(1), 'state': 'unknown', 'by': 'manual', 'release': True}]
+        self.assertTrue(ms.share_ok(states, self.at(3), self.at(8)))
+
+
 class WholeOnTests(unittest.TestCase):
     def test_on_for_the_whole_chunk(self):
         states = [reading(0, 'on')]

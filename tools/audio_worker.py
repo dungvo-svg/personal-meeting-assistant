@@ -13,7 +13,7 @@ import types
 import uuid
 
 from follow_source import RATE16, SEGMENT_END, ChannelFollower, cut_window
-from mic_state import label_mic_chunk, reader_alive, whole_on
+from mic_state import label_mic_chunk, share_ok
 from timeline import Timeline, parse_wall
 
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
@@ -965,7 +965,7 @@ def capture(args):
                                     until = begin_wall + (end - begin) + MIC_STATE_GRACE_SECONDS
                                     horizon = timeline.end_wall()
                                     # The audio going on is not proof the mic reader is: it must have been seen alive through the chunk too.
-                                    if horizon is not None and horizon >= until and whole_on(states, begin_wall, until) and reader_alive(states, begin_wall, until):
+                                    if horizon is not None and horizon >= until and share_ok(states, begin_wall, until):
                                         marks += '; MIC_SHARE_OK'
                             emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place, **({'alternatives': others} if others else {})})
                             others = None

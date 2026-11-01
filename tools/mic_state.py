@@ -121,6 +121,20 @@ def reader_alive(states, start_wall, end_wall, max_gap=4.0):
     return all(later - earlier <= max_gap for earlier, later in zip(seen, seen[1:]))
 
 
+def share_ok(states, start_wall, end_wall):
+    """Whether a mic chunk may go to the shared translation session (owner 01/11: mic OFF and UNKNOWN never do).
+
+    Three things must all hold:
+    - the label the owner sees is ON for the whole chunk (a manual `--off` hides it);
+    - the AUTOMATIC reader alone saw ON for the whole chunk (a manual `--on` changes the RAW label, but it is not a reading of the
+      meeting's mic, so it never turns an automatic OFF/UNKNOWN into consent to publish);
+    - the automatic reader was seen alive through and past the chunk (`reader_alive`).
+    `end_wall` is the end of the covered stretch (the worker adds its grace).
+    """
+    automatic = [entry for entry in states or [] if not (isinstance(entry, dict) and entry.get('by') == 'manual')]
+    return whole_on(states, start_wall, end_wall) and whole_on(automatic, start_wall, end_wall) and reader_alive(states, start_wall, end_wall)
+
+
 def split_points(states, start_wall, end_wall, min_segment=1.0):
     """Wall-clock times (epoch seconds) strictly inside the chunk where its label changes, so the worker can cut there.
 
