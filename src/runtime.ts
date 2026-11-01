@@ -296,7 +296,9 @@ export class MeetingRuntime extends EventEmitter {
   release(id: string, name: string, lease: string, ack: number) {
     if (!Number.isSafeInteger(ack) || ack < 0) throw new Error('INVALID_CURSOR');
     const role = this.followers[name];
-    if (!this.session || this.session.id !== id || this.session.ended || !role?.lease || role.lease !== lease) return { released: false };
+    // The meeting may have just ended (follow prints its last batch, then releases): the same meeting, role and lease may still
+    // record the final ack. Nothing reopens the session; another meeting, role or lease changes nothing.
+    if (!this.session || this.session.id !== id || !role?.lease || role.lease !== lease) return { released: false };
     this.followers[name] = { cursor: ack, at: null };
     if (name === MAIN_FOLLOWER) this.agentCursor = ack;
     return { released: true };
@@ -360,8 +362,11 @@ export class MeetingRuntime extends EventEmitter {
   }
   followersState(id?: string) {
     return Object.fromEntries(Object.entries(this.followers).map(([name, f]) => {
-      const unread: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, f.cursor) : { count: 0 };
-      return [name, { cursor: f.cursor, at: f.at, unread: unread.count }];
+      // A share role's unread are only the rows it may see: the stop hook must not send it to read what is hidden from it.
+      const unread = !id ? 0 : name === MAIN_FOLLOWER
+        ? (this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, f.cursor) as any).count
+        : (this.db.prepare('SELECT origin,boundary FROM sources WHERE session_id=? AND id>?').all(id, f.cursor) as any[]).filter(shareable).length;
+      return [name, { cursor: f.cursor, at: f.at, unread }];
     }));
   }
   // Saved audio of a session: where it is, how big, which mix file. Null when no WAV exists (nothing recorded yet).

@@ -124,7 +124,8 @@ test('follow --as dich keeps its own cursor and never touches the main one; the 
   const behind = (await json('status')).followers.dich;
   assert.equal(behind.unread, 1); assert.equal(behind.cursor, second);
   const reason = JSON.parse(await runHook([bash('./pma follow --as dich')])).reason;
-  assert.match(reason, /người theo dõi "dich"/); assert.match(reason, new RegExp(`--after ${second}\``));
+  // the share role is sent to its own filtered read, never the owner's full one
+  assert.match(reason, /người theo dõi "dich"/); assert.match(reason, new RegExp(`\`./pma read --as dich --after ${second}\``));
   await call('finish');
 });
 

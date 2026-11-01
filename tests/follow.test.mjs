@@ -85,7 +85,7 @@ test('a share role coming back to more than --max printable rows skips the oldes
     const { out } = await cli(host, ['follow', '--as', 'dich', '--no-notes', '--max', '40']);
     assert.equal(out.match(/BỎ QUA/g).length, 1); assert.ok(out.includes('BỎ QUA #1–#20: quá cũ để chiếu lại (đọc ở phiên tổng hợp)\n'));
     assert.match(out, /LÔ #21–#60 \(40 đoạn\):/); assert.ok(!out.includes('câu số 1.') && !out.includes('câu số 20.') && out.includes('câu số 21.') && out.includes('câu số 60.'), 'skipped rows are named, never shown');
-    assert.deepEqual(host.calls('read'), [{ after: 0, limit: 100, as: 'dich' }]);
+    assert.deepEqual(host.calls('read'), [{ sessionId: 's', after: 0, limit: 100, as: 'dich' }]);
     assert.deepEqual(host.calls('next').slice(1).map(args => [args.after, args.ack]), [[20, 20], [60, 60]], 'the skip is acknowledged with the next call');
     assert.equal(host.calls('release')[0].ack, 60);
   });
@@ -97,7 +97,7 @@ test('a share role coming back to more than --max printable rows skips the oldes
 });
 
 test('a share role says once, without any text, that a replayed mixed file is not shown; chinh does not', async () => {
-  const handler = (method, args) => method === 'status' ? status({ session: { id: 's', title: 'Phát lại', ended: null, replay: { file: 'hop.mp4', speed: 4 } } }) : method === 'read' ? { items: [], nextCursor: 0, done: true } : method === 'release' ? { released: true } : args.limit === 1 ? reply([], args.after) : reply([], args.after, { ended: true });
+  const handler = (method, args) => method === 'status' ? status({ session: { id: 's', title: 'Phát lại', ended: null }, replay: { file: 'hop.mp4', speed: 4 } }) : method === 'read' ? { items: [], nextCursor: 0, done: true } : method === 'release' ? { released: true } : args.limit === 1 ? reply([], args.after) : reply([], args.after, { ended: true });
   const limit = 'GIỚI HẠN: đang phát lại file đã trộn — không tách được tiếng micro của người dùng khỏi loa, nên chữ không được chiếu ở vai này.';
   await withHost(handler, async host => { const { out } = await cli(host, ['follow', '--as', 'dich', '--no-notes']); assert.equal(out.split(limit).length - 1, 1); assert.doesNotMatch(out, /hop\.mp4/); });
   await withHost(handler, async host => { const { out } = await cli(host, ['follow', '--no-notes']); assert.ok(!out.includes('GIỚI HẠN')); });
@@ -183,6 +183,32 @@ test('pma read --as sends the role and prints only what it got; an all-hidden pa
 
 // ---- once against a real test host: schema of the new RPC fields and two real followers of one role ----
 const freePort = () => new Promise(res => { const s = createNet().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => res(port)); }); });
+test('follow is pinned to its meeting: when A ends and B opens between two calls, the A process never reads, claims or acknowledges B; it prints what it holds, releases A and ends', async () => {
+  let current = 's'; let nexts = 0;
+  await withHost((method, args) => {
+    if (method === 'status') return current === 's' ? status() : status({ session: { id: 'b', title: 'Họp B', ended: null }, agentCursor: 50 });
+    if (args.sessionId !== current) throw new Error('SESSION_NOT_ACTIVE');
+    if (method === 'release') return { released: true };
+    if (method === 'read') return { items: [], nextCursor: args.after, done: true };
+    if (method === 'next') {
+      if (args.limit === 1) return reply([], args.after);
+      if (++nexts === 1) { current = 'b'; return reply([row(1, 'cuối cuộc họp A')], 1); }   // A ends and B opens right after this reply
+      return reply([row(51, 'đã là cuộc họp B')], 51);
+    }
+    throw new Error('unexpected ' + method);
+  }, async host => {
+    const { out, code } = await cli(host, ['follow', '--as', 'dich', '--no-notes', '--batch', '30']);
+    assert.equal(code ?? 0, 0); assert.match(out, /LÔ #1–#1 \(1 đoạn\):\n#1 .*cuối cuộc họp A\nKẾT THÚC: phiên đã đóng/); assert.doesNotMatch(out, /cuộc họp B/);
+    const scoped = host.log.filter(entry => entry.method !== 'status');
+    assert.ok(scoped.length >= 3 && scoped.every(entry => entry.args.sessionId === 's'), 'every next/read/release names meeting A: ' + JSON.stringify(scoped.map(e => [e.method, e.args.sessionId])));
+  });
+  // --session that is not the open meeting: refused before anything is claimed
+  await withHost(method => { if (method === 'status') return status(); throw new Error('unexpected ' + method); }, async host => {
+    const { out, code } = await cli(host, ['follow', '--as', 'dich', '--session', 'other']);
+    assert.equal(code, 1); assert.match(out, /SESSION_NOT_ACTIVE/); assert.equal(host.log.filter(entry => entry.method !== 'status').length, 0);
+  });
+});
+
 test('a real host: lease, ack, release and read --as through /rpc; a second follow --as dich waits and gives up; release frees the role at once', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'pma-follow-real-')); const port = String(await freePort());
   const env = { ...process.env, PMA_PORT: port, PMA_TEST_MODE: '1', PMA_DATA_DIR: directory, PMA_STOP_HOOK: 'off', PMA_FOLLOW_RETRY_MS: '100', PMA_FOLLOW_BUSY_MAX_MS: '700' };
@@ -208,5 +234,10 @@ test('a real host: lease, ack, release and read --as through /rpc; a second foll
     assert.equal((await call('read', { as: 'dich' })).items.length, 2); assert.equal((await call('read', {})).items.length, 2);
     assert.deepEqual(await call('release', { as: 'dich', lease: 'zzzzzzzz1', ack: 0 }), { released: false }); assert.equal((await call('status')).followers.dich.cursor, second2);
     await call('finish'); await stopped; assert.match(held, /KẾT THÚC/);
+    // the final release after the meeting ended still lands (same meeting, role, lease): the role is free, at the last line printed
+    assert.deepEqual((await call('status')).followers.dich, { cursor: second2, at: null, unread: 0 });
+    // a new meeting: a follower of it works as usual
+    await call('prepare', { title: 'Phiên sau', fixture: true }); const b1 = (await call('fixture', { text: 'Cuộc họp B.' })).id;
+    const next = await run('follow', '--as', 'dich', '--no-notes', '--minutes', '0.00002'); assert.match(next.out, new RegExp(`#${b1} .*Cuộc họp B\\.`));
   } finally { await call('shutdown').catch(() => {}); await sleep(500); for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; rmSync(directory, { recursive: true, force: true }); }
 });

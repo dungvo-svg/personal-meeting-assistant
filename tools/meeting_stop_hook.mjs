@@ -58,5 +58,5 @@ const resume = name === 'chinh' ? './pma follow' : `./pma follow --as ${name}`;
 const who = name === 'chinh' ? '' : ` (người theo dõi "${name}")`;
 const reason = live
   ? `Cuộc họp "${session.title}" đang diễn ra (${state.captureState}, ${unread} đoạn chưa đọc${who}) mà không có ai theo dõi. Bật lại theo dõi: Monitor với lệnh \`${resume}\` (Claude Code), hoặc gọi source_next tiếp (MCP). Chỉ dừng khi người dùng nói kết thúc/đóng — khi đó \`./pma stop\` (hoặc session_finish) rồi làm RAW/SUMMARY/TASKS.`
-  : `Bộ thu đã dừng (${state.captureState}${state.lastError ? ': ' + state.lastError : ''}) nhưng còn ${unread} đoạn chưa đọc${who}. Đọc hết (\`./pma read --after ${own.cursor}\`), báo người dùng tình trạng bộ thu, rồi mới kết thúc lượt.`;
+  : `Bộ thu đã dừng (${state.captureState}${state.lastError ? ': ' + state.lastError : ''}) nhưng còn ${unread} đoạn chưa đọc${who}. Đọc hết (\`./pma read${name === 'chinh' ? '' : ' --as ' + name} --after ${own.cursor}\`), báo người dùng tình trạng bộ thu, rồi mới kết thúc lượt.`;
 process.stdout.write(JSON.stringify({ decision: 'block', reason }));

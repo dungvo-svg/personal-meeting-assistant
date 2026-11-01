@@ -23,7 +23,8 @@ export function micLabel(boundary: string | undefined, me?: string) {
 export function shareable(row: { origin?: string; boundary?: string }) {
   if (row.origin === 'system_gap' || row.origin === 'operator_text' || row.origin === 'synthetic_fixture') return true;
   const flags = row.boundary ?? '';
-  return flags.includes('CHANNEL_MIC') ? flags.includes('MIC_SHARE_OK') : flags.includes('SOURCE_LIVE_FOLLOW');
+  // Both kinds need the host's live-follow stamp; a mic row also needs the worker's whole-chunk-on flag.
+  return flags.includes('SOURCE_LIVE_FOLLOW') && (!flags.includes('CHANNEL_MIC') || flags.includes('MIC_SHARE_OK'));
 }
 // What a follower may acknowledge: everything before its oldest line not yet printed, else everything scanned (hidden lines that
 // were scanned are safe to drop; a visible line is never acknowledged just because a later hidden one was scanned).

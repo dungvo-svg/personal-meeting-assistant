@@ -2,7 +2,7 @@
   "schema": "personal-meeting-assistant-project@2",
   "name": "personal-meeting-assistant",
   "created_on": "2026-10-26",
-  "status": "PER_MEETING_RECORDER_LISTENER_VI_LO_TH_IMPLEMENTED_AWAITING_NEXT_REAL_MEETING",
+  "status": "SHARE_FILTER_PANEL_REMOVED_FOLLOW_ACK_LEASE_IMPLEMENTED_TESTED_NOT_RELEASED_AWAITING_NEXT_REAL_MEETING",
   "product_kind": "CLAUDE_USES_LOCAL_MEETING_TOOLS_FOR_OWNER",
   "workflow_owner": "USER_SELECTED_AI_AGENT",
   "audience": "SINGLE_USER_PERSONAL_ASSISTANT",
@@ -71,7 +71,7 @@
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "KEEP_UNTIL_USER_DELETES",
   "documentation_baseline": {
-    "version": "0.11.0",
+    "version": "0.12.0",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",
@@ -103,7 +103,9 @@
       "OWN-025",
       "OWN-026",
       "OWN-027",
-      "OWN-028"
+      "OWN-028",
+      "OWN-029",
+      "OWN-030"
     ],
     "superseded_owner_ids": [
       "OWN-004",

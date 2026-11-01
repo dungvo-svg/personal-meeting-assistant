@@ -1,10 +1,10 @@
 # S4 — Thiết kế độ tin cậy, kèm plan 0.12 (Opus, 01/11/2026)
 
-**Trạng thái:**
-- Draft thiết kế, đã sửa theo review độc lập S4 của Codex. Xem mục "Xử lý bản review độc lập S4".
-- Chưa code, chưa test, chưa tích hợp.
-
-**Lý do:** vòng triển khai bị chặn vì `.claude/settings.local.json` có `deny: Edit(//d/WORK/Agent/Agent-first/personal-meeting-assistant/**)`. Xem mục "Blocker" ở cuối.
+**Trạng thái (01/11/2026, cuối ngày):**
+- Thiết kế đã sửa theo review độc lập S4 của Codex (mục "Xử lý bản review độc lập S4").
+- Đã làm và test trong worktree `pma/v5-int`. Sau đó đã sửa theo review độc lập của bản tích hợp; xem CHANGELOG 0.12.0, gồm cả giới hạn còn mở.
+- Chưa tích hợp vào nhánh chính của owner, chưa phát hành, chưa dùng ở họp thật.
+- Mục "Blocker" ở cuối đã được giải: owner duyệt mở quyền ghi cho 4 worktree `v5-*` (U28).
 
 **Nền và giới hạn:**
 - Nền là owner HEAD `a771aeb` (v0.11.0). Pilot.3 chỉ để tham khảo.

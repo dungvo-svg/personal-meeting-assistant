@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.12.0 — 01/11/2026
+
+Refactor plan v5 (Codex audit → Opus quyết, 3 agent Sonnet làm song song trong worktree `pma/v5-host`, `pma/v5-worker`, `pma/v5-panel`, Opus gộp ở `pma/v5-int`). Plan và cách xử lý bản review độc lập S4: [docs/PLAN_0_12.md](docs/PLAN_0_12.md).
+
+- **Lời mic tắt/không rõ không tới phiên dịch đang share** (OWN-030, U27):
+  - Host lọc trước khi giao cho mọi vai khác `chinh` (`next`, `pma read --as`). Dòng ẩn mất cả chữ lẫn `↳`; con trỏ vẫn đi qua.
+  - Dòng micro chỉ được giao khi có `MIC_SHARE_OK`: bộ nghe chỉ gắn cờ này khi **cả đoạn** là mic bật (`whole_on`), không theo đa số. Nhãn đa số giữ cho RAW.
+  - Dòng loa chỉ được giao khi host đã gắn nguồn gốc nghe trực tiếp (`SOURCE_LIVE_FOLLOW`). Replay file trộn bị chặn, follow in một dòng `GIỚI HẠN` không nội dung.
+  - Tiếng loa của người dự vẫn được dịch khi mic tắt. Phiên tổng hợp, WAV và RAW không đổi.
+- **Gộp dòng giữ nhãn** (G7): không gộp qua ranh giới mic bật/tắt/không rõ hay kênh; nhóm lặp in kèm nhãn.
+- **Gỡ bảng web cũ** (ENG-29): bỏ `web/index.html`, `GET /`, cookie, `/api/*`, SSE, `panel.json`; mọi đường ngoài `/rpc` trả 404. Nhập tay giữ bằng `pma say --text` (RAW ghi "nhập tay"). `probe.mjs`, `doctor.py`, stop hook chuyển sang `/rpc`.
+- **Follow tin cậy hơn, bề mặt model không đổi** (ENG-30):
+  - con trỏ vai = chỗ đã in (`ack`), không mất lô khi follow bị ngắt;
+  - một tiến trình một vai (`lease`, 90 s); MCP không lease không đổi tiến độ của vai đang có người giữ;
+  - `release` trước BẬT LẠI / KẾT THÚC / DỪNG; vai share bật lại chỉ chiếu lại 40 dòng gần nhất (`BỎ QUA` không nội dung);
+  - `pma picture` lưu lại cùng nội dung không tạo bản mới.
+- **Tài liệu:** DECISION_LOG v0.12.0 (U26–U28, OWN-029/030, ENG-28..30, ENG-03/17 ghi đã thay), baseline v0.12, skill `hop` (brief dịch thô chỉ dùng brief/follow/translate, không in dòng `[Tôi]` riêng).
+- **Sửa sau review độc lập của bản tích hợp** (agent review + peer review Codex, 01/11):
+  - stop hook bảo vai dịch đọc bằng `./pma read --as <vai>` (trước đó là read đủ của owner: có thể in lời mic tắt lên màn hình share); `unread` của vai share chỉ đếm dòng nó được thấy;
+  - `follow` ghim cuộc họp: mọi `next`/`read`/`release` mang `sessionId`; cuộc họp A kết thúc và B mở giữa hai lần gọi thì tiến trình A in nốt, nhả vai, `KẾT THÚC`, không bao giờ đọc/giữ/ack B; `--session` khác phiên đang mở bị từ chối;
+  - `release` sau khi phiên vừa kết thúc vẫn ghi ack cuối nếu đúng phiên + vai + lease (không mở lại phiên); lease cũ hoặc phiên khác không đổi gì;
+  - micro: `MIC_SHARE_OK` chỉ khi mic còn đọc là bật thêm 1,5 s sau đoạn và bản ghi đã tới mốc đó (bộ đọc nút micro trễ ~1 s, chỉ ghi khi đổi); dòng micro cần cả `SOURCE_LIVE_FOLLOW`;
+  - `GIỚI HẠN` đọc `status.replay` (trước đó đọc nhầm chỗ nên không bao giờ in);
+  - lỗi gọi tạm thời lúc giành vai được thử lại như vòng chính rồi `DỪNG`, không văng ra ngoài;
+  - test Python cho tiếng loa thật (không im) trong lúc mic tắt.
+- **Giới hạn còn mở (ghi rõ, chưa sửa):**
+  - nếu bộ đọc nút micro (UI Automation) treo mà không thoát, trạng thái "bật" cuối cùng giữ nguyên vì bộ ghi không có nhịp tim cho micro;
+  - lời "Tôi" lúc mic bật có thể không lên phiên dịch khi nhận dạng theo kịp sát thời gian thực (bản ghi chưa tới mốc +1,5 s): chọn ẩn khi thiếu bằng chứng;
+  - lệnh MCP không lease có thể đẩy con trỏ `chinh` đúng lúc lease cũ vừa hết hạn (90 s) mà tiến trình mới chưa giành lại; tiến trình cũ đang chờ có thể giành vai trước tiến trình bật lại ở phút 29;
+  - tiến độ follower nằm trong bộ nhớ host, không bền qua host restart.
+- **Test (worktree `pma/v5-int`):** lần chạy tích hợp đầu Node 97 qua / 1 hỏng (test đếm số lần hỏi trong cửa sổ 1 s, phụ thuộc tải máy; sửa test giữ bất biến) → 98/98. Sau các sửa trên: Node 100/100 (exit 0); Python 140 chạy = 139 qua + 1 bỏ qua (BuzzASR không cài) (exit 0). Không có test âm thanh thật, micro, ASR hay host thật.
+- **Trạng thái:** implemented + tested trong worktree riêng. Chưa integrated vào nhánh chính của owner, chưa released, chưa used ở họp thật.
+
 ## 0.11.0 —31/10/2026
 
 Audit thiết kế 31/10 (owner: "có vẻ bạn đang làm sai thiết kế").

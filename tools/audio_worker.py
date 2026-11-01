@@ -137,6 +137,8 @@ REPEAT_PATTERNS = tuple(
 # Longest chunk before a forced cut, and how long a backed-up queue may keep growing a chunk before audio is dropped.
 MAX_CHUNK_SECONDS = 20
 GPU_MIN_CHUNK_SECONDS = 3
+# A mic chunk is shared only if the mic is still read as on this long after it ends (mic_state.ps1 polls about once a second).
+MIC_STATE_GRACE_SECONDS = 1.5
 GROWTH_LIMIT_SECONDS = MAX_CHUNK_SECONDS + 10
 LANG_UNSURE_BELOW = 0.65
 LAO_LOW_LOGPROB = -1.0
@@ -955,10 +957,14 @@ def capture(args):
                                 if listening.follow and place:
                                     # Mic on in the meeting / muted ("nói riêng") / unknown, by what the recorder saw (owner Q7).
                                     begin_wall = parse_wall(place['wall'])
-                                    mic_span = (timeline.mic_states(), begin_wall, begin_wall + (end - begin))
-                                    marks += '; ' + label_mic_chunk(*mic_span)
-                                    # Shared with attendees only if the mic was on for the WHOLE chunk (the majority label is not evidence).
-                                    if whole_on(*mic_span):
+                                    states = timeline.mic_states()
+                                    marks += '; ' + label_mic_chunk(states, begin_wall, begin_wall + (end - begin))
+                                    # Shared with attendees only if the mic was on for the WHOLE chunk (the majority label is not evidence),
+                                    # and still on MIC_STATE_GRACE_SECONDS later: the mic reader polls once a second and writes only changes, so a
+                                    # mute just before the chunk ended shows up after it. No recording yet that far → not shared.
+                                    until = begin_wall + (end - begin) + MIC_STATE_GRACE_SECONDS
+                                    horizon = timeline.end_wall()
+                                    if horizon is not None and horizon >= until and whole_on(states, begin_wall, until):
                                         marks += '; MIC_SHARE_OK'
                             emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place, **({'alternatives': others} if others else {})})
                             others = None

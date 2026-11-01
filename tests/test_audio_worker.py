@@ -1002,7 +1002,10 @@ class FollowTests(unittest.TestCase):
         self.assertIn('MIC_STATE_OFF', mic[1]['boundary'])
 
     def test_only_a_mic_chunk_with_the_mic_on_for_all_of_it_gets_mic_share_ok(self):
-        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        # While the owner is muted (from 9.5 s) they talk privately (mic 11-14 s) and later another attendee talks (speaker 15-19 s;
+        # not at the same time, or the worker would drop the mic as speaker bleed): the attendee comes through as ordinary speaker
+        # text with no mic flag; only the owner's muted chunk is held back.
+        self.session.segment(1, 'speaker', 0.0, [(15, 0), (4, 0.2), (1, 0)])
         self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
         self.session.event('mic_state', 9.5, state='off', app='zoom', by='uia')
         self.session.segment(1, 'mic', 0.0, [(3, 0.2), (8, 0), (3, 0.2), (6, 0)])
@@ -1012,12 +1015,41 @@ class FollowTests(unittest.TestCase):
         mic = self.sources('mic')
         self.assertEqual(len(mic), 2)
         self.assertIn('MIC_STATE_ON', mic[0]['boundary'])
-        self.assertIn('MIC_SHARE_OK', mic[0]['boundary'])  # on for the whole chunk
+        self.assertIn('MIC_SHARE_OK', mic[0]['boundary'])  # on for the whole chunk and well after it
         self.assertIn('MIC_STATE_OFF', mic[1]['boundary'])
         self.assertNotIn('MIC_SHARE_OK', mic[1]['boundary'])
-        for row in self.sources('speaker'):
+        speaker = self.sources('speaker')
+        self.assertTrue(speaker, 'remote speech during the mute must still be transcribed')
+        for row in speaker:
             self.assertNotIn('MIC_SHARE_OK', row['boundary'])
             self.assertNotIn('MIC_STATE', row['boundary'])
+            self.assertNotIn('CHANNEL_MIC', row['boundary'])
+
+    def test_a_mute_read_just_after_a_mic_chunk_ends_keeps_it_from_being_shared(self):
+        # The mic reader is about a second late: muted at 3.2 s, read at 4.0 s, for a chunk that ends at about 3 s.
+        self.session.segment(1, 'speaker', 0.0, [(20, 0)])
+        self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
+        self.session.event('mic_state', 4.0, state='off', app='zoom', by='uia')
+        self.session.segment(1, 'mic', 0.0, [(3, 0.2), (17, 0)])
+        self.session.end(20.0)
+        self.start()
+        self.finish()
+        first = self.sources('mic')[0]
+        self.assertIn('MIC_STATE_ON', first['boundary'])
+        self.assertNotIn('MIC_SHARE_OK', first['boundary'])
+
+    def test_a_mic_chunk_too_close_to_the_end_of_the_recording_is_not_shared(self):
+        # Nothing recorded 1.5 s past the chunk: no evidence the mic stayed on, so it is held back.
+        self.session.segment(1, 'speaker', 0.0, [(4, 0)])
+        self.session.event('mic_state', 0.0, state='on', app='zoom', by='uia')
+        self.session.segment(1, 'mic', 0.0, [(1, 0), (3, 0.2)])
+        self.session.end(4.0)
+        self.start()
+        self.finish()
+        mic = self.sources('mic')
+        self.assertTrue(mic)
+        for row in mic:
+            self.assertNotIn('MIC_SHARE_OK', row['boundary'])
 
     def test_a_mic_chunk_that_is_mostly_on_but_ends_muted_is_labelled_on_but_not_shared(self):
         self.session.segment(1, 'speaker', 0.0, [(20, 0)])

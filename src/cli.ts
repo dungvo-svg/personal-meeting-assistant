@@ -87,12 +87,17 @@ function languagesOf(flags: Record<string, string>) { return flags.languages ? f
 // A role already followed by another live process is waited for (every 5 s, up to 100 s), then given up. Env: tests shorten both.
 const BUSY_RETRY_MS = Number(process.env.PMA_FOLLOW_RETRY_MS || 5000); const BUSY_MAX_MS = Number(process.env.PMA_FOLLOW_BUSY_MAX_MS || 100000);
 const isBusy = (error: unknown) => /FOLLOWER_BUSY/.test(String((error as any)?.message ?? error));
+const isGone = (error: unknown) => /SESSION_NOT_ACTIVE|SESSION_NOT_FOUND/.test(String((error as any)?.message ?? error));
 
 async function follow(flags: Record<string, string>) {
   // 15 s by default: the 60 s batches of 29–30/10 made Claude's answers lag the meeting by a minute or more.
   const batchMs = Number(flags.batch || 15) * 1000; const maxLines = Number(flags.max || 40);
   let status = await call('status');
   if (!status.session || status.session.ended) { out({ error: 'NO_ACTIVE_SESSION' }); process.exitCode = 1; return; }
+  if (flags.session && flags.session !== status.session.id) { out({ error: 'SESSION_NOT_ACTIVE', hint: 'follow chỉ theo phiên đang mở' }); process.exitCode = 1; return; }
+  // This process follows this meeting only: every call names it, so once it ends and another one opens, the old follower never
+  // reads, claims or acknowledges the new meeting (the host refuses an ID that is not the open session).
+  const sessionId: string = status.session.id;
   const name = flags.as ?? 'chinh';
   if (!/^[a-z0-9-]{1,24}$/.test(name)) { out({ error: 'INVALID_FOLLOWER_NAME', hint: '--as chỉ gồm a-z, 0-9, dấu gạch ngang, tối đa 24 ký tự' }); process.exitCode = 1; return; }
   // One lease per process: it is what keeps two followers of the same role from printing the same lines twice.
@@ -108,7 +113,7 @@ async function follow(flags: Record<string, string>) {
   const taiNow = name !== 'chinh' && flags['tai-now'] !== 'false';
   console.log(`FOLLOWING ${name} "${status.session.title}" từ #${after} · lô ${batchMs / 1000}s · trạng thái ${state}`);
   // A replay is one mixed file: the user's microphone cannot be told from the speakers, so a share role gets no text from it (host side).
-  if (name !== MAIN && status.session.replay) console.log('GIỚI HẠN: đang phát lại file đã trộn — không tách được tiếng micro của người dùng khỏi loa, nên chữ không được chiếu ở vai này.');
+  if (name !== MAIN && status.replay) console.log('GIỚI HẠN: đang phát lại file đã trộn — không tách được tiếng micro của người dùng khỏi loa, nên chữ không được chiếu ở vai này.');
   const flush = () => {
     if (!batch.length) return;
     console.log(`LÔ #${batch[0].id}–#${batch.at(-1).id} (${batch.length} đoạn):`);
@@ -118,16 +123,19 @@ async function follow(flags: Record<string, string>) {
     batch = [];
   };
   // Gives the role back before the process ends (and before BẬT LẠI is printed, so the next process finds it free). Errors do not matter.
-  const leave = () => call('release', { as: name, lease, ack: ackOf(batch, after) }, 5000).catch(() => {});
+  const leave = () => call('release', { sessionId, as: name, lease, ack: ackOf(batch, after) }, 5000).catch(() => {});
   // Claims the role (a next call that only carries the lease). Busy: say so once, retry, give up after BUSY_MAX_MS. A claim after a wait
   // starts from the cursor the other process left, not from the one this process read before waiting.
   const acquire = async (first: boolean) => {
-    const waitStarted = Date.now(); let told = false;
+    const waitStarted = Date.now(); let told = false; let errors = 0;
     for (let attempt = 0; ; attempt++) {
-      if (!(first && (attempt === 0 || flags.after))) after = resumeAt(await call('status'));
-      try { await call('next', { after, ack: after, waitMs: 0, limit: 1, follower: true, as: name, lease }, 15000); return true; }
+      try {
+        if (!(first && (attempt === 0 || flags.after))) { const s = await call('status'); if (s.session?.id !== sessionId || s.session?.ended) return 'ended'; after = resumeAt(s); }
+        await call('next', { sessionId, after, ack: after, waitMs: 0, limit: 1, follower: true, as: name, lease }, 15000); return true;
+      }
       catch (error) {
-        if (!isBusy(error)) throw error;
+        if (isGone(error)) return 'ended';
+        if (!isBusy(error)) { if (++errors >= 5) throw error; await new Promise(r => setTimeout(r, 3000)); continue; }
         if (!told) { told = true; console.log(`CHỜ: vai ${name} đang có tiến trình theo dõi khác`); }
         if (Date.now() - waitStarted >= BUSY_MAX_MS) return false;
         await new Promise(r => setTimeout(r, BUSY_RETRY_MS));
@@ -140,7 +148,7 @@ async function follow(flags: Record<string, string>) {
   const catchUp = async () => {
     if (name === MAIN) return;
     const pending: number[] = [];
-    for (let from = after; ;) { const page = await call('read', { after: from, limit: 100, as: name }); pending.push(...page.items.map((item: any) => item.id)); from = page.nextCursor; if (page.done) break; }
+    for (let from = after; ;) { const page = await call('read', { sessionId, after: from, limit: 100, as: name }); pending.push(...page.items.map((item: any) => item.id)); from = page.nextCursor; if (page.done) break; }
     if (pending.length > maxLines) { const cut = pending.length - maxLines; console.log(`BỎ QUA #${pending[0]}–#${pending[cut - 1]}: quá cũ để chiếu lại (đọc ở phiên tổng hợp)`); after = pending[cut - 1]; }
   };
   // Sau mỗi lô: báo khi chữ ra chậm hơn lời nói, và nhắc ghi chú cuốn chiếu mỗi 10 phút nghe.
@@ -160,16 +168,26 @@ async function follow(flags: Record<string, string>) {
     const since = Math.max(Date.parse(s.lastNoteAt ?? '') || 0, Date.parse(s.captureInfo?.listeningSince ?? '') || 0);
     if (flags['no-notes'] !== 'true' && since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút chưa có ghi chú cuốn chiếu. Ghi tóm tắt khúc vừa rồi: pma note --text "..." --sources <id,...>`); }
   };
-  if (!await acquire(true)) return giveUp();
+  const ended = async () => { flush(); await leave(); console.log('KẾT THÚC: phiên đã đóng'); };
+  const claimed = await acquire(true).catch(error => { console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return 'failed' as const; });
+  if (claimed === 'failed') return;
+  if (claimed === 'ended') return ended();
+  if (!claimed) return giveUp();
   await catchUp();
   for (;;) {
     let reply: any;
     // With a batch pending, wait no longer than what is left of its window.
     const waitMs = batch.length ? Math.max(200, batchMs - (Date.now() - batchStarted)) : 20000;
-    try { reply = await call('next', { after, ack: ackOf(batch, after), waitMs: Math.min(20000, waitMs), limit: 100, follower: true, as: name, lease }, 40000); failures = 0; }
+    try { reply = await call('next', { sessionId, after, ack: ackOf(batch, after), waitMs: Math.min(20000, waitMs), limit: 100, follower: true, as: name, lease }, 40000); failures = 0; }
     catch (error) {
+      // The meeting ended between two calls (or another one is open now): print what is held, release, stop.
+      if (isGone(error)) return ended();
       // Another process took the role while this one was away (a sleeping machine): what it holds is the new owner's to deliver.
-      if (isBusy(error)) { batch = []; if (!await acquire(false)) return giveUp(); await catchUp(); continue; }
+      if (isBusy(error)) {
+        batch = []; const again = await acquire(false).catch(() => 'failed' as const);
+        if (again === 'ended') return ended(); if (again === 'failed') { console.log('DỪNG: không gọi được runtime'); process.exitCode = 1; return; }
+        if (!again) return giveUp(); await catchUp(); continue;
+      }
       if (++failures >= 5) { flush(); await leave(); console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return; }
       await new Promise(r => setTimeout(r, 3000)); continue;
     }
@@ -181,7 +199,7 @@ async function follow(flags: Record<string, string>) {
     }
     if (reply.items.length) { if (!batch.length) batchStarted = Date.now(); batch.push(...reply.items); }
     after = reply.nextCursor;  // scanned, hidden lines too; what the host is told is acknowledged is ackOf(batch, after)
-    if (reply.ended) { flush(); await leave(); console.log('KẾT THÚC: phiên đã đóng'); return; }
+    if (reply.ended) return ended();
     if (batch.length && (batch.length >= maxLines || Date.now() - batchStarted >= batchMs || (taiNow && batch.some(item => item.language === 'lo' || item.language === 'th')))) { flush(); await checkHealth(); }
     else if (Date.now() - lastCheck > 30000) await checkHealth();
     if (Date.now() - followStarted > followMs) {

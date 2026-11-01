@@ -29,7 +29,7 @@ const MATRIX = [
   ['speaker, replay of a mixed file', REPLAY, false], ['speaker, replay with ASR flags', 'SILENCE_BOUNDARY_HEURISTIC; ' + REPLAY, false],
   ['speaker, old row without provenance', 'SILENCE_BOUNDARY_HEURISTIC', false], ['speaker, empty boundary', '', false], ['speaker, odd stamp', 'SOURCE_LIVE', false], ['speaker, odd stamp 2', 'LIVE_FOLLOW', false],
   // mic channel: only a flag that says the whole chunk had the mic ON
-  ['mic, whole chunk ON', `${MIC}; MIC_STATE_ON; MIC_SHARE_OK; ${LIVE}`, true], ['mic, whole chunk ON, no live stamp', `${MIC}; MIC_STATE_ON; MIC_SHARE_OK`, true],
+  ['mic, whole chunk ON', `${MIC}; MIC_STATE_ON; MIC_SHARE_OK; ${LIVE}`, true], ['mic, whole chunk ON, no live stamp', `${MIC}; MIC_STATE_ON; MIC_SHARE_OK`, false],
   ['mic, majority ON (no SHARE_OK)', `${MIC}; MIC_STATE_ON; ${LIVE}`, false], ['mic, ON without anything else', `${MIC}; MIC_STATE_ON`, false],
   ['mic, OFF', `${MIC}; MIC_STATE_OFF; ${LIVE}`, false], ['mic, OFF, no stamp', `${MIC}; MIC_STATE_OFF`, false],
   ['mic, UNKNOWN (also a tie)', `${MIC}; MIC_STATE_UNKNOWN; ${LIVE}`, false], ['mic, no state label', `${MIC}; ${LIVE}`, false], ['mic alone', MIC, false],
@@ -239,9 +239,14 @@ test('G5: release gives the role back (cursor = ack, no heartbeat) only to the m
     await nx(r, { as: 'chinh', after: rows[2], ack: rows[2], lease: A }); assert.equal(r.agentCursor, rows[2]);
     assert.deepEqual(r.release(id, 'chinh', A, rows[0]), { released: true }); assert.equal(r.agentCursor, rows[0]); assert.equal(r.followers.chinh.at, null);
     const noLease = r.compact(); assert.equal(noLease.unread, 2);
-    // a session that has ended answers released:false instead of an error
+    // the meeting has just ended: follow printed its last batch and releases with the final ack. The same meeting, role and lease
+    // may still record it, without reopening anything; a stale lease changes nothing, and once another meeting is prepared the old
+    // one's release is refused
     await nx(r, { as: 'dich', after: 0, lease: B }); await r.finish(id);
-    assert.deepEqual(r.release(id, 'dich', B, 3), { released: false });
+    assert.deepEqual(r.release(id, 'dich', A, rows[0]), { released: false }); assert.equal(r.followers.dich.lease, B);
+    assert.deepEqual(r.release(id, 'dich', B, rows[2]), { released: true }); assert.deepEqual(r.followers.dich, { cursor: rows[2], at: null });
+    assert.ok(r.session.ended); assert.throws(() => r.ingest('muộn', 'operator_text'), /SESSION_NOT_ACTIVE/);
+    r.prepare('Họp sau'); assert.deepEqual(r.release(id, 'dich', B, 0), { released: false });
   });
 });
 
@@ -284,5 +289,14 @@ test('translations are never in what a share role reads', async () => {
     r.translate(id, [{ sourceId: lo, text: 'bản dịch công khai' }, { sourceId: secret, text: 'bản dịch của dòng riêng' }]);
     for (const out of [JSON.stringify(await nx(r, { as: 'dich' })), JSON.stringify(r.read(id, 0, 100, 'dich')), JSON.stringify(await nx(r, { as: 'chinh' })), JSON.stringify(r.read(id, 0, 100))]) assert.ok(!out.includes('bản dịch'), 'a translation is read from RAW only');
     assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /→ \(Claude dịch\) bản dịch của dòng riêng/);
+  });
+});
+
+test('a share role\'s unread counts only rows it may see, so the stop hook never sends it to read hidden ones; chinh counts all', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp'); const hello = ing(r, 'chào cả nhà', LIVE); await nx(r, { as: 'dich', after: hello, ack: hello, lease: A }); await nx(r, { as: 'chinh', after: hello, ack: hello, lease: B });
+    ing(r, 'nói riêng lúc tắt mic', `${MIC}; MIC_STATE_OFF; ${LIVE}`); ing(r, 'không rõ trạng thái', `${MIC}; MIC_STATE_UNKNOWN; ${LIVE}`); ing(r, 'phát lại', REPLAY);
+    assert.equal(r.compact().followers.dich.unread, 0); assert.equal(r.compact().followers.chinh.unread, 3);
+    ing(r, 'người dự nói tiếp', LIVE); assert.equal(r.compact().followers.dich.unread, 1);
   });
 });
