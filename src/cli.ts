@@ -11,8 +11,8 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
                                    variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
-  pma picture [--file f.md --sources 1,2 [--expect-revision N]]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô);
-                                   lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --expect-revision: bản đang sửa, có bản mới hơn thì báo xung đột;
+  pma picture [--file f.md --sources 1,2 --base N --receipt rcpt-…]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô);
+                                   lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --base N: bản đã đọc (lần đầu 0), BẮT BUỘC cho picture/summary/tasks; có bản mới hơn thì báo xung đột;
                                    --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
   pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
@@ -75,7 +75,7 @@ function options(argv: string[]) {
   return { positional, flags };
 }
 // --receipt (of `pma brief --as chinh`) and --key (idempotency) for the central drafts.
-const draftFlags = (flags: Record<string, string>) => ({ ...(flags.receipt ? { receipt: flags.receipt } : {}), ...(flags.key ? { idempotencyKey: flags.key } : {}) });
+const draftFlags = (flags: Record<string, string>) => { const base = flags.base ?? flags['expect-revision']; return { ...(flags.receipt ? { receipt: flags.receipt } : {}), ...(flags.key ? { idempotencyKey: flags.key } : {}), ...(base !== undefined ? { expectedRevision: Number(base) } : {}) }; };
 // --no-mic / --mic change the session's choice (kept until changed again); neither keeps it.
 const micFlag = (flags: Record<string, string>) => flags['no-mic'] === 'true' ? { mic: false } : flags.mic === 'true' ? { mic: true } : {};
 const list = (value?: string) => value ? value.split(',').map(v => Number(v.trim())).filter(Number.isInteger) : [];
@@ -279,7 +279,7 @@ async function main() {
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
     case 'picture': {
-      if (flags.file) return out(await attach('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources), ...(flags['expect-revision'] ? { expectedRevision: Number(flags['expect-revision']) } : {}), ...draftFlags(flags) }));
+      if (flags.file) return out(await attach('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources), ...draftFlags(flags) }));
       const p = await call('picture', session);
       return console.log(p ? `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n${p.text}` : 'Chưa có bức tranh cuộc họp (pma picture --file f.md --sources <id,…>)');
     }

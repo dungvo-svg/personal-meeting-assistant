@@ -185,7 +185,10 @@ export class MeetingRuntime extends EventEmitter {
     this.db.exec(CONTEXT_TABLES_SQL); this.ledger = new Ledger(this.db, () => this.now()); this.decisions = new DecisionLedger(this.db, () => this.now());
     this.cowork = new CoworkLedger(this.db, () => this.now(), { requireContext: true });
     this.db.exec(`CREATE TABLE IF NOT EXISTS draft_keys(session_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, content_hash TEXT NOT NULL, result TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(session_id, kind, key));
-      CREATE TABLE IF NOT EXISTS job_tokens(job_id INTEGER PRIMARY KEY, token TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS job_tokens(job_id INTEGER PRIMARY KEY, token TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS pma_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+    // The jobs that existed before tokens: the highest job id at the first start of a host with tokens (once, never moved).
+    this.db.prepare("INSERT OR IGNORE INTO pma_meta(key,value) VALUES('job_tokens_since', (SELECT COALESCE(MAX(id),0) FROM jobs))").run();
     if (!(this.db.prepare('PRAGMA table_info(followers)').all() as any[]).some(c => c.name === 'committed')) this.db.exec('ALTER TABLE followers ADD COLUMN committed INTEGER NOT NULL DEFAULT 0');
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
     if (!columns.includes('capture_id')) this.db.exec("ALTER TABLE sources ADD COLUMN capture_id TEXT NOT NULL DEFAULT ''");
@@ -1305,13 +1308,13 @@ export class MeetingRuntime extends EventEmitter {
     for (const sourceId of ids) if (!Number.isSafeInteger(sourceId) || !this.db.prepare('SELECT id FROM sources WHERE session_id=? AND id=?').get(id, sourceId)) throw new Error('SOURCE_OUTSIDE_SESSION: ' + sourceId);
     return ids;
   }
-  saveSummary(id: string, markdown: string, sourceIds: number[]) {
+  saveSummary(id: string, markdown: string, sourceIds: number[], base?: number) {
     const session = this.sessionRow(id); const ids = this.checkSources(id, sourceIds);
     markdown = markdown.trim(); if (!markdown || markdown.length > 40000) throw new Error('INVALID_SUMMARY');
     const lines = [...this.header(session, 'Tóm tắt cuộc họp'), '> Trợ lý AI tóm tắt từ RAW transcript chưa xác minh, nguồn #' + ids.join(', #') + '. Không phải biên bản đã được duyệt.', '', markdown];
-    return this.saveReport(id, 'summary', 'SUMMARY.md', lines.join('\n') + '\n', ids);
+    return this.saveReport(id, 'summary', 'SUMMARY.md', lines.join('\n') + '\n', ids, base);
   }
-  saveTasks(id: string, tasks: TaskItem[]) {
+  saveTasks(id: string, tasks: TaskItem[], base?: number) {
     const session = this.sessionRow(id);
     if (!Array.isArray(tasks) || tasks.length > 200) throw new Error('INVALID_TASKS');
     // An owner written the way ASR spelt a participant becomes the participant's name (only listed variants match).
@@ -1332,22 +1335,26 @@ export class MeetingRuntime extends EventEmitter {
     const lines = [...this.header(session, 'Việc cần làm sau họp'), '> Trợ lý AI rút từ RAW transcript chưa xác minh. Người phụ trách/hạn chỉ ghi khi được nói trong họp; cần người dùng xác nhận trước khi giao việc.', '',
       ...(me ? [`## Việc của tôi (${session.context.me})`, '', ...(mine.length ? [...head, ...mine] : ['_Không có việc nào ghi rõ là của bạn._']), '', '## Tất cả việc', ''] : []),
       ...(rows.length ? [...head, ...rows] : ['_Không thấy việc cần làm nào được nêu rõ trong transcript._'])];
-    return this.saveReport(id, 'tasks', 'TASKS.md', lines.join('\n') + '\n', [...new Set(all)]);
+    return this.saveReport(id, 'tasks', 'TASKS.md', lines.join('\n') + '\n', [...new Set(all)], base);
   }
   // The file first, read back, then the row (Codex review of 9b02494): a report the disk refused is not recorded as saved. The same
   // content as the latest report of that kind is not a new row (a resent draft).
-  private saveReport(id: string, kind: string, file: string, content: string, ids: number[]) {
+  // The revision of a report kind is how many versions were saved (1 = the first).
+  reportRevision(id: string, kind: string) { return Number((this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE session_id=? AND kind=?').get(id, kind) as any).n); }
+  private saveReport(id: string, kind: string, file: string, content: string, ids: number[], base?: number) {
     const path = join(this.reportDir(id), file);
     const latest: any = this.db.prepare('SELECT content FROM reports WHERE session_id=? AND kind=? ORDER BY id DESC LIMIT 1').get(id, kind);
     const onDisk = (() => { try { return readFileSync(path, 'utf8'); } catch { return null; } })();
-    if (latest?.content === content && onDisk === content) return { saved: true, path, duplicate: true, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
+    const revision = this.reportRevision(id, kind);
+    if (latest?.content === content && onDisk === content) return { saved: true, path, revision, duplicate: true, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
+    if (base !== undefined && base !== revision) throw new Error(`REPORT_REVISION_CONFLICT: ${file} đang sửa từ bản ${base}, đã có bản ${revision}; đọc bản mới, gộp rồi lưu với --base ${revision}`);
     const count: any = this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE session_id=?').get(id);
     if (count.n >= 200) throw new Error('REPORT_CAPACITY_REACHED');
     const temporary = path + '.' + randomUUID().slice(0, 8) + '.tmp';
     try { writeFileSync(temporary, content, 'utf8'); renameSync(temporary, path); if (readFileSync(path, 'utf8') !== content) throw new Error('READ_BACK_DIFFERS'); }
     catch (error: any) { try { rmSync(temporary, { force: true }); } catch {} throw new Error('REPORT_NOT_WRITTEN: ' + file + ' chưa ghi được ra đĩa (' + String(error?.code ?? error?.message ?? error) + '); chưa lưu gì'); }
     if (latest?.content !== content) this.db.prepare('INSERT INTO reports(session_id,kind,content,source_ids,created) VALUES(?,?,?,?,?)').run(id, kind, content, JSON.stringify(ids), new Date().toISOString());
-    this.ping(); return { saved: true, path, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
+    this.ping(); return { saved: true, path, revision: this.reportRevision(id, kind), scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
   }
   // A draft (pma-draft/1 kinds: picture, translations, participants, summary, tasks) saved once per caller key: the same key and the
   // same normalised content give back the first result; the same key with other content is refused. Without a key nothing is
@@ -1358,16 +1365,38 @@ export class MeetingRuntime extends EventEmitter {
     if (!key) { const out = save(); return { ...out, receipt: receipt(new Date(this.now()).toISOString()) }; }
     const row: any = this.db.prepare('SELECT content_hash,result,at FROM draft_keys WHERE session_id=? AND kind=? AND key=?').get(id, kind, key);
     if (row) { if (row.content_hash !== contentHash) throw new Error('IDEMPOTENCY_KEY_REUSED: khoá ' + key + ' đã dùng cho nội dung khác'); return { ...JSON.parse(row.result), duplicate: true, receipt: receipt(row.at) }; }
-    const out = save(); const at = new Date(this.now()).toISOString();
-    this.db.prepare('INSERT INTO draft_keys(session_id,kind,key,content_hash,result,at) VALUES(?,?,?,?,?,?)').run(id, kind, key, contentHash, JSON.stringify(out), at);
-    return { ...out, receipt: receipt(at) };
+    // One transaction (Codex review of 9124eb3): the key is reserved BEFORE the save and completed after it, so a key that cannot be
+    // written leaves no saved draft behind, and a save that fails leaves no key. What is not in the database is not rolled back: a
+    // report file already written to disk, or the glossary file participants may extend, stays as a projection (the database row is
+    // the record; the next save writes the file again).
+    const at = new Date(this.now()).toISOString();
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare("INSERT INTO draft_keys(session_id,kind,key,content_hash,result,at) VALUES(?,?,?,?,'PENDING',?)").run(id, kind, key, contentHash, at);
+      const out = save();
+      this.db.prepare('UPDATE draft_keys SET result=? WHERE session_id=? AND kind=? AND key=?').run(JSON.stringify(out), id, kind, key);
+      this.db.exec('COMMIT');
+      this.ping(); return { ...out, receipt: receipt(at) };
+    } catch (error) { if (this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
   }
   // A background job is finished or failed only by whoever holds the token its start returned (Codex review of 8a53bb0: job done had
   // a session fence only).
+  // Job and token in one transaction (Codex review of 9124eb3): there is never a new job without its token.
+  startJob(id: string, kind: 'analysis' | 'translation' | 'other', title: string) {
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const jobId = this.ledger.jobs.start(id, kind, title); const token = 'job-' + randomUUID().replace(/-/g, '').slice(0, 16);
+      this.db.prepare('INSERT INTO job_tokens(job_id,token) VALUES(?,?)').run(jobId, token);
+      this.db.exec('COMMIT'); return { id: jobId, token };
+    } catch (error) { if (this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
+  }
   jobToken(jobId: number) { const token = 'job-' + randomUUID().replace(/-/g, '').slice(0, 16); this.db.prepare('INSERT OR REPLACE INTO job_tokens(job_id,token) VALUES(?,?)').run(jobId, token); return token; }
+  // Only jobs at or below the mark recorded when tokens were introduced are legacy; any later job without a token fails closed.
   requireJobToken(jobId: number, token?: string) {
     const row: any = this.db.prepare('SELECT token FROM job_tokens WHERE job_id=?').get(jobId);
-    if (!row) return;   // a job started before 0.12.1 has no token
+    const legacyUpTo = Number((this.db.prepare("SELECT value FROM pma_meta WHERE key='job_tokens_since'").get() as any)?.value ?? 0);
+    if (!row && jobId > legacyUpTo) throw new Error('JOB_TOKEN_MISSING: việc nền #' + jobId + ' không có token (cấp token lỗi); không kết thúc được, bắt đầu lại việc');
+    if (!row) return;   // a job started before tokens existed
     if (row.token !== token) throw new Error('JOB_TOKEN_REQUIRED: việc nền #' + jobId + ' chỉ được kết thúc bằng --token mà pma job start trả về');
   }
   // The central session's drafts (picture, SUMMARY, TASKS) count only with the receipt of a chinh read of the CURRENT context.
@@ -1407,7 +1436,7 @@ export class MeetingRuntime extends EventEmitter {
       return { sourceId: item.sourceId, text };
     });
     const now = new Date().toISOString(); let replaced = 0;
-    this.db.exec('BEGIN');
+    const own = !this.db.isTransaction; if (own) this.db.exec('BEGIN');
     try {
       for (const { sourceId, text } of checked) {
         const before: any = this.db.prepare('SELECT session_id,text,created FROM translations WHERE source_id=?').get(sourceId);
@@ -1415,8 +1444,8 @@ export class MeetingRuntime extends EventEmitter {
         if (before) { replaced++; this.db.prepare('INSERT INTO translation_history(source_id,session_id,text,created,replaced) VALUES(?,?,?,?,?)').run(sourceId, before.session_id, before.text, before.created, now); }
         this.db.prepare('INSERT OR REPLACE INTO translations(source_id,session_id,text,created) VALUES(?,?,?,?)').run(sourceId, id, text, now);
       }
-      this.db.exec('COMMIT');
-    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      if (own) this.db.exec('COMMIT');
+    } catch (error) { if (own) this.db.exec('ROLLBACK'); throw error; }
     this.ping(); return { saved: checked.length, replaced, label: 'Claude dịch' };
   }
   async close() {

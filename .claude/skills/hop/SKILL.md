@@ -123,7 +123,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
     - **Câu hỏi mở / còn tranh luận**;
     - **Người dự và lập trường** (khi rõ);
     - **Chỗ chưa nghe rõ** (#id, đã/chưa recheck).
-  - Lưu bằng `./pma picture --file - --sources <id của lô này> --receipt <rcpt-…> <<'MD'`, rồi bức tranh, rồi `MD`. Mỗi lần lưu là một bản mới; `./pma picture` đọc bản mới nhất.
+  - Lưu bằng `./pma picture --file - --sources <id của lô này> --receipt <rcpt-…> --base <bản đã đọc> <<'MD'`, rồi bức tranh, rồi `MD`. `--base` là số bản bạn dựa vào (lần đầu 0, sau đó là `revision` lần lưu trước trả về); có bản mới hơn thì host báo xung đột: đọc `./pma picture`, gộp, lưu lại. Mỗi lần lưu là một bản mới; `./pma picture` đọc bản mới nhất.
   - Trả lời người dùng **chỉ phần thay đổi** so với bản trước, vài dòng. Người dùng hỏi gì thì trả lời dựa trên bức tranh + `#id`.
   - Phiên Claude mới vào giữa họp: `./pma brief` rồi `./pma picture` là đủ để nối mạch.
 - Không tự kết thúc cuộc họp. Chỉ người dùng gõ kết thúc. Câu chào cuối buổi chưa đủ để kết thúc.
@@ -154,7 +154,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
 
    Có thể mất vài phút; lệnh tự chờ. WAV giữ tới khi người dùng tự xoá (`./pma audio`, `./pma audio purge`).
 2. Đọc toàn bộ bằng `./pma read`, sang trang bằng `--after <id>` tới khi thấy `HẾT`. `pma read` mở lại host đọc lịch sử nếu host họp đã thoát; các lệnh lưu (summary, tasks) không tự mở host, báo `HOST_NOT_RUNNING` thì chạy `./pma read` hoặc `./pma history` trước.
-   Trước khi lưu SUMMARY/TASKS chạy `./pma brief --as chinh` (đọc context của cuộc họp vừa xong); nó in `Biên nhận context: rcpt-…`. Lưu kèm `--receipt rcpt-…`. Báo `CONTEXT_NOT_READ`/`CONTEXT_NOT_CURRENT` thì đọc lại và lưu bằng biên nhận mới.
+   Trước khi lưu SUMMARY/TASKS chạy `./pma brief --as chinh` (đọc context của cuộc họp vừa xong); nó in `Biên nhận context: rcpt-…`. Lưu kèm `--receipt rcpt-…` và `--base <bản>` (lần đầu 0; `./pma status` có `revisions`). Báo `CONTEXT_NOT_READ`/`CONTEXT_NOT_CURRENT` thì đọc lại và lưu bằng biên nhận mới; báo `REPORT_REVISION_CONFLICT` thì đọc bản mới, gộp, lưu lại.
 3. `./pma coverage` liệt kê:
    - chỗ WAV có âm mà không có chữ;
    - đoạn lỗi;

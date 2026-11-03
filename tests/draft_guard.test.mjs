@@ -93,3 +93,51 @@ test('a report the disk refuses is not recorded; the same report again adds no r
     rmSync(first.path, { recursive: true });
   });
 });
+
+// Codex review of 9124eb3: the key, the job token and the save are one commit; the base revision catches a late result of the same writer.
+test('a key that cannot be written leaves no saved picture (the key is reserved first, in the same transaction)', async () => {
+  await withFakes(async r => {
+    const { id, source } = meeting(r);
+    r.db.exec("CREATE TRIGGER deny_keys BEFORE INSERT ON draft_keys BEGIN SELECT RAISE(ABORT, 'KEY_STORE_DENIED'); END;");
+    assert.throws(() => r.draftOnce(id, 'picture', 'k1', 'h1', () => r.savePicture(id, 'Một.', [source])), /KEY_STORE_DENIED/);
+    assert.equal(r.picture(id), null, 'no picture without its key'); assert.equal(r.db.isTransaction, false);
+    r.db.exec('DROP TRIGGER deny_keys');
+    // The key is completed after the save: a failing completion also leaves nothing.
+    r.db.exec("CREATE TRIGGER deny_done BEFORE UPDATE ON draft_keys BEGIN SELECT RAISE(ABORT, 'KEY_COMPLETE_DENIED'); END;");
+    assert.throws(() => r.draftOnce(id, 'picture', 'k2', 'h2', () => r.savePicture(id, 'Hai.', [source])), /KEY_COMPLETE_DENIED/);
+    assert.equal(r.picture(id), null); assert.equal(r.db.prepare("SELECT COUNT(*) AS n FROM draft_keys").get().n, 0);
+    r.db.exec('DROP TRIGGER deny_done');
+    assert.equal(r.draftOnce(id, 'picture', 'k2', 'h2', () => r.savePicture(id, 'Hai.', [source])).revision, 1, 'the retry with the same key saves once');
+    assert.throws(() => r.draftOnce(id, 'picture', 'k2', 'h3', () => r.savePicture(id, 'Khác.', [source])), /IDEMPOTENCY_KEY_REUSED/);
+    // Translations join the same transaction instead of failing on a nested BEGIN.
+    r.db.prepare("UPDATE sources SET language='lo' WHERE id=?").run(source);
+    assert.equal(r.draftOnce(id, 'translations', 't1', 'ht', () => r.translate(id, [{ sourceId: source, text: 'Xin chào' }])).saved, 1);
+  });
+});
+
+test('a job and its token are one commit; a job made after tokens exist with no token cannot be finished', async () => {
+  await withFakes(async r => {
+    const { id } = meeting(r);
+    r.db.exec("CREATE TRIGGER deny_tokens BEFORE INSERT ON job_tokens BEGIN SELECT RAISE(ABORT, 'TOKEN_DENIED'); END;");
+    const before = r.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n;
+    assert.throws(() => r.startJob(id, 'analysis', 'So sánh giá'), /TOKEN_DENIED/);
+    assert.equal(r.db.prepare('SELECT COUNT(*) AS n FROM jobs').get().n, before, 'no job without its token');
+    r.db.exec('DROP TRIGGER deny_tokens');
+    // A job that got no token some other way (made directly in the ledger) is not legacy: it fails closed.
+    const orphan = r.ledger.jobs.start(id, 'analysis', 'Không token');
+    assert.throws(() => r.requireJobToken(orphan), /JOB_TOKEN_MISSING/);
+    const { id: job, token } = r.startJob(id, 'analysis', 'Có token');
+    assert.throws(() => r.requireJobToken(job), /JOB_TOKEN_REQUIRED/); assert.doesNotThrow(() => r.requireJobToken(job, token));
+  });
+});
+
+test('a late report derived from an older version is refused by its base revision; the same content again is not', async () => {
+  await withFakes(async r => {
+    const { id, source } = meeting(r);
+    assert.equal(r.saveSummary(id, '- Bản một.', [source], 0).revision, 1);
+    assert.equal(r.saveSummary(id, '- Bản hai, đã chốt.', [source], 1).revision, 2);
+    assert.throws(() => r.saveSummary(id, '- Bản một, sửa thêm (kết quả trễ).', [source], 1), /REPORT_REVISION_CONFLICT/);
+    assert.match(readFileSync(r.saveSummary(id, '- Bản hai, đã chốt.', [source], 1).path, 'utf8'), /Bản hai, đã chốt/, 'a resend of what is saved is a duplicate, not a conflict');
+    assert.equal(r.reportRevision(id, 'summary'), 2);
+  });
+});

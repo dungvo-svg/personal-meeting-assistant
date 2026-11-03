@@ -48,12 +48,14 @@ const languages = z.array(z.enum(['vi', 'lo', 'th'])).min(1).max(3).default(['vi
 const draft = (kind: DraftKind, content: unknown) => { const v = validateDraft(kind, content); if (!v.ok) throw new Error(`INVALID_DRAFT: ${kind} ${v.code} ${v.path}`); return v; };
 const key = z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/).optional();
 const receipt = z.string().regex(/^rcpt-[a-f0-9]{16}$/).optional();
+// Compare-and-set on the revision the writer started from (0 for the first one): required for the central drafts (Codex review of 9124eb3).
+const BASE_REQUIRED = (what: string) => `BASE_REVISION_REQUIRED: ${what} cần --base <bản đã đọc> (lần đầu --base 0; bản hiện có: pma ${what === 'picture' ? 'picture' : 'status'} hoặc kết quả lần lưu trước)`;
 const owned = (item: { sessionId: string } | null, sessionId: string, what: string) => { if (!item) throw new Error(`${what}_NOT_FOUND`); if (item.sessionId !== sessionId) throw new Error(`${what}_OF_ANOTHER_MEETING`); return item; };
 
 // Every operation the CLI and MCP adapter may call. Inputs are validated here, once, for both.
 const methods: Record<string, (input: any) => any> = {
   ping: () => ({ ok: true, version: VERSION, pid: process.pid, testMode: runtime.testMode }),
-  status: () => runtime.compact(),
+  status: () => { const c: any = runtime.compact(); const s = c.session?.id; return s ? { ...c, revisions: { picture: runtime.picture(s)?.revision ?? 0, summary: runtime.reportRevision(s, 'summary'), tasks: runtime.reportRevision(s, 'tasks') } } : c; },
   prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional(), me: z.string().max(80).optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(), warm: z.boolean().optional(), mic: z.boolean().optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages, { me: a.me, at: a.at, warm: a.warm, mic: a.mic }); return { ...runtime.compact(), me: runtime.profile.me ?? null, expectedLoadSeconds: runtime.profile.lastModelLoadSeconds ?? null, rememberedSpeaker: runtime.profile.speaker?.name ?? null }; },
   open: input => runtime.openMeeting(z.object({ url: z.string().min(10).max(2000) }).parse(input).url),
   schedule: input => { const a = z.object({ sessionId: sid.optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/) }).parse(input); return runtime.setSchedule(current(a.sessionId), a.at); },
@@ -78,8 +80,8 @@ const methods: Record<string, (input: any) => any> = {
   coverage: input => { const a = z.object({ sessionId: sid.optional() }).parse(input); return runtime.coverage(afterwards(a.sessionId)); },
   finish: input => runtime.finish(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   raw: input => runtime.writeRaw(afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
-  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200), receipt, idempotencyKey: key }).parse(input); const s = afterwards(a.sessionId); runtime.requireCentralContext(s, a.receipt); const v = draft('summary', { markdown: a.markdown, sourceIds: a.sourceIds }); return runtime.draftOnce(s, 'summary', a.idempotencyKey, v.contentHash, () => runtime.saveSummary(s, a.markdown, a.sourceIds)); },
-  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), ownerBasis: z.enum(['stated', 'confirmed', 'inferred']).optional(), sourceIds: ids.min(1).max(50) })).max(200), receipt, idempotencyKey: key }).parse(input); const s = afterwards(a.sessionId); runtime.requireCentralContext(s, a.receipt); const v = draft('tasks', { tasks: a.tasks }); return runtime.draftOnce(s, 'tasks', a.idempotencyKey, v.contentHash, () => runtime.saveTasks(s, a.tasks)); },
+  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200), receipt, idempotencyKey: key, expectedRevision: z.number().int().nonnegative().optional() }).parse(input); const s = afterwards(a.sessionId); runtime.requireCentralContext(s, a.receipt); if (a.expectedRevision === undefined) throw new Error(BASE_REQUIRED('summary')); const v = draft('summary', { markdown: a.markdown, sourceIds: a.sourceIds }); return runtime.draftOnce(s, 'summary', a.idempotencyKey, v.contentHash, () => runtime.saveSummary(s, a.markdown, a.sourceIds, a.expectedRevision)); },
+  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), ownerBasis: z.enum(['stated', 'confirmed', 'inferred']).optional(), sourceIds: ids.min(1).max(50) })).max(200), receipt, idempotencyKey: key, expectedRevision: z.number().int().nonnegative().optional() }).parse(input); const s = afterwards(a.sessionId); runtime.requireCentralContext(s, a.receipt); if (a.expectedRevision === undefined) throw new Error(BASE_REQUIRED('tasks')); const v = draft('tasks', { tasks: a.tasks }); return runtime.draftOnce(s, 'tasks', a.idempotencyKey, v.contentHash, () => runtime.saveTasks(s, a.tasks, a.expectedRevision)); },
   history: () => runtime.historyList(),
   glossary: input => {
     const a = z.object({ action: z.enum(['list', 'add', 'remove']).default('list'), name: z.string().max(80).optional(), variants: z.array(z.string().max(80)).max(20).default([]), force: z.boolean().default(false) }).parse(input);
@@ -157,7 +159,7 @@ const methods: Record<string, (input: any) => any> = {
   job: input => {
     const a = z.object({ sessionId: sid.optional(), action: z.enum(['start', 'done', 'fail', 'list']), kind: z.enum(['analysis', 'translation', 'other']).default('analysis'), title: z.string().trim().min(1).max(300).optional(), id: z.number().int().positive().optional(), result: z.string().min(1).max(40000).optional(), sourceIds: ids.max(200).default([]), note: z.string().max(2000).optional(), status: z.enum(['running', 'done', 'failed', 'cancelled']).optional(), token: z.string().regex(/^job-[a-f0-9]{16}$/).optional() }).parse(input);
     const jobs = runtime.ledger.jobs;
-    if (a.action === 'start') { if (!a.title) throw new Error('JOB_NEEDS_TITLE'); const id = jobs.start(current(a.sessionId), a.kind, a.title); return { id, token: runtime.jobToken(id) }; }
+    if (a.action === 'start') { if (!a.title) throw new Error('JOB_NEEDS_TITLE'); return runtime.startJob(current(a.sessionId), a.kind, a.title); }
     if (a.action === 'list') return jobs.list(afterwards(a.sessionId), { status: a.status });
     if (!a.id) throw new Error('JOB_NEEDS_ID');
     owned(jobs.get(a.id), afterwards(a.sessionId), 'JOB'); runtime.requireJobToken(a.id, a.token);
@@ -178,7 +180,7 @@ const methods: Record<string, (input: any) => any> = {
   picture: input => {
     const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional(), expectedRevision: z.number().int().nonnegative().optional(), receipt, idempotencyKey: key }).parse(input);
     const id = current(a.sessionId);
-    if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); const v = draft('picture', { text: a.text, sourceIds: a.sourceIds }); const sourceIds = a.sourceIds; return runtime.draftOnce(id, 'picture', a.idempotencyKey, v.contentHash, () => runtime.savePicture(id, a.text!, sourceIds, { expectedRevision: a.expectedRevision, central: true, receipt: a.receipt })); }
+    if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); if (a.expectedRevision === undefined) throw new Error(BASE_REQUIRED('picture')); const v = draft('picture', { text: a.text, sourceIds: a.sourceIds }); const sourceIds = a.sourceIds; return runtime.draftOnce(id, 'picture', a.idempotencyKey, v.contentHash, () => runtime.savePicture(id, a.text!, sourceIds, { expectedRevision: a.expectedRevision, central: true, receipt: a.receipt })); }
     return runtime.picture(id);
   },
   mic: input => setMicState(runtime, z.object({ state: z.enum(['on', 'off', 'auto']) }).parse(input).state),
