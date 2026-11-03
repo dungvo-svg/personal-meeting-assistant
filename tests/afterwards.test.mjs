@@ -32,7 +32,10 @@ test('a 30-minute picture longer than 8000 characters is saved; after stop and a
     const tasks = await call('tasks', { tasks: [{ task: 'Gửi giá thuốc', sourceIds: [first] }] });
     for (const saved of [summary, tasks]) assert.ok(JSON.stringify(saved).includes(id.slice(0, 8)), JSON.stringify(saved));
   } finally {
-    await call('shutdown').catch(() => {}); await sleep(500);
+    // Wait for the host to be gone (Windows keeps its files locked until the process exits), then remove the folder.
+    const { daemonInfo } = await import('../dist/client.js'); const pid = daemonInfo()?.pid;
+    await call('shutdown').catch(() => {});
+    for (let i = 0; i < 100 && pid; i++) { try { process.kill(pid, 0); } catch { break; } await sleep(100); }
     for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
     rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });   // the host may still hold its database for a moment
   }

@@ -11,7 +11,9 @@ import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE
 import { readTimeline, soundRanges, soundWindows, uncovered, type Range } from './timeline.js';
 import { claimMachine, machineHolder, releaseMachine } from './machine_lock.js';
 
-export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
+// ownerBasis (0.12.1): how the owner of a task is known: said in the meeting, confirmed by the user afterwards, or only inferred.
+export type TaskItem = { task: string; owner?: string; due?: string; ownerBasis?: 'stated' | 'confirmed' | 'inferred'; sourceIds: number[] };
+const BASIS_NOTE: Record<string, string> = { confirmed: ' (người dùng xác nhận)', inferred: ' (suy luận, cần xác nhận)' };
 export type Opener = (url: string) => void;
 // Runs tools/mix_audio.py (python, [script, audio dir]) hidden, with no stdio, and resolves when it has exited. A caller that
 // must not wait (pause) just ignores the promise; finish waits for it before the host may exit.
@@ -156,7 +158,8 @@ export class MeetingRuntime extends EventEmitter {
       CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, source_ids TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS translations(source_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS rechecks(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, source_id INTEGER, from_wall TEXT NOT NULL, to_wall TEXT NOT NULL, channel TEXT NOT NULL, text TEXT NOT NULL, language TEXT NOT NULL, alternatives TEXT NOT NULL, silent INTEGER NOT NULL, created TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS followers(session_id TEXT NOT NULL, name TEXT NOT NULL, cursor INTEGER NOT NULL, at TEXT, PRIMARY KEY(session_id,name));`);
+      CREATE TABLE IF NOT EXISTS followers(session_id TEXT NOT NULL, name TEXT NOT NULL, cursor INTEGER NOT NULL, at TEXT, PRIMARY KEY(session_id,name));
+      CREATE TABLE IF NOT EXISTS translation_history(id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, session_id TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL, replaced TEXT NOT NULL);`);
     // `committed` (0.12.1): how far a role's work is saved, not only printed (see committedOf).
     if (!(this.db.prepare('PRAGMA table_info(followers)').all() as any[]).some(c => c.name === 'committed')) this.db.exec('ALTER TABLE followers ADD COLUMN committed INTEGER NOT NULL DEFAULT 0');
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
@@ -1083,12 +1086,14 @@ export class MeetingRuntime extends EventEmitter {
     const rows = tasks.map((t, i) => {
       const task = String(t.task || '').trim(); if (!task || task.length > 2000) throw new Error('INVALID_TASK: ' + (i + 1));
       const ids = this.checkSources(id, t.sourceIds || []); all.push(...ids);
-      return `| ${i + 1} | ${cell(task)} | ${cell(t.owner?.trim() || 'Chưa nêu trong họp')} | ${cell(t.due?.trim() || 'Chưa nêu trong họp')} | #${ids.join(', #')} |`;
+      const owner = t.owner?.trim() ? t.owner.trim() + (BASIS_NOTE[t.ownerBasis ?? ''] ?? '') : 'Chưa nêu trong họp';
+      return `| ${i + 1} | ${cell(task)} | ${cell(owner)} | ${cell(t.due?.trim() || 'Chưa nêu trong họp')} | #${ids.join(', #')} |`;
     });
     // "Việc của tôi" first when the user's name is known (audit 30/10: the user had to pick their own tasks by hand).
     const me = session.context?.me?.toLowerCase();
     const isMine = (owner?: string) => !!owner?.trim() && (/^tôi$/i.test(owner.trim()) || (!!me && (owner.toLowerCase().includes(me) || me.includes(owner.trim().toLowerCase()))));
-    const mine = me ? rows.filter((_, i) => isMine(tasks[i].owner)) : [];
+    // An inferred owner is never promoted to "my task": it stays in the full list, marked, until the user confirms it.
+    const mine = me ? rows.filter((_, i) => tasks[i].ownerBasis !== 'inferred' && isMine(tasks[i].owner)) : [];
     const head = ['| # | Việc | Người phụ trách | Hạn | Nguồn |', '| --- | --- | --- | --- | --- |'];
     const lines = [...this.header(session, 'Việc cần làm sau họp'), '> Trợ lý AI rút từ RAW transcript chưa xác minh. Người phụ trách/hạn chỉ ghi khi được nói trong họp; cần người dùng xác nhận trước khi giao việc.', '',
       ...(me ? [`## Việc của tôi (${session.context.me})`, '', ...(mine.length ? [...head, ...mine] : ['_Không có việc nào ghi rõ là của bạn._']), '', '## Tất cả việc', ''] : []),
@@ -1108,7 +1113,8 @@ export class MeetingRuntime extends EventEmitter {
     try { return { name: file, content: readFileSync(join(this.reportDir(id), file), 'utf8') }; } catch { throw new Error('REPORT_NOT_CREATED_YET'); }
   }
   // Vietnamese lines for Lao segments, written by the Claude session that follows the meeting (no other translator exists here).
-  // A second call for the same segment replaces the first. All-or-nothing, so a bad line in a batch saves none.
+  // A second call for the same segment replaces the first; the text it replaces is kept in translation_history (0.12.1: a retry
+  // must not erase where a translation came from). The same text again changes nothing. All-or-nothing, so a bad line saves none.
   translate(id: string, items: { sourceId: number; text: string }[]) {
     this.requireSession(id);
     if (!Array.isArray(items) || !items.length || items.length > 100) throw new Error('INVALID_TRANSLATIONS');
@@ -1124,7 +1130,9 @@ export class MeetingRuntime extends EventEmitter {
     this.db.exec('BEGIN');
     try {
       for (const { sourceId, text } of checked) {
-        if (this.db.prepare('SELECT 1 FROM translations WHERE source_id=?').get(sourceId)) replaced++;
+        const before: any = this.db.prepare('SELECT session_id,text,created FROM translations WHERE source_id=?').get(sourceId);
+        if (before?.text === text) continue;
+        if (before) { replaced++; this.db.prepare('INSERT INTO translation_history(source_id,session_id,text,created,replaced) VALUES(?,?,?,?,?)').run(sourceId, before.session_id, before.text, before.created, now); }
         this.db.prepare('INSERT OR REPLACE INTO translations(source_id,session_id,text,created) VALUES(?,?,?,?)').run(sourceId, id, text, now);
       }
       this.db.exec('COMMIT');

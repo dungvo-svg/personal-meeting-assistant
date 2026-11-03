@@ -304,3 +304,16 @@ test('a published note says it stays local, and the "select a source first" erro
     await assert.rejects(r.start(id), error => /SELECT_SOURCE_FIRST/.test(error.message) && !/panel/i.test(error.message));
   });
 });
+
+test('a task owner says how it is known: an inferred owner is marked and never counted as my task; stated and confirmed show as such', async () => {
+  const { mkdtempSync: mk, rmSync: rm, readFileSync: rd } = await import('node:fs'); const { tmpdir: tmp } = await import('node:os'); const { join: jn, resolve: rs } = await import('node:path');
+  const { MeetingRuntime } = await import('../dist/runtime.js');
+  const dir = mk(jn(tmp(), 'pma-basis-')); const r = new MeetingRuntime(rs('.'), dir, true);
+  try {
+    r.prepare('Họp', true, undefined, undefined, { me: 'Dũng' }); const id = r.session.id; const s1 = r.ingest('anh Dũng gửi báo giá', 'synthetic_fixture');
+    const saved = r.saveTasks(id, [{ task: 'Gửi báo giá', owner: 'Dũng', ownerBasis: 'inferred', sourceIds: [s1] }, { task: 'Gửi mẫu', owner: 'Dũng', ownerBasis: 'confirmed', sourceIds: [s1] }, { task: 'Gọi NCC', owner: 'Phet', sourceIds: [s1] }]);
+    const table = rd(saved.path, 'utf8');
+    assert.match(table, /\| 1 \| Gửi báo giá \| Dũng \(suy luận, cần xác nhận\) \|/); assert.match(table, /\| 2 \| Gửi mẫu \| Dũng \(người dùng xác nhận\) \|/); assert.match(table, /\| 3 \| Gọi NCC \| Phet \|/);
+    const mine = table.split('## Tất cả việc')[0]; assert.ok(mine.includes('Gửi mẫu') && !mine.includes('Gửi báo giá'), 'an inferred owner is not promoted to my task');
+  } finally { await r.close(); rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
+});

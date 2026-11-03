@@ -92,5 +92,5 @@ test('the daemon never deletes audio by itself; `pma audio` lists and purges on 
     assert.deepEqual(await pma('audio', 'purge'), { removed: 0, kept: 2, freedMb: 0 });
     assert.deepEqual(await pma('audio', 'purge', '--older-than', '30'), { removed: 1, kept: 1, freedMb: 3 });
     assert.deepEqual(await pma('audio', 'purge', '--older-than', '0'), { removed: 1, kept: 0, freedMb: 4 });
-  } finally { await pma('shutdown').catch(() => {}); await new Promise(resolve => setTimeout(resolve, 600)); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await pma('shutdown').catch(() => {}); await new Promise(resolve => setTimeout(resolve, 600)); rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 });

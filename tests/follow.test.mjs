@@ -241,7 +241,7 @@ test('a real host: lease, ack, release and read --as through /rpc; a second foll
     // a new meeting: a follower of it works as usual
     await call('prepare', { title: 'Phiên sau', fixture: true }); const b1 = (await call('fixture', { text: 'Cuộc họp B.' })).id;
     const next = await run('follow', '--as', 'dich', '--no-notes', '--minutes', '0.00002'); assert.match(next.out, new RegExp(`#${b1} .*Cuộc họp B\\.`));
-  } finally { await call('shutdown').catch(() => {}); await sleep(500); for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; rmSync(directory, { recursive: true, force: true }); }
+  } finally { await call('shutdown').catch(() => {}); await sleep(500); for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
 });
 
 // 03/11 meeting: `pma recheck` failed with "fetch failed" while the host was still working on it (fetch stops waiting for headers after

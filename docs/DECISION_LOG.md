@@ -119,6 +119,8 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-37 | 0.12.1: `pma status`, MCP `session_status` và việc MCP adapter khởi động không tự bật host; không có host thì báo `NOT_RUNNING` và ai giữ máy | 03/11: một lệnh status từ phiên khác đã bật host |
 | ENG-38 | 0.12.1: `committed` theo vai, tính từ đầu ra đã lưu (bức tranh cho `chinh`, bản dịch cho vai dịch), liền mạch, không vượt chỗ đã giao; lưu lỗi không tiến; follow bật lại đọc từ `committed`. Khoá máy: giành khoá cũ qua khoá phụ rồi đọc lại trước khi dời; chỉ nhả khi không còn bộ nghe, bộ ghi, recheck hay dọn dẹp chưa xác nhận | Họp thầu 03/11: bản dịch in ra mà không lưu được; review Codex 5e903de điểm a, b |
 | ENG-39 | 0.12.1: mốc thời gian của đoạn nhận dạng được kiểm trước khi dùng cho timeline, vị trí nhận dạng và chia sẻ micro; mốc không tin được thì giữ chữ, bỏ mốc, ghi giá trị thô và lý do, không kẹp | Đợt kiểm âm thanh offline 03/11: đoạn báo 19,46–49,44 s cho file vào 20 s |
+| ENG-40 | 0.12.1: lưu lại bản dịch khác chữ thì giữ bản bị thay trong `translation_history`; cùng chữ thì không đổi | Phản biện Astra C: thay thế xoá mất nguồn gốc bản dịch đầu |
+| ENG-41 | 0.12.1: việc có `ownerBasis` (nói rõ / người dùng xác nhận / suy luận); suy luận được đánh dấu và không vào "Việc của tôi" | Phản biện Astra B: suy luận không được thành người chịu trách nhiệm |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

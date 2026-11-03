@@ -24,7 +24,7 @@ Nguồn: owner 03/11 10:35 (giờ VN), chuyển qua phiên điều phối PMA: "
 | Trùng việc, trùng ghi âm | Khoá máy (ENG-36); lease một tiến trình mỗi vai; `picture`/`translate` lưu lại cùng nội dung không tạo bản mới |
 | Kẹt vì chờ owner | Việc độc lập không chờ; chỉ việc phụ thuộc dừng (nguyên tắc 1) |
 | Lộ lời mic riêng | OWN-030 ở host; mốc thời gian không tin được thì mất `MIC_SHARE_OK` (ENG-39) |
-| Gán sai người phụ trách | `Tôi` là kênh micro, không phải danh tính; không gán người từ khoảng lặng, khúc ghi hay kênh |
+| Gán sai người phụ trách | `Tôi` là kênh micro, không phải danh tính; không gán người từ khoảng lặng, khúc ghi hay kênh; `ownerBasis` tách suy luận khỏi xác nhận (ENG-41) |
 
 ## Bảng ngoại lệ
 
@@ -41,7 +41,7 @@ Nguồn: owner 03/11 10:35 (giờ VN), chuyển qua phiên điều phối PMA: "
 | Bị từ chối quyền / hết quota | lỗi ghi file, lỗi gọi | báo một lần là đang suy giảm; phần được phép tiếp tục | không vòng qua quyền | owner sửa quyền | `committed` không tiến khi lưu lỗi (ENG-38); **chưa** có cờ "suy giảm" ở host |
 | Lưu dở, mất phản hồi (ACK) | `committed` < chỗ đã in | — | — | bật lại đọc lại từ `committed`; lưu lại không trùng | ENG-38, G1 |
 | Context cũ hoặc gửi nhầm người nhận | ngày context khác hôm nay; phiên đọc không đúng cuộc họp | không dùng context cũ làm context hôm nay | cần xác nhận | ghim `sessionId`; context cũ ghi là cũ | có (`savedIsCurrent`, follow ghim cuộc họp); **chưa** có ràng buộc phiên bản/hash context |
-| Kết thúc/huỷ khi việc nền đang chạy | owner gõ kết thúc | dừng ghi trước, cho nghe nốt | — | báo phần còn treo trong SUMMARY | có (`stop` drain); **chưa** có báo cáo việc nền dang dở |
+| Kết thúc/huỷ khi việc nền đang chạy | owner gõ kết thúc | dừng ghi trước, cho nghe nốt; dừng hoặc chờ agent phân tích nền | — | việc bỏ dở ghi vào SUMMARY "Chưa làm xong" | `stop` drain có test; dừng agent nền chỉ ở skill, **chưa** có test |
 | Host chết, bộ ghi còn chạy | khoá có PID bộ ghi sống | host cùng thư mục dữ liệu nhận lại | host khác bị từ chối | reattach, vai đọc tiếp | ENG-31/36 |
 | Tạm dừng rồi tiếp tục | `pause` | chỉ dừng nhận dạng, vẫn ghi | chỉ tiếp khi owner nói `listen` | đuổi kịp từ chỗ dừng | có |
 | Mốc thời gian không hợp lệ | `TIMESTAMP_INVALID …` | giữ chữ, bỏ mốc, giữ giá trị thô | không kẹp mốc | ghi vào RAW để kiểm | ENG-39, `tests/share.test.mjs` |
@@ -72,5 +72,4 @@ Nguồn: owner 03/11 10:35 (giờ VN), chuyển qua phiên điều phối PMA: "
 - Cờ "suy giảm" ở host khi lưu bị từ chối.
 - Ràng buộc phiên bản/hash context với từng phiên đọc.
 - Lớp bằng chứng người nói.
-- Báo việc nền còn dở khi kết thúc.
 - Test đầu-cuối qua agent thật.

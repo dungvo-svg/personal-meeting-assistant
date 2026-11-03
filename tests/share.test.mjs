@@ -271,14 +271,15 @@ test('G2: the picture is not saved twice for the same text and sources; sources 
   });
 });
 
-test('G2: translate is idempotent in content: the same text twice is one row, the second call says replaced', async () => {
+test('G2: translate is idempotent in content: the same text twice is one row and the second call changes nothing (0.12.1, ENG-40)', async () => {
   await withRuntime(async r => {
     r.prepare('Họp'); const id = r.session.id; const lo = ing(r, 'ສະບາຍດີ', LIVE, { language: 'lo' });
     assert.deepEqual(r.translate(id, [{ sourceId: lo, text: 'Xin chào.' }]), { saved: 1, replaced: 0, label: 'Claude dịch' });
     const first = r.db.prepare('SELECT created FROM translations WHERE source_id=?').get(lo).created; await new Promise(res => setTimeout(res, 5));
-    assert.deepEqual(r.translate(id, [{ sourceId: lo, text: 'Xin chào.' }]), { saved: 1, replaced: 1, label: 'Claude dịch' });
+    assert.deepEqual(r.translate(id, [{ sourceId: lo, text: 'Xin chào.' }]), { saved: 1, replaced: 0, label: 'Claude dịch' });
     assert.equal(r.db.prepare('SELECT COUNT(*) AS n FROM translations').get().n, 1); const row = r.db.prepare('SELECT text,created FROM translations WHERE source_id=?').get(lo);
-    assert.equal(row.text, 'Xin chào.'); assert.notEqual(row.created, first, 'the row is overwritten (created changes), no revision is added');
+    assert.equal(row.text, 'Xin chào.'); assert.equal(row.created, first, 'a retry with the same text leaves the row as it was');
+    assert.equal(r.db.prepare('SELECT COUNT(*) AS n FROM translation_history').get().n, 0);
     assert.equal(r.db.prepare("SELECT COUNT(*) AS n FROM notes").get().n, 0);
   });
 });
@@ -326,5 +327,20 @@ test('segment times are checked before they are trusted: bad ranges are kept as 
     assert.deepEqual(shared, ['đoạn tốt', 'loa giờ hỏng'], 'speaker text still reaches the role; the mic row with untrusted times does not');
     assert.equal(r.compact().asr.position, new Date(Date.parse(wall) + 4000).toISOString(), 'only the good segment moved the ASR position');
     assert.notEqual(position, r.compact().asr.position);
+  });
+});
+
+test('a translation saved again keeps what it replaced; the same text again changes nothing', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp'); const id = r.session.id; const lo = ing(r, 'ສະບາຍດີ', LIVE, { language: 'lo' });
+    assert.deepEqual(r.translate(id, [{ sourceId: lo, text: 'xin chào' }]), { saved: 1, replaced: 0, label: 'Claude dịch' });
+    const first = r.db.prepare('SELECT created FROM translations WHERE source_id=?').get(lo).created;
+    assert.equal(r.translate(id, [{ sourceId: lo, text: 'xin chào' }]).replaced, 0, 'a retry with the same text');
+    assert.equal(r.db.prepare('SELECT created FROM translations WHERE source_id=?').get(lo).created, first, 'and its time is not touched');
+    assert.equal(r.db.prepare('SELECT COUNT(*) AS n FROM translation_history').get().n, 0);
+    assert.equal(r.translate(id, [{ sourceId: lo, text: 'chào anh' }]).replaced, 1);
+    assert.equal(r.read(id).items.find(item => item.id === lo).translation, 'chào anh');
+    const kept = r.db.prepare('SELECT source_id,text,created FROM translation_history').all();
+    assert.deepEqual(kept.map(row => ({ ...row })), [{ source_id: lo, text: 'xin chào', created: first }]);
   });
 });

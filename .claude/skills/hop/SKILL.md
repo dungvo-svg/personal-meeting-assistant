@@ -104,7 +104,7 @@ Thiếu thông tin thì để trống, không đoán.
 
 ## 5. Kết thúc và báo cáo
 
-1. Người dùng gõ kết thúc. Nếu đang dịch nền, chờ lô cuối được dịch (15–30 giây; `./pma status` → `followers.dich.committed`) rồi chạy `./pma stop`; agent nền tự dừng khi follow in `KẾT THÚC`. Lệnh `stop`:
+1. Người dùng gõ kết thúc. Agent nền đang phân tích dở: dừng nó (TaskStop) hoặc để nó xong nếu chỉ còn vài giây; việc nào bỏ dở thì ghi vào SUMMARY mục "Chưa làm xong". Nếu đang dịch nền, chờ lô cuối được dịch (15–30 giây; `./pma status` → `followers.dich.committed`) rồi chạy `./pma stop`; agent nền tự dừng khi follow in `KẾT THÚC`. Lệnh `stop`:
    - dừng bộ ghi;
    - để bộ nghe nhận dạng nốt phần còn lại;
    - ghép `meeting-mix.wav` cả buổi;
@@ -124,7 +124,7 @@ Thiếu thông tin thì để trống, không đoán.
    3. Tài liệu được nhắc là của ai lập, ai chỉ chuyển?
 5. Viết báo cáo:
    - `.local/drafts/SUMMARY-<ngày>.md`, dựng từ bức tranh cuối cùng (`./pma picture`) và RAW đã nghe lại: tổng quan, diễn tiến, ý chính, điều đã thống nhất, câu hỏi mở, đối chiếu với context trước họp, các chỗ `[chưa nghe rõ]`. Lưu bằng `./pma summary --file <file> --sources <id,…>`.
-   - `.local/drafts/tasks-<ngày>.json`: `[{"task","owner","due","sourceIds"}]`. Chỉ ghi `owner`/`due` khi được nói rõ hoặc người dùng xác nhận. Lưu bằng `./pma tasks --file <file>`.
+   - `.local/drafts/tasks-<ngày>.json`: `[{"task","owner","due","ownerBasis","sourceIds"}]`. `ownerBasis`: `stated` (nói rõ trong họp), `confirmed` (người dùng xác nhận sau họp) hoặc `inferred` (bạn suy ra, chưa ai xác nhận). Hạn chỉ ghi khi được nói rõ. Lưu bằng `./pma tasks --file <file>`. Việc có người phụ trách `inferred` hiện kèm "(suy luận, cần xác nhận)" và không vào "Việc của tôi".
 6. Trả lời người dùng:
    - đường dẫn RAW.md, SUMMARY.md, TASKS.md và `meeting-mix.wav`;
    - tóm tắt ngắn;
