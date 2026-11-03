@@ -117,6 +117,9 @@ export class MeetingRuntime extends EventEmitter {
   committed: Record<string, number> = {};
   // Injectable so tests can age a lease by 90 s.
   now = () => Date.now();
+  // Process control, injectable: a test fakes a recorder that will not stop without touching any real process (review of 13cd5e8).
+  alive = (pid: number) => pidAlive(pid);
+  killPid = (pid: number) => { process.kill(pid); };
   context: any;
   closing = false;
   recorder: Recorder = newRecorder();
@@ -451,7 +454,7 @@ export class MeetingRuntime extends EventEmitter {
     const rec = this.recorder; const info = Object.fromEntries(Object.entries(rec.info).filter(([key, value]) => key !== 'type' && (value === null || ['string', 'number', 'boolean'].includes(typeof value))).map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 200) : value]));
     return { state: rec.state, pid: rec.pid, restarts: rec.restarts.length, error: rec.error, ...info };
   }
-  recorderAlive() { return !!this.recorder.child || (this.recorder.attached && !!this.recorder.pid && pidAlive(this.recorder.pid)); }
+  recorderAlive() { return !!this.recorder.child || (this.recorder.attached && !!this.recorder.pid && this.alive(this.recorder.pid)); }
   // RAW is written once the mix has been made (finish waits for it); a mix that is not there yet is named as pending.
   audioNote(id: string) {
     const info = audioInfo(this.dataDir, id);
@@ -610,7 +613,7 @@ export class MeetingRuntime extends EventEmitter {
   private attachRecorder(pid: number) {
     const rec = this.recorder; rec.pid = pid; rec.attached = true; rec.state = 'RECORDING'; rec.stopping = false;
     rec.watch = setInterval(() => {
-      if (pidAlive(pid)) return;
+      if (this.alive(pid)) return;
       clearInterval(rec.watch!); rec.watch = null; rec.attached = false; rec.pid = null;
       if (rec.stopping || this.closing || !this.session || this.session.ended) { rec.state = 'OFF'; this.ping(); return; }
       if (readTimeline(audioDir(this.dataDir, this.session.id)).at(-1)?.type === 'end') { void this.finish(this.session.id).catch(() => {}); return; }
@@ -623,13 +626,16 @@ export class MeetingRuntime extends EventEmitter {
     const rec = this.recorder; if (rec.retry) { clearTimeout(rec.retry); rec.retry = null; }
     rec.stopping = true;
     if (!this.session || !this.recorderAlive()) { if (rec.state !== 'ERROR') rec.state = 'OFF'; return; }
-    rec.state = 'STOPPING'; this.ping();
+    // The stop goes out first, on the recorder's own pipe (memory, no disk); only then the STOP file (the only signal an attached
+    // recorder has) and the state change, whose listeners write daemon.json and the machine lock. A slow or refused disk delays those,
+    // never the stop of a recorder this host started; an attached one falls back to kill after recorderStopMs.
+    try { rec.child?.stdin?.write('stop\n'); } catch {}
     const stopFile = join(audioDir(this.dataDir, this.session.id), 'STOP');
     try { writeFileSync(stopFile, ''); } catch {}
-    try { rec.child?.stdin?.write('stop\n'); } catch {}
+    rec.state = 'STOPPING'; this.ping();
     for (let until = Date.now() + this.recorderStopMs; this.recorderAlive() && Date.now() < until;) await sleep(50);
     if (this.recorderAlive()) {
-      try { if (rec.child) rec.child.kill(); else if (rec.pid) process.kill(rec.pid); } catch {}
+      try { if (rec.child) rec.child.kill(); else if (rec.pid) this.killPid(rec.pid); } catch {}
       for (let until = Date.now() + 3000; this.recorderAlive() && Date.now() < until;) await sleep(50);
       if (this.recorderAlive()) this.lastError ||= 'Bộ ghi âm chưa thoát sau khi được yêu cầu dừng.';
     }
@@ -863,8 +869,9 @@ export class MeetingRuntime extends EventEmitter {
   private async stopAll() {
     this.captureState = 'STOPPING'; this.asrWanted = false;  // hold ownership until everything has exited
     if (this.workerRetry) { clearTimeout(this.workerRetry); this.workerRetry = null; }
-    this.ping();
-    await this.stopRecorder();
+    // stopRecorder sends its stop synchronously, before its first await; the ping (disk writes by listeners) comes after that.
+    const recorderStopped = this.stopRecorder(); this.ping();
+    await recorderStopped;
     const mixed = this.mixNow();
     await this.drainWorker();
     await mixed;
@@ -896,7 +903,7 @@ export class MeetingRuntime extends EventEmitter {
     if (!this.session || this.session.id !== id) throw new Error('SESSION_NOT_FOUND');
     const first = !this.session.ended && !this.finishing;
     if (!this.session.ended) {
-      this.finishing = true; this.ping();
+      this.finishing = true;   // no ping here: the first state change is announced after the recorder has been told to stop
       try { await this.stopCapture(); } finally { this.finishing = false; }
       if (!this.session.ended) { this.session.ended = new Date().toISOString(); this.db.prepare('UPDATE sessions SET ended=? WHERE id=?').run(this.session.ended, id); }
     }

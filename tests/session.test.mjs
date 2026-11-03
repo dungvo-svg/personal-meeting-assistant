@@ -239,16 +239,18 @@ test('the machine lock is kept while anything of the host still runs: recorder, 
       r.captureState = 'OFF'; r.recorder.attached = true; r.recorder.pid = process.pid; assert.equal(r.releaseWhenIdle(), false, 'kept while the recorder is alive');
       r.recorder.attached = false; r.recorder.pid = null; r.rechecking = 1; assert.equal(r.releaseWhenIdle(), false, 'kept while a recheck runs'); r.rechecking = 0;
       assert.equal(r.releaseWhenIdle(), true); assert.equal(lock.readLock(), null);
-      // The real stop path with a recorder that will not go (review of 1def228, finding 2): an attached recorder whose process cannot
-      // be stopped (a system PID here: kill is refused) keeps its PID and the lock; another host is refused until it is really gone.
-      const stubborn = process.platform === 'win32' ? 4 : 1;
+      // The real stop path with a recorder that will not go (review of 1def228, finding 2), through the process-control seam: no real
+      // process is looked at or signalled (review of 13cd5e8, finding 1). The attached recorder ignores STOP and kill.
+      const fake = 999999001; let gone = false; const kills = [];
+      r.alive = pid => pid === fake && !gone; r.killPid = pid => { kills.push(pid); throw Object.assign(new Error('refused'), { code: 'EPERM' }); };
       const again = await openSession(r, dir); r.claim(again.id); r.recorderStopMs = 50;
       await r.stopRecorder(); await until(() => !r.recorder.child, 'the fake recorder of openSession has gone');   // the attached one stands in
-      r.recorder.stopping = false; r.recorder.attached = true; r.recorder.pid = stubborn; r.recorder.state = 'RECORDING';
+      r.recorder.stopping = false; r.recorder.attached = true; r.recorder.pid = fake; r.recorder.state = 'RECORDING';
       await r.finish(again.id);
-      assert.equal(r.recorder.pid, stubborn); assert.equal(r.recorder.state, 'STOP_UNCONFIRMED'); assert.equal(lock.readLock().token, 'tokn');
+      assert.deepEqual(kills, [fake], 'only the fake PID was ever signalled');
+      assert.equal(r.recorder.pid, fake); assert.equal(r.recorder.state, 'STOP_UNCONFIRMED'); assert.equal(lock.readLock().token, 'tokn');
       assert.throws(() => lock.claimMachine({ token: 'late', dataDir: join(dir, 'other'), root: '.', port: 8 }), /RUNTIME_BUSY/);
-      r.recorder.attached = false; r.recorder.pid = null; assert.equal(r.releaseWhenIdle(), true, 'given back once it is gone');
+      gone = true; assert.equal(r.releaseWhenIdle(), true, 'given back once it is gone');
       // Two rechecks asked together after the meeting: each takes the machine and gives it back before the next one starts.
       const events = []; const claim = r.claim.bind(r), unclaim = r.unclaim.bind(r);
       r.claim = sid => { events.push('claim'); return claim(sid); }; r.unclaim = () => { events.push('give back'); return unclaim(); };
@@ -256,6 +258,21 @@ test('the machine lock is kept while anything of the host still runs: recorder, 
       assert.deepEqual(events, ['claim', 'give back', 'claim', 'give back']); assert.equal(lock.readLock(), null);
     });
   } finally { if (saved === undefined) delete process.env.PMA_LOCK_DIR; else process.env.PMA_LOCK_DIR = saved; }
+});
+
+test('stop sends the stop to the recorder before anything is written to disk; a refused STOP file does not keep it recording', async () => {
+  await withFakes(async (r, dir) => {
+    r.prepare('Họp', false, undefined, undefined, { warm: false }); const id = r.session.id;
+    // A fake recorder child: its stdin records the stop and it exits. No audio folder exists, so writing the STOP file fails.
+    const order = [];
+    r.recorder.child = { stdin: { write: line => { order.push('stdin:' + line.trim()); setImmediate(() => { r.recorder.child = null; }); } }, kill: () => order.push('kill') };
+    r.recorder.state = 'RECORDING'; r.recorderStopMs = 2000;
+    r.on('change', () => order.push('change'));
+    await r.finish(id);
+    assert.equal(order[0], 'stdin:stop', 'the stop went out before the first change (whose listeners write daemon.json and the lock)');
+    assert.ok(!order.includes('kill'), 'it stopped on the stop, the failed STOP file did not matter');
+    assert.equal(r.recorder.state, 'OFF');
+  });
 });
 
 test('stop: the recorder ends first, the ASR worker delivers what is left, the mix is made, and only then are RAW written and the host told it may leave', async () => {

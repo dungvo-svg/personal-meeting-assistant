@@ -64,8 +64,8 @@ export function claimMachine(me: { token: string; dataDir: string; root: string;
 // read again and moved only if it is still the very record judged stale; a lock someone took meanwhile is left alone.
 // The guard (review of 1def228, finding 1):
 // - appears whole: a complete temp file is hard-linked to its name, so no reader ever sees an empty guard;
-// - is never taken from a live holder, however old: only a holder that is gone (dead PID, or a reused one) loses it;
-// - a gone holder's guard is moved to a unique name and checked; if it turns out to be someone else's, it is linked back;
+// - is never removed by another host, however old or whoever held it: a guard left by a dead holder stops every claim (fail closed)
+//   and is reported for removal;
 // - its holder removes it only while it is still its own.
 function takeOver(stale: LockOwner, hooks: { inGuard?: () => void }) {
   const guard = `${lockFile()}.takeover`;
@@ -75,11 +75,11 @@ function takeOver(stale: LockOwner, hooks: { inGuard?: () => void }) {
   try { linkSync(temp, guard); }
   catch (error: any) {
     if (error?.code !== 'EEXIST') throw error;
+    // Fail closed: a guard is never removed by another host, not even when its holder is gone, as two removers could each let a
+    // different host in (review of 13cd5e8, finding 2). A guard left by a host that died within its few milliseconds is reported,
+    // with its path, for a person (or the agent with the owner's yes) to remove.
     const held = readJson(guard);
-    if (held && !holderAlive(held)) {
-      const moved = `${guard}.gone-${held.pid}-${Date.now()}`;
-      try { renameSync(guard, moved); const was = readJson(moved); if (was?.token === held.token) rmSync(moved, { force: true }); else try { linkSync(moved, guard); rmSync(moved, { force: true }); } catch {} } catch {}
-    }
+    if (held && !holderAlive(held)) throw new Error(`RUNTIME_BUSY: khoá phụ ${guard} còn lại từ pid ${held.pid} đã dừng. Kiểm pid đó không còn chạy rồi xoá file này, sau đó chạy lại.`);
     return;
   } finally { rmSync(temp, { force: true }); }
   try {

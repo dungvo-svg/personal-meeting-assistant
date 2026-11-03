@@ -97,7 +97,7 @@ Thiếu thông tin thì để trống, không đoán.
   Lệnh nhận dạng lại từ WAV (beam cao, các phương án vi/lo/th). Kết quả được lưu và RAW ghi `(đã nghe lại)`. Vẫn không rõ thì ghi `[chưa nghe rõ]`, không đoán. Không bắt người dùng nghe lại: họ đã nghe trực tiếp.
 - Bức tranh đã thay cho ghi chú cuốn chiếu. `NHẮC GHI CHÚ` nghĩa là bức tranh đã lâu chưa cập nhật; làm ngay.
 - Khi follow in `CẢNH BÁO TRỄ`, dừng mọi việc nặng trên máy.
-- `pma start` báo `RUNTIME_BUSY`: một host PMA khác (checkout, thư mục dữ liệu hoặc cổng khác) đang giữ máy. Báo người dùng đúng pid, cổng, thư mục trong lỗi. Không tự tắt nó khi người dùng chưa đồng ý. `pma status` chỉ đọc: không có host thì báo `NOT_RUNNING` kèm ai đang giữ máy, không tự bật host.
+- `pma start` báo `RUNTIME_BUSY`: một host PMA khác (checkout, thư mục dữ liệu hoặc cổng khác) đang giữ máy. Báo người dùng đúng pid, cổng, thư mục trong lỗi. Không tự tắt nó khi người dùng chưa đồng ý. Lỗi nói `khoá phụ … còn lại từ pid … đã dừng`: kiểm pid đó đã dừng thật, xin người dùng cho xoá đúng file trong lỗi, rồi chạy lại. `pma status` chỉ đọc: không có host thì báo `NOT_RUNNING` kèm ai đang giữ máy, không tự bật host.
 - Khi follow in `BỘ NGHE ĐỨNG`, âm thanh vẫn được ghi nhưng bộ nhận dạng không ra chữ. Báo người dùng. Tìm việc nặng đang chiếm GPU, nhất là một host PMA thứ hai (bộ ghi hoặc bộ nghe không thuộc host cổng 8796). Không tự tắt tiến trình của phiên khác khi người dùng chưa đồng ý. `pma pause`/`listen` không giúp khi GPU đầy.
 - Trả lời người dùng dựa trên `#id`, phân biệt điều đã nói với suy luận. Không viết cập nhật dài cho mỗi lô.
 - Đoạn `Tôi (mic tắt — nói riêng)` không phải lời phát biểu trong họp. Không trích lời riêng (mic tắt / `?`) sang bộ dịch hay cho người dự.
