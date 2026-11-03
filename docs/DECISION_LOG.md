@@ -127,6 +127,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-45 | 0.12.1: gói context (`context_pack.ts`) có phiên bản sha256 và nguồn gốc từng mục; mỗi tiến trình follow gắn với phiên bản đã đọc; trạng thái sẵn sàng theo phiên + vai + người đọc + thế hệ + phiên bản; context đổi thì tự đọc lại | Mục tiêu tự chủ (owner 03/11 qua phiên điều phối): context đúng cuộc họp, đúng người đọc |
 | ENG-46 | 0.12.1: sổ việc nền, câu hỏi chờ chủ, suy giảm (`jobs.ts`); nhắc một lần, quá hạn thì xếp lại, im lặng không phải trả lời; `stop` dừng việc dở và liệt kê | Bảng ngoại lệ 0.12 (còn thiếu) |
 | ENG-47 | 0.12.1: client tìm host theo thứ tự thư mục dữ liệu của mình rồi host giữ khoá máy; không mở host thứ hai khi có người giữ còn sống | Họp thầu 03/11: host thứ hai từ checkout khác |
+| ENG-48 | 0.12.1: ở chế độ thử, khoá máy không bao giờ là khoá của người dùng và client chỉ nói chuyện với host thử; host khác chỉ nhận ping | Review Astra 75feff5: test có thể điều khiển host thật qua đường nối vào |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

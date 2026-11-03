@@ -56,9 +56,14 @@ const portOf = (url: string) => Number(new URL(url).port) || null;
 // host is the machine's one meeting host, and we attach to it. A daemon.json that does not match the lock's holder is not trusted,
 // and its token is never sent anywhere: the pid is compared before the first request. `holder` is read only when (a) failed, since on
 // Windows judging a foreign holder costs a PowerShell call. `why` says, for a live holder we could not attach to, what was missing.
+// Fail closed in a diagnostic run: a client with PMA_TEST_MODE=1 talks only to a host that says it is a test host too (ping.testMode),
+// whatever daemon.json it finds; anything else is not used at all: no prepare, finish, shutdown or purge reaches it (Astra review of
+// 75feff5). With the test lock namespace of machine_lock.ts it does not even find the user's host; this is the second wall.
+const testClient = process.env.PMA_TEST_MODE === '1';
+const allowed = (pong: any) => !!pong && (!testClient || pong.testMode === true);
 async function locate(): Promise<{ found: Found | null; holder: Holder | null; why: string }> {
   const own = readInfo(dataDir);
-  if (wellFormed(own) && await ping(own)) return { found: { info: own, attached: { via: 'local', dataDir: resolve(dataDir), port: portOf(own.url), pid: own.pid } }, holder: null, why: '' };
+  if (wellFormed(own) && allowed(await ping(own))) return { found: { info: own, attached: { via: 'local', dataDir: resolve(dataDir), port: portOf(own.url), pid: own.pid } }, holder: null, why: '' };
   const holder = machineHolder();
   if (!holder?.alive) return { found: null, holder, why: '' };
   const theirs = resolve(holder.dataDir);
@@ -71,6 +76,7 @@ async function locate(): Promise<{ found: Found | null; holder: Holder | null; w
   if (holder.port && portOf(info.url) !== holder.port) return no(`daemon.json ghi cổng ${portOf(info.url)}, khoá ghi cổng ${holder.port}`);
   const pong = await ping(info);
   if (!pong) return no('không trả lời');
+  if (!allowed(pong)) return no('không phải host thử (lệnh đang ở chế độ thử)');
   if (pong.pid !== undefined && pong.pid !== holder.pid) return no(`trả lời từ pid ${pong.pid}, không phải pid giữ khoá`);
   return { found: { info, attached: { via: 'machine', dataDir: theirs, port: portOf(info.url), pid: holder.pid } }, holder, why: '' };
 }

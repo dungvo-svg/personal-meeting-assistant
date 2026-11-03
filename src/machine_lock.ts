@@ -8,12 +8,15 @@
 // of the same data folder may take that meeting over (reattach), as the recorder belongs to it.
 import { closeSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 export type LockOwner = { pid: number; pidStartedAt: string; token: string; dataDir: string; root: string; port: number | null; since: string; sessionId: string | null; recorderPid: number | null; workerPid: number | null };
 
-export const lockDir = () => process.env.PMA_LOCK_DIR || join(process.env.LOCALAPPDATA || homedir(), 'pma');
+// A diagnostic run (PMA_TEST_MODE=1) never sees the user's own lock: without a lock folder of its own it gets one inside its data
+// folder, so a test can never find, attach to or take the machine from the user's real meeting host (Astra review of 75feff5).
+export const lockDir = () => process.env.PMA_LOCK_DIR
+  || (process.env.PMA_TEST_MODE === '1' ? join(process.env.PMA_DATA_DIR || join(tmpdir(), 'pma-test-' + process.pid), 'machine-lock') : join(process.env.LOCALAPPDATA || homedir(), 'pma'));
 const lockFile = () => join(lockDir(), 'runtime.lock');
 const pidAlive = (pid: number | null | undefined) => { if (!pid || !Number.isInteger(pid)) return false; try { process.kill(pid, 0); return true; } catch (error: any) { return error?.code === 'EPERM'; } };
 const ownStart = new Date(Date.now() - process.uptime() * 1000).toISOString();

@@ -21,7 +21,7 @@ async function fakeHost(handler) {
   const dir = mkdtempSync(join(tmpdir(), 'pma-follow-test-')); const log = [];
   const server = createHttp(async (request, response) => {
     let body = ''; for await (const chunk of request) body += chunk; const { method, args } = JSON.parse(body); let out;
-    if (method === 'ping') out = { ok: true, result: { ok: true } };
+    if (method === 'ping') out = { ok: true, result: { ok: true, testMode: true } };   // a test client talks only to a test host
     else { log.push({ method, args, at: Date.now() }); try { out = { ok: true, result: await handler(method, args, log) }; } catch (error) { out = { ok: false, error: String(error.message) }; } }
     response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(out));
   });
@@ -32,7 +32,8 @@ async function fakeHost(handler) {
 }
 // Runs the CLI; `marks` says how many release calls the host had seen when each piece of output arrived.
 function cli(host, args, env = {}, killAfterMs = 30000) {
-  const child = spawn(process.execPath, [resolve('dist/cli.js'), ...args], { env: { ...process.env, PMA_DATA_DIR: host.dir, PMA_STOP_HOOK: 'off', ...env } });
+  // PMA_TEST_MODE: the CLI then uses a lock namespace inside host.dir and refuses any host that is not a test host (never the user's).
+  const child = spawn(process.execPath, [resolve('dist/cli.js'), ...args], { env: { ...process.env, PMA_TEST_MODE: '1', PMA_DATA_DIR: host.dir, PMA_STOP_HOOK: 'off', ...env } });
   let out = ''; const marks = []; child.stdout.on('data', d => { out += d; marks.push({ text: String(d), releases: host.calls('release').length }); }); child.stderr.on('data', () => {});
   const done = new Promise(r => child.on('exit', code => r({ out, code, marks })));
   const timer = setTimeout(() => child.kill(), killAfterMs); return done.finally(() => clearTimeout(timer));

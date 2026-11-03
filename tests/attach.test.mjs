@@ -21,14 +21,14 @@ const lockFile = join(lockDir, 'runtime.lock');
 const OTHER_PID = 987654321;   // only ever written into a JSON file as a "different pid"; never signalled
 
 // A fake host: answers /rpc ping and status for one bearer token, and records every request it receives.
-async function fakeHost(token, pid = process.pid) {
+async function fakeHost(token, pid = process.pid, testMode = true) {
   const requests = [];
   const server = createServer((request, response) => {
     let body = ''; request.on('data', c => { body += c; });
     request.on('end', () => {
       const { method } = JSON.parse(body || '{}'); requests.push({ method, authorization: request.headers.authorization });
       if (request.headers.authorization !== `Bearer ${token}`) { response.writeHead(401).end('{"ok":false}'); return; }
-      const result = method === 'ping' ? { ok: true, version: 'fake', pid } : { host: 'FAKE', answeredBy: pid, method };
+      const result = method === 'ping' ? { ok: true, version: 'fake', pid, testMode } : { host: 'FAKE', answeredBy: pid, method };
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, result }));
     });
   });
@@ -129,4 +129,29 @@ test('a host that comes up while we wait for a starting holder is attached (grac
     setTimeout(() => writeDaemon(otherDir, { url: host.url, pid: process.pid, token: 'tok-late' }), 300);
     assert.equal((await ensureDaemon()).url, host.url); assert.equal(launches.length, 0);
   } finally { await host.close(); }
+});
+
+// Astra review of 75feff5: a test client must never drive the user's real host. Two walls: its lock namespace is its own, and it
+// uses only a host that says it is a test host.
+test('a test-mode client never uses a host that is not a test host, even one its own data folder points to; nothing but ping reaches it', async () => {
+  const { launches } = fresh();
+  const real = await fakeHost('real-token', process.pid, false);
+  try {
+    writeDaemon(localDir, { url: real.url, pid: process.pid, token: 'real-token' });
+    await assert.rejects(call('finish', {}), error => !/answeredBy/.test(String(error)));
+    assert.deepEqual([...new Set(real.requests.map(r => r.method))], ['ping'], 'only pings: no finish, shutdown or purge');
+    assert.equal(launches.length, 1, 'it starts its own (test) host instead, through the counting launcher');
+    const seen = await inspect(); assert.equal(seen.host, 'NOT_RUNNING');
+  } finally { await real.close(); }
+});
+
+test('with PMA_TEST_MODE and no PMA_LOCK_DIR, the lock folder is inside the data folder, never the user\'s', async () => {
+  const lock = await import('../dist/machine_lock.js');
+  const saved = { ...process.env };
+  try {
+    delete process.env.PMA_LOCK_DIR; process.env.PMA_TEST_MODE = '1'; process.env.PMA_DATA_DIR = localDir;
+    assert.equal(resolve(lock.lockDir()), resolve(join(localDir, 'machine-lock')));
+    process.env.PMA_TEST_MODE = '0';
+    assert.notEqual(resolve(lock.lockDir()), resolve(join(localDir, 'machine-lock')), 'outside test mode: the normal folder');
+  } finally { for (const key of ['PMA_LOCK_DIR', 'PMA_TEST_MODE', 'PMA_DATA_DIR']) { if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; } }
 });
