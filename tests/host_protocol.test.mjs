@@ -64,6 +64,7 @@ test('an 0.11 host (no capabilities) receives zero draft payloads; status, read 
   assert.equal(look.host.draftsAllowed, false); assert.deepEqual(look.host.capabilities, []); assert.equal(look.host.version, '0.11.0');
   assert.deepEqual(await client.call('read', {}), { accepted: 'read' });
   assert.deepEqual(await client.call('finish', {}), { accepted: 'finish' }, 'an explicit stop still reaches the old host');
+  assert.deepEqual(await client.reach('finish', {}), { accepted: 'finish' }, 'and so does the stop path (reach) of the CLI and MCP: not gated by capabilities');
 });
 
 test('a host missing one needed capability is refused the same way, naming what is missing; a job also needs job-token', async () => {

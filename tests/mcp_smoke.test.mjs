@@ -33,6 +33,10 @@ test('MCP over stdio: context receipt, base revision, resend, late result, conte
     // Status only looks: no host is started by it.
     assert.equal(parsed(await tool(client, 'session_status')).host, 'NOT_RUNNING');
     assert.equal(existsSync(join(world.env.PMA_DATA_DIR, 'daemon.json')), false, 'session_status started no host');
+    // Ending a meeting with no host running starts none either (reach): it says so.
+    const cold = await tool(client, 'session_finish', { sessionId: '00000000-0000-4000-8000-000000000123' });
+    assert.equal(cold.isError, true); assert.match(text(cold), /HOST_NOT_RUNNING/);
+    assert.equal(existsSync(join(world.env.PMA_DATA_DIR, 'daemon.json')), false, 'session_finish started no host');
 
     // A read-only tool starts the host in this world; it is recorded as this test's and proven (ping: testMode, same pid) before the
     // first tool call that changes anything.
