@@ -123,6 +123,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-41 | 0.12.1: việc có `ownerBasis` (nói rõ / người dùng xác nhận / suy luận); suy luận được đánh dấu và không vào "Việc của tôi" | Phản biện Astra B: suy luận không được thành người chịu trách nhiệm |
 | ENG-42 | 0.12.1: khoá phụ nguyên vẹn, không lấy từ người giữ còn sống; bộ ghi không chịu dừng giữ PID và khoá; `committed` của `chinh` là mốc cao chốt lúc lưu bức tranh; `status` không ghi; đoạn nhận dạng đối chiếu khúc ghi thật, không tin được thì không chia sẻ; skill dừng ghi ngay khi owner kết thúc | Review Codex 1def228 (điểm 1–4) và ee528c1 (thứ tự dừng) |
 | ENG-43 | 0.12.1: khoá phụ đóng an toàn (không host nào gỡ khoá phụ, kể cả của host đã chết; báo đúng file); tín hiệu dừng bộ ghi đi trước mọi lần ghi đĩa; điều khiển tiến trình qua điểm chèn để test không chạm tiến trình thật | Review Codex 13cd5e8 điểm 1–3 |
+| ENG-44 | 0.12.1: host kiểm lại bằng chứng micro (luật `share_ok`) ngay trước khi giao dòng micro cho vai chia sẻ; không đủ thì gắn `MIC_SHARE_REVOKED` vĩnh viễn, không đổi RAW/WAV | Phản biện Astra (gap 1): bằng chứng micro có thể đổi sau lúc nhận dạng |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

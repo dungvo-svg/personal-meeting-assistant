@@ -23,7 +23,7 @@ Nguồn: owner 03/11 10:35 (giờ VN), chuyển qua phiên điều phối PMA: "
 | Mất context hoặc mất nguồn | WAV cả buổi; `committed` theo vai (ENG-38); bức tranh lưu theo bản; phiên mới nối mạch bằng `brief` + `picture` |
 | Trùng việc, trùng ghi âm | Khoá máy (ENG-36); lease một tiến trình mỗi vai; `picture`/`translate` lưu lại cùng nội dung không tạo bản mới |
 | Kẹt vì chờ owner | Việc độc lập không chờ; chỉ việc phụ thuộc dừng (nguyên tắc 1) |
-| Lộ lời mic riêng | OWN-030 ở host; mốc thời gian không tin được thì mất `MIC_SHARE_OK` (ENG-39) |
+| Lộ lời mic riêng | OWN-030 ở host; mốc thời gian không tin được thì mất `MIC_SHARE_OK` (ENG-39); kiểm lại bằng chứng micro ngay lúc giao (ENG-44) |
 | Gán sai người phụ trách | `Tôi` là kênh micro, không phải danh tính; không gán người từ khoảng lặng, khúc ghi hay kênh; `ownerBasis` tách suy luận khỏi xác nhận (ENG-41) |
 
 ## Bảng ngoại lệ

@@ -2,7 +2,7 @@
 // contract (scan/ack, lease, release, picture, translate). Synthetic rows only; the clock of the runtime is a fake one.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { MeetingRuntime } from '../dist/runtime.js';
@@ -14,7 +14,9 @@ async function withRuntime(fn) {
   try { await fn(runtime, directory); } finally { await runtime.close(); assert.ok(resolve(directory).startsWith(resolve(tmpdir()))); rmSync(directory, { recursive: true }); }
 }
 const LIVE = 'SOURCE_LIVE_FOLLOW'; const REPLAY = 'SOURCE_REPLAY_MIXED'; const MIC = 'CHANNEL_MIC';
-const ing = (r, text, boundary, more = {}) => r.ingest(text, more.origin ?? 'local_asr_unverified', 0, 3, boundary, 'cap', more.language ?? 'vi', '', null, more.alternatives);
+const ing = (r, text, boundary, more = {}) => r.ingest(text, more.origin ?? 'local_asr_unverified', 0, 3, boundary, 'cap', more.language ?? 'vi', more.wall ?? '', null, more.alternatives);
+// The recorder's mic readings for a session (automatic, every 2 s) so a mic row with MIC_SHARE_OK still passes the host's check at hand-over.
+const micTimeline = (directory, id, from, to, state = 'on') => { const dir = join(directory, 'audio', id); mkdirSync(dir, { recursive: true }); const lines = []; for (let t = from; t <= to; t += 2000) lines.push(JSON.stringify({ t: new Date(t).toISOString(), type: 'mic_state', state, app: 'zoom', by: 'uia' })); writeFileSync(join(dir, 'timeline.jsonl'), lines.join('\n') + '\n'); };
 const A = 'leaseaaa1'; const B = 'leasebbb2'; const C = 'leaseccc3';
 const clock = (r) => { const c = { t: Date.parse('2026-11-01T08:00:00Z'), advance(ms) { c.t += ms; } }; r.now = () => c.t; return c; };
 // next() the way `pma follow` / MCP call it
@@ -46,9 +48,10 @@ test('shareable(): the three kinds of row, and everything else hidden', () => {
 });
 
 test('next() for a share role returns only shareable rows, with no text or alternatives of hidden ones; chinh reads everything; read is the same', async () => {
-  await withRuntime(async r => {
+  await withRuntime(async (r, directory) => {
     r.prepare('Họp'); const id = r.session.id; const rows = [];
-    for (const [what, boundary, shared] of MATRIX) { const n = rows.length; const text = `chữ[${n}]`; const alt = `phương án[${n}]`; rows.push({ what, shared, text, alt, id: ing(r, text, boundary, { language: 'lo', alternatives: [{ language: 'th', text: alt }] }) }); }
+    const wall = new Date(Date.now() - 20000).toISOString(); micTimeline(directory, id, Date.parse(wall) - 6000, Date.parse(wall) + 12000);
+    for (const [what, boundary, shared] of MATRIX) { const n = rows.length; const text = `chữ[${n}]`; const alt = `phương án[${n}]`; rows.push({ what, shared, text, alt, id: ing(r, text, boundary, { language: 'lo', wall, alternatives: [{ language: 'th', text: alt }] }) }); }
     const gap = r.ingest('[Khoảng trống 4 giây]', 'system_gap', 0, 4, 'ASR_RESTARTED', 'cap'); const typed = r.ingest('ghi tay', 'operator_text');
     const visible = [...rows.filter(row => row.shared).map(row => row.id), gap, typed]; const hidden = rows.filter(row => !row.shared);
     const everything = [...rows.map(row => row.id), gap, typed];
@@ -362,5 +365,43 @@ test('a row is checked against the segment the recorder actually wrote: placed p
     assert.doesNotMatch(rows['trong khúc'], /TIMESTAMP_INVALID/);
     assert.match(rows['quá khúc'], /TIMESTAMP_INVALID PAST_ITS_SEGMENT/); assert.match(rows['trước khúc'], /TIMESTAMP_INVALID BEFORE_ITS_SEGMENT/);
     assert.doesNotMatch(rows['khúc lạ'], /TIMESTAMP_INVALID/, 'a segment the timeline does not know: no evidence either way');
+  });
+});
+
+test('a mic row is checked again at hand-over: when the timeline no longer shows the mic ON (or the reader alive) through it, it is revoked with the reason and never handed out again', async () => {
+  await withRuntime(async (r, directory) => {
+    r.prepare('Họp'); const id = r.session.id; const wall = new Date(Date.now() - 20000).toISOString(); const at = Date.parse(wall);
+    const ok = `${MIC}; MIC_STATE_ON; MIC_SHARE_OK; ${LIVE}`;
+    micTimeline(directory, id, at - 6000, at + 12000);
+    const good = ing(r, 'mic bật thật', ok, { wall });
+    assert.deepEqual(ids((await nx(r, { as: 'dich', limit: 100, lease: undefined })).items), [good], 'the evidence holds: handed over');
+    // The worker had decided MIC_SHARE_OK; the timeline now shows OFF inside the row (a correction written later): not handed over.
+    const dir = join(directory, 'audio', id);
+    writeFileSync(join(dir, 'timeline.jsonl'), [at - 6000, at - 4000, at - 2000, at, at + 1000, at + 2000, at + 4000, at + 6000].map((t, i) => JSON.stringify({ t: new Date(t).toISOString(), type: 'mic_state', state: i === 4 ? 'off' : 'on', app: 'zoom', by: 'uia' })).join('\n') + '\n');
+    await new Promise(res => setTimeout(res, 1100));   // past the host's one-second cache of the readings
+    const later = ing(r, 'mic có lúc tắt', ok, { wall });
+    const noWall = ing(r, 'mic không giờ', ok);
+    const got = await nx(r, { as: 'dich', limit: 100, lease: undefined }); assert.deepEqual(ids(got.items), [], 'neither the old row nor the new ones');
+    for (const row of [good, later]) assert.match(r.sources(id).find(s => s.id === row).boundary, /MIC_SHARE_REVOKED MIC_EVIDENCE_GONE/);
+    assert.match(r.sources(id).find(s => s.id === noWall).boundary, /MIC_SHARE_REVOKED NO_WALL_TIME/);
+    assert.deepEqual(ids(r.read(id, 0, 100, 'dich').items), [], 'read as a share role agrees');
+    assert.equal(r.read(id, 0, 100).items.length, 3, 'the owner and RAW keep them (OWN-027)');
+  });
+});
+
+test('a row whose save failed does not hold back the next one: N+1 is saved and stays saved, the frontier waits before N, and a resume hands N again', async () => {
+  await withRuntime(async r => {
+    r.prepare('Họp'); const id = r.session.id;
+    const [n, n1] = [ing(r, 'ສະບາຍດີ', LIVE, { language: 'lo' }), ing(r, 'ຂອບໃຈ', LIVE, { language: 'lo' })];
+    await nx(r, { as: 'dich', after: 0, ack: n1, lease: 'dichgapgap1' });
+    r.translate(id, [{ sourceId: n1, text: 'cảm ơn' }]);   // the save of N "failed" (never happened); N+1 is independent
+    assert.equal(r.committedOf(id, 'dich'), 0, 'the frontier stays before N');
+    assert.equal(r.read(id).items.find(item => item.id === n1).translation, 'cảm ơn', 'the work on N+1 is kept');
+    // The role comes back from the frontier: N is handed again, N+1 too; saving N+1 again with the same text changes nothing.
+    const again = await nx(r, { as: 'dich', after: r.committedOf(id, 'dich'), lease: 'dichgapgap1' });
+    assert.deepEqual(ids(again.items), [n, n1]);
+    assert.equal(r.translate(id, [{ sourceId: n1, text: 'cảm ơn' }]).replaced, 0);
+    r.translate(id, [{ sourceId: n, text: 'xin chào' }]); await nx(r, { as: 'dich', after: n1, ack: n1, lease: 'dichgapgap1' });
+    assert.equal(r.committedOf(id, 'dich'), n1, 'N saved at last: the frontier moves over both');
   });
 });
