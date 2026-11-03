@@ -3,7 +3,9 @@
 // request the harness sends itself (shutdown in cleanup, mostly) goes out only after the target is PROVEN to be a host this test
 // started: loopback url, a ping that says testMode: true and the same pid as daemon.json, and that pid recorded by recordHost() right
 // after the test started it. Anything else is refused with HARNESS_REFUSED and nothing but (at most) a ping is sent: fail closed.
-// No function here sends a signal, spawns a process or opens a device. The bearer token is never printed or put in an error.
+// No function here spawns a process or opens a device, and none sends a signal: the one process call is the existence probe
+// process.kill(pid, 0) (nothing is delivered), only for a pid this test recorded, to know that its own host has exited before its files
+// are removed. Cleanup fails closed: while that is not proven, the root is kept and reported. The bearer token is never printed.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { createServer as createNet } from 'node:net';
@@ -127,22 +129,40 @@ export function guardedCall(env) {
   };
 }
 
-// Stops this world's host, if (and only if) it is proven ours; waits until it has gone (its daemon.json is gone before its port is
-// freed). Never throws, so it is safe in finally / test.after after a failed assertion. {stopped: pid} or {skipped: reason}.
-export async function ownedShutdown(env, { waitMs = 10000 } = {}) {
-  const call = guardedCall(env); const pid = readHost(env).info?.pid ?? null;
-  try { await call('shutdown', {}, 5000); }
-  catch (error) { return { skipped: short(error).replace(/^HARNESS_REFUSED: /, '') }; }
+// Whether a recorded pid still exists. true also when the answer is "exists but not ours to touch" (EPERM): only ESRCH means gone.
+// A pid reused by another process reads as alive, which keeps the root: the safe side.
+function exists(pid) { try { process.kill(pid, 0); return true; } catch (error) { return error?.code !== 'ESRCH'; } }
+// The proof the request needs. A test that bootstraps its host with a read-only command proves it before any mutation it sends.
+export async function proveOwned(env) { await prove(env); }
+
+// Stops this world's host, if (and only if) it is proven ours, and waits until every pid this test recorded has EXITED (a closed port
+// or a missing daemon.json is not an exit). Never throws, so it is safe in finally / test.after after a failed assertion.
+//   {exited: [pids]}            every recorded host is gone (or none was ever recorded and no daemon.json exists)
+//   {pending: [pids], note}     asked to stop (or not provable) but still running after waitMs: the caller must keep the root
+//   {skipped: reason, pending}  not proven ours: nothing was sent but at most a ping
+export async function ownedShutdown(env, { waitMs = 15000 } = {}) {
+  const world = worlds.get(keyOf(env?.PMA_DATA_DIR ?? '')); const pids = [...(world?.pids ?? [])];
+  const { info } = readHost(env);
+  if (!pids.length && !info) return { exited: [] };
+  let skipped = null;
+  try { await guardedCall(env)('shutdown', {}, 5000); } catch (error) { skipped = short(error).replace(/^HARNESS_REFUSED: /, ''); }
   for (const until = Date.now() + waitMs; Date.now() < until;) {
-    try { await prove(env); } catch { return { stopped: pid }; }   // not provable any more: daemon.json gone or the port closed
-    await sleep(100);
+    const alive = pids.filter(exists);
+    if (!alive.length && (pids.length || !info)) return skipped ? { skipped, exited: pids } : { exited: pids };
+    await sleep(150);
   }
-  return { stopped: pid, note: 'still answering after ' + waitMs + ' ms' };
+  const pending = pids.filter(exists);
+  const unknown = !pids.length && info ? [info.pid] : [];   // a daemon.json of a host this test never recorded: never touched, kept
+  return { ...(skipped ? { skipped } : {}), pending: [...pending, ...unknown], note: 'not proven exited after ' + waitMs + ' ms' };
 }
 
-// The usual ending: stop our own host (if proven), then remove the root. A refusal to stop is told, except "nothing was running".
+// The usual ending: stop our own host, then remove the root ONLY when every host this test recorded has exited. Otherwise the root is
+// kept and the result says why (FAILED_CLOSED); nothing is signalled and no other process is touched.
 export async function teardown(world) {
   const stop = await ownedShutdown(world.env);
-  if (stop.skipped && !/no daemon\.json/.test(stop.skipped)) console.error('harness: host not stopped (' + stop.skipped + ')');
+  if (stop.pending?.length) {
+    console.error('harness: root kept, host not proven exited (pid ' + stop.pending.join(', ') + (stop.skipped ? '; ' + stop.skipped : '') + '): ' + world.root);
+    return { stop, cleanup: { removed: false, kept: world.root, reason: 'FAILED_CLOSED' } };
+  }
   return { stop, cleanup: world.cleanup() };
 }

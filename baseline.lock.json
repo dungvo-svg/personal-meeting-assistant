@@ -48,7 +48,7 @@
     "src/runtime.ts": "81c49835ec629eff1b2604d5a055de052337a161d2b330bddf35df9ff80042e4",
     "src/server.ts": "d4fff3f86be6faa493b7b87d99cf17b9d0654f9b99deae4d8a1aaf606a547215",
     "src/text.ts": "e6ca80ea9417427d4fefb819e4c2755f1fe694b2fbbf20a4066d034b4c160ca2",
-    "tests/daemon.test.mjs": "3032633b6b07d056e3f1066aace1d7b9295749dd3c226311f3c83c8da8bbdbf3",
+    "tests/daemon.test.mjs": "286e8a3df80d37f56dd31d829a8a7cc3bf3098d4a97fde6441232d5d9d2e6987",
     "tests/follow.test.mjs": "18584315a93820e057d9e4bd03d1d3737f65ead052f1bc2133091aaa2ce34ff9",
     "tests/runtime.test.mjs": "bf334b2132277445eb6ccd0b693475d07e8e81e2fe6d4fe9b8ffc3ca0b3e5457",
     "tests/share.test.mjs": "8e7914d58902dac4940882f307cfdcb218374c7416dc67f5f4257c3435478148",

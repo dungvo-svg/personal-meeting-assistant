@@ -5,16 +5,22 @@ import { join, resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
-import { applyEnv, isolatedEnv, recordingHost, teardown } from './harness.mjs';
+import { applyEnv, guardedCall, isolatedEnv, proveOwned, recordingHost, teardown } from './harness.mjs';
 
 const run = promisify(execFile);
 // A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*): the host started below can never be the user's.
 const world = await isolatedEnv('daemon');
 const env = world.env; const directory = env.PMA_DATA_DIR;
 const restoreEnv = applyEnv(env);   // before the import: client reads them once
-const { call, daemonInfo } = await import('../dist/client.js');
-const pma = async (...args) => { const { stdout } = await run(process.execPath, [resolve('dist/cli.js'), ...args], { env }); return stdout; };
+const { daemonInfo } = await import('../dist/client.js');
+// Requests and commands that change something go only to the host this test started and recorded (harness proof before each):
+// RPCs through guardedCall, CLI commands after proveOwned. Only the first look (status) and the read-only bootstrap (history) run unproven.
+const call = guardedCall(env);
+const cliRaw = (...args) => run(process.execPath, [resolve('dist/cli.js'), ...args], { env });
+const cli = async (...args) => { await proveOwned(env); return cliRaw(...args); };
+const pma = async (...args) => (await cli(...args)).stdout;
 const json = async (...args) => JSON.parse(await pma(...args));
+const jsonRaw = async (...args) => JSON.parse((await cliRaw(...args)).stdout);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // Stops only a host proven to be this test's own (recorded at start, testMode ping, same pid), then removes the root.
@@ -22,9 +28,9 @@ test.after(async () => { await teardown(world); restoreEnv(); });
 
 test('the CLI starts one runtime that outlives the command; a second runtime exits without touching history', async () => {
   // status only looks (0.12.1, ENG-37): with no host it says so and starts none; the next real command starts it.
-  const before = await json('status');
+  const before = await jsonRaw('status');
   assert.equal(before.host, 'NOT_RUNNING'); assert.equal(daemonInfo(), null);
-  await recordingHost(env, () => json('history'));   // starts the host: its pid is recorded as this test's
+  await recordingHost(env, () => jsonRaw('history'));   // starts the host: its pid is recorded as this test's
   const status = await json('status');
   assert.equal(status.session, null);
   const info = daemonInfo();
@@ -47,6 +53,7 @@ test('RPC needs the local token and rejects browsers', async () => {
 });
 
 test('follow prints batched lines with flags, marks the follower heartbeat and stops when the session ends', async () => {
+  await proveOwned(env);
   const follower = spawn(process.execPath, [resolve('dist/cli.js'), 'follow', '--batch', '1'], { env });
   const exited = new Promise(r => follower.on('exit', r));
   let output = ''; follower.stdout.on('data', d => { output += d; });
@@ -72,14 +79,14 @@ test('after the meeting: read, summary and tasks through the CLI with real sourc
   const tasksFile = join(directory, 'tasks.json'); writeFileSync(tasksFile, JSON.stringify([{ task: 'Gửi báo cáo', owner: 'Anh Nam', due: 'trước thứ Sáu', sourceIds: [2] }]));
   assert.match(readFileSync((await json('tasks', '--file', tasksFile, '--receipt', receipt, '--base', '0')).path, 'utf8'), /\| 1 \| Gửi báo cáo \| Anh Nam \| trước thứ Sáu \| #2 \|/);
   const bad = join(directory, 'bad.json'); writeFileSync(bad, JSON.stringify([{ task: 'Bịa', sourceIds: [999] }]));
-  assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'tasks', '--file', bad, '--receipt', receipt, '--base', '1'], { env }).catch(e => e)).stdout, /SOURCE_OUTSIDE_SESSION/);
+  assert.match((await cli('tasks', '--file', bad, '--receipt', receipt, '--base', '1').catch(e => e)).stdout, /SOURCE_OUTSIDE_SESSION/);
 });
 
 test('pma at sets the scheduled start of the current session and rejects bad times', async () => {
   const set = await json('at', '08:15');
   assert.equal(new Date(set.scheduledStart).getHours() * 60 + new Date(set.scheduledStart).getMinutes(), 8 * 60 + 15);
   assert.match(set.coverage, /lịch họp/);
-  assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'at', '8h'], { env }).catch(e => e)).stdout, /INVALID_INPUT|INVALID_TIME/);
+  assert.match((await cli('at', '8h').catch(e => e)).stdout, /INVALID_INPUT|INVALID_TIME/);
   assert.equal((await json('context')).agenda.scheduledStart, set.scheduledStart);
 });
 
@@ -104,6 +111,7 @@ test('follow --as dich keeps its own cursor and never touches the main one; the 
   const second = (await call('fixture', { text: 'Đoạn thứ hai.' })).id;
   const before = await json('status');
   assert.equal(before.agentCursor, first); assert.equal(before.followers.chinh.unread, 1);
+  await proveOwned(env);
   const dich = spawn(process.execPath, [resolve('dist/cli.js'), 'follow', '--as', 'dich', '--no-notes', '--batch', '1'], { env });
   const exited = new Promise(r => dich.on('exit', r));
   let output = ''; dich.stdout.on('data', d => { output += d; });
@@ -142,7 +150,7 @@ test('pma translate saves a Claude translation for a Lao segment and refuses Vie
   const vi = (await call('fixture', { text: 'Kho số hai đủ hàng.', language: 'vi' })).id;
   const lo = (await call('fixture', { text: 'ສະບາຍດີທຸກຄົນ', language: 'lo' })).id;
   assert.match(await pma('translate', '--source', String(lo), '--text', 'Xin chào mọi người.'), /"saved":1/);
-  const bad = await run(process.execPath, [resolve('dist/cli.js'), 'translate', '--source', String(vi), '--text', 'x'], { env }).catch(e => e);
+  const bad = await cli('translate', '--source', String(vi), '--text', 'x').catch(e => e);
   assert.match(bad.stdout, /TRANSLATE_ONLY_LAO/);
   await call('finish');
 });
@@ -170,7 +178,7 @@ test('manual text: `pma say` ingests operator_text, RAW shows "nhập tay", bad 
   for (const text of ['', '   ', 'x'.repeat(8001), 5, undefined]) await assert.rejects(call('manual', { text }), /INVALID_INPUT/, JSON.stringify(text)?.slice(0, 30));
   await assert.rejects(call('manual', { sessionId: '00000000-0000-4000-8000-000000000000', text: 'phiên lạ' }), /SESSION|INVALID/);
   assert.equal((await call('manual', { text: 'x'.repeat(8000) })).id > via.id, true);
-  assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'say'], { env }).catch(e => e)).stdout, /INVALID_INPUT/);
+  assert.match((await cli('say').catch(e => e)).stdout, /INVALID_INPUT/);
   const finished = await call('finish');
   const raw = readFileSync(finished.raw.path, 'utf8');
   assert.match(raw, /nhập tay/); assert.match(raw, /Anh Nam báo kho số 3 hết hàng\./);
