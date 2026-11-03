@@ -19,6 +19,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 test.after(async () => { await call('shutdown').catch(() => {}); await sleep(500); rmSync(directory, { recursive: true, force: true }); });
 
 test('the CLI starts one runtime that outlives the command; a second runtime exits without touching history', async () => {
+  // status only looks (0.12.1, ENG-37): with no host it says so and starts none; the next real command starts it.
+  const before = await json('status');
+  assert.equal(before.host, 'NOT_RUNNING'); assert.equal(daemonInfo(), null);
+  await json('history');
   const status = await json('status');
   assert.equal(status.session, null);
   const info = daemonInfo();

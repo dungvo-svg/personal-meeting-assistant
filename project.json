@@ -71,7 +71,7 @@
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "KEEP_UNTIL_USER_DELETES",
   "documentation_baseline": {
-    "version": "0.12.0",
+    "version": "0.12.1",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",

@@ -160,6 +160,43 @@ test('a new host takes over a session whose recorder is still alive (nothing mar
   });
 });
 
+test('a host that takes over a live meeting resumes each follow role at its stored cursor; no heartbeat or lease survives, so the still-running follow takes its role back at once', async () => {
+  await withFakes(async (r, dir, root) => {
+    process.env.PMA_WARM = '0';
+    r.prepare('Họp dài'); const id = r.session.id;
+    r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }]; await r.select(id, 13); await until(() => r.recorder.state === 'RECORDING', 'recorder');
+    const [a, b, c] = ['một', 'hai', 'ba'].map(text => r.ingest(text, 'operator_text'));
+    await r.next(id, b, 0, 12, true, 'chinh', { lease: 'chinhaaaa' });
+    await r.next(id, c, 0, 12, true, 'dich', { ack: a, lease: 'dichbbbbb' });
+    await r.next(id, c, 0, 12, true, 'dich', { lease: 'dichbbbbb' }); assert.deepEqual(r.release(id, 'dich', 'dichbbbbb', c), { released: true });
+    const recorderPid = r.recorder.pid;
+    r.closing = true; r.db.close();
+    writeFileSync(join(dir, 'daemon.json'), JSON.stringify({ pid: 999999, sessionId: id, recorderPid, workerPid: null, asr: 'paused', speaker: 'Loop' }));
+    const next = new MeetingRuntime(root, dir, false); next.mixer = () => {};
+    try {
+      assert.equal(next.session.id, id);
+      assert.deepEqual(next.followers, { chinh: { cursor: b, at: null }, dich: { cursor: c, at: null } });
+      assert.equal(next.agentCursor, b); assert.equal(next.lastFollowAt, null, 'no reader is presumed alive');
+      const roles = next.compact().followers; assert.equal(roles.chinh.cursor, b); assert.equal(roles.chinh.unread, 1); assert.equal(roles.dich.unread, 0);
+      // The follow process of the dead host is still running with its own lease: nothing holds the role here, so it is not FOLLOWER_BUSY.
+      await next.next(id, c, 0, 12, true, 'chinh', { lease: 'chinhaaaa' }); assert.equal(next.followers.chinh.cursor, c);
+      await next.finish(id);
+    } finally { delete process.env.PMA_WARM; await next.close(); }
+    // A new meeting starts with no roles, whatever the last one stored.
+    const fresh = new MeetingRuntime(root, dir, true);
+    try { fresh.prepare('Họp sau', true); assert.deepEqual(fresh.followers, {}); assert.equal(fresh.agentCursor, 0); assert.deepEqual(fresh.compact().followers, {}); } finally { await fresh.close(); }
+  });
+});
+
+test('status says the ASR worker is stalled when a listening worker has sent nothing for 90 s; a quiet paused worker is not stalled', async () => {
+  await withFakes(async r => {
+    r.prepare('Họp', false, undefined, undefined, { warm: false }); r.captureState = 'LISTENING';
+    r.lastWorkerEventAt = Date.now() - 5000; assert.equal(r.compact().captureInfo.asrStalledSeconds, undefined);
+    r.lastWorkerEventAt = Date.now() - 120000; assert.ok(r.compact().captureInfo.asrStalledSeconds >= 120);
+    r.captureState = 'WARM_READY'; assert.equal(r.compact().captureInfo.asrStalledSeconds, undefined);
+  });
+});
+
 test('stop: the recorder ends first, the ASR worker delivers what is left, the mix is made, and only then are RAW written and the host told it may leave', async () => {
   await withFakes(async (r, dir) => {
     const { id, audio } = await openSession(r, dir);

@@ -10,14 +10,15 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { MeetingRuntime } from './runtime.js';
+import { MeetingRuntime, PICTURE_MAX_CHARS } from './runtime.js';
+import { releaseMachine, updateMachine } from './machine_lock.js';
 import { composeBrief } from './brief.js';
 import { applyParticipants } from './participants.js';
 import { setMicState } from './mic.js';
 
-export const VERSION = '0.12.0';
+export const VERSION = '0.12.1';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
-const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH'];
+const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH', 'PMA_LOCK_DIR'];
 for (let i = 2; i < process.argv.length - 1; i++) {
   if (process.argv[i] !== '--env') continue;
   const [key, ...value] = process.argv[++i].split('=');
@@ -35,7 +36,11 @@ let lastActivity = Date.now();
 
 const sid = z.string().uuid();
 const ids = z.array(z.number().int().positive());
-const current = (sessionId?: string) => sid.parse(sessionId ?? runtime.session?.id);
+// The open meeting, unless an ID is given. With neither, say so in words (zod's "expected string, received undefined" did not).
+const current = (sessionId?: string) => { const id = sessionId ?? runtime.session?.id; if (id === undefined) throw new Error('NO_OPEN_SESSION: không có cuộc họp nào đang mở; thêm --session <id> (pma history)'); return sid.parse(id); };
+// Work done after the meeting (report, summary, tasks): the open meeting, else the latest one. After `pma stop` the host leaves and
+// the next command starts a new host with no open meeting (03/11: `pma summary` without --session failed).
+const afterwards = (sessionId?: string) => sid.parse(sessionId ?? runtime.session?.id ?? runtime.latestSessionId());
 const languages = z.array(z.enum(['vi', 'lo', 'th'])).min(1).max(3).default(['vi', 'lo', 'th']);
 
 // Every operation the CLI and MCP adapter may call. Inputs are validated here, once, for both.
@@ -62,12 +67,12 @@ const methods: Record<string, (input: any) => any> = {
   manual: input => { const a = z.object({ sessionId: sid.optional(), text: z.string().trim().min(1).max(8000) }).parse(input); runtime.requireSession(current(a.sessionId)); return { id: runtime.ingest(a.text, 'operator_text') }; },
   // Listening again from the WAV, and the list of what is worth listening to again. Both work on a finished session too:
   // without an ID they take the open session, else the latest one.
-  recheck: input => { const a = z.object({ sessionId: sid.optional(), sourceId: z.number().int().positive().optional(), from: z.string().max(40).optional(), to: z.string().max(40).optional(), channel: z.enum(['speaker', 'mic']).optional(), beam: z.number().int().min(1).max(16).optional() }).parse(input); return runtime.recheck(sid.parse(a.sessionId ?? runtime.session?.id ?? runtime.latestSessionId()), a); },
-  coverage: input => { const a = z.object({ sessionId: sid.optional() }).parse(input); return runtime.coverage(sid.parse(a.sessionId ?? runtime.session?.id ?? runtime.latestSessionId())); },
+  recheck: input => { const a = z.object({ sessionId: sid.optional(), sourceId: z.number().int().positive().optional(), from: z.string().max(40).optional(), to: z.string().max(40).optional(), channel: z.enum(['speaker', 'mic']).optional(), beam: z.number().int().min(1).max(16).optional() }).parse(input); return runtime.recheck(afterwards(a.sessionId), a); },
+  coverage: input => { const a = z.object({ sessionId: sid.optional() }).parse(input); return runtime.coverage(afterwards(a.sessionId)); },
   finish: input => runtime.finish(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
-  raw: input => runtime.writeRaw(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
-  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200) }).parse(input); return runtime.saveSummary(current(a.sessionId), a.markdown, a.sourceIds); },
-  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), sourceIds: ids.min(1).max(50) })).max(200) }).parse(input); return runtime.saveTasks(current(a.sessionId), a.tasks); },
+  raw: input => runtime.writeRaw(afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
+  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200) }).parse(input); return runtime.saveSummary(afterwards(a.sessionId), a.markdown, a.sourceIds); },
+  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), sourceIds: ids.min(1).max(50) })).max(200) }).parse(input); return runtime.saveTasks(afterwards(a.sessionId), a.tasks); },
   history: () => runtime.historyList(),
   glossary: input => {
     const a = z.object({ action: z.enum(['list', 'add', 'remove']).default('list'), name: z.string().max(80).optional(), variants: z.array(z.string().max(80)).max(20).default([]), force: z.boolean().default(false) }).parse(input);
@@ -79,7 +84,7 @@ const methods: Record<string, (input: any) => any> = {
   participants: input => applyParticipants(runtime, z.object({ participants: z.array(z.any()).max(200) }).parse(input).participants),
   brief: input => ({ markdown: composeBrief(runtime, root, z.object({ sessionId: sid.optional() }).parse(input).sessionId) }),
   picture: input => {
-    const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(8000).optional(), sourceIds: ids.min(1).max(50).optional() }).parse(input);
+    const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional() }).parse(input);
     const id = current(a.sessionId);
     if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); return runtime.savePicture(id, a.text, a.sourceIds); }
     return runtime.picture(id);
@@ -117,7 +122,7 @@ http.requestTimeout = 30000; http.headersTimeout = 10000;
 const listen = () => new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(port, '127.0.0.1', resolve); });
 try { for (let attempt = 0; ; attempt++) { try { await listen(); break; } catch (error: any) { if (error?.code !== 'EADDRINUSE' || attempt >= 6) throw error; await new Promise(r => setTimeout(r, 500)); } } }
 catch (error: any) { console.error(`Meeting runtime already running on ${origin} (${error?.code || error}); exiting without touching history.`); process.exit(1); }
-runtime = new MeetingRuntime(root, dataDir, process.env.PMA_TEST_MODE === '1');
+runtime = new MeetingRuntime(root, dataDir, process.env.PMA_TEST_MODE === '1', { port });
 // A diagnostic instance must never launch Zoom.
 if (runtime.testMode) runtime.opener = () => {};
 runtime.on('change', () => writeRegistry());
@@ -129,6 +134,7 @@ let lastRegistry = '';
 function writeRegistry() {
   const registry = runtime.registry(); const text = JSON.stringify(registry); if (text === lastRegistry) return; lastRegistry = text;
   try { writeFileSync(join(dataDir, 'daemon.json'), JSON.stringify({ url: origin, pid: process.pid, token, version: VERSION, startedAt, ...registry })); } catch (error) { console.error('daemon.json not written:', error); }
+  if (runtime.machine) try { updateMachine(runtime.machine.token, { sessionId: registry.sessionId, recorderPid: registry.recorderPid, workerPid: registry.workerPid }); } catch {}
 }
 writeRegistry();
 console.error(`Meeting runtime ${VERSION}: ${origin} (capture OFF)`);
@@ -149,3 +155,5 @@ async function shutdown() {
   http.close(); setTimeout(() => process.exit(0), 100).unref();
 }
 process.on('SIGINT', () => void shutdown()); process.on('SIGTERM', () => void shutdown());
+// However the host ends, a lock it still holds goes with it (a lock left behind is also seen as stale by PID).
+process.on('exit', () => { if (runtime?.machine) try { releaseMachine(runtime.machine.token); } catch {} });

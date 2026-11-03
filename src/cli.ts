@@ -2,7 +2,7 @@
 // `follow` and `read`, which print transcript lines for Claude to read.
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { call } from './client.js';
+import { call, inspect } from './client.js';
 import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
@@ -164,9 +164,11 @@ async function follow(flags: Record<string, string>) {
     if (info.micDeviceChanged && info.micDeviceChanged.to !== micChanged) { micChanged = info.micDeviceChanged.to; console.log(`MICRO TÔI ĐỔI: ứng dụng họp (${info.micDeviceChanged.app}) đang dùng "${info.micDeviceChanged.to}", máy vẫn thu "${info.micDeviceChanged.from ?? micDevice}". Muốn theo micro mới: pma pause rồi pma listen.`); }
     if (info.audioSaveError) console.log(`LƯU ÂM THANH LỖI: ${info.audioSaveError}`);
     const lag = s.captureInfo?.lagSeconds;
-    if (typeof lag === 'number' && lag > LAG_WARN_SECONDS) console.log(`CẢNH BÁO TRỄ: chữ đang ra chậm ${Math.round(lag)} giây so với lời nói. Dừng việc nặng đang chạy trên máy.`);
+    const stalled = s.captureInfo?.asrStalledSeconds;
+    if (typeof stalled === 'number') console.log(`BỘ NGHE ĐỨNG: ${stalled} giây chưa ra kết quả nào (con số trễ đang hiện là số cũ). Âm thanh vẫn được ghi. Kiểm việc nặng khác đang dùng GPU, nhất là một host PMA thứ hai; pma pause/listen không giúp khi GPU đầy.`);
+    else if (typeof lag === 'number' && lag > LAG_WARN_SECONDS) console.log(`CẢNH BÁO TRỄ: chữ đang ra chậm ${Math.round(lag)} giây so với lời nói. Dừng việc nặng đang chạy trên máy.`);
     const since = Math.max(Date.parse(s.lastNoteAt ?? '') || 0, Date.parse(s.captureInfo?.listeningSince ?? '') || 0);
-    if (flags['no-notes'] !== 'true' && since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút chưa có ghi chú cuốn chiếu. Ghi tóm tắt khúc vừa rồi: pma note --text "..." --sources <id,...>`); }
+    if (flags['no-notes'] !== 'true' && since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút bức tranh cuộc họp chưa được cập nhật. Cập nhật ngay: pma picture --file <file> --sources <id,...>`); }
   };
   const ended = async () => { flush(); await leave(); console.log('KẾT THÚC: phiên đã đóng'); };
   const claimed = await acquire(true).catch(error => { console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return 'failed' as const; });
@@ -262,7 +264,7 @@ async function main() {
       const items = flags.file ? JSON.parse(readFileSync(flags.file, 'utf8')) : [{ sourceId: Number(flags.source), text: flags.text }];
       return out(await call('translate', { ...session, items }));
     }
-    case 'status': return out(await call('status'));
+    case 'status': return out(await inspect());
     case 'pause': return out(await call('pause', session));
     case 'audio': {
       const action = positional[0] || 'list';

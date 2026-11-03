@@ -31,11 +31,11 @@ async function fakeHost(handler) {
   return { dir, log, calls, close: async () => { server.closeAllConnections?.(); await new Promise(r => server.close(r)); rmSync(dir, { recursive: true, force: true }); } };
 }
 // Runs the CLI; `marks` says how many release calls the host had seen when each piece of output arrived.
-function cli(host, args, env = {}) {
+function cli(host, args, env = {}, killAfterMs = 30000) {
   const child = spawn(process.execPath, [resolve('dist/cli.js'), ...args], { env: { ...process.env, PMA_DATA_DIR: host.dir, PMA_STOP_HOOK: 'off', ...env } });
   let out = ''; const marks = []; child.stdout.on('data', d => { out += d; marks.push({ text: String(d), releases: host.calls('release').length }); }); child.stderr.on('data', () => {});
   const done = new Promise(r => child.on('exit', code => r({ out, code, marks })));
-  const timer = setTimeout(() => child.kill(), 30000); return done.finally(() => clearTimeout(timer));
+  const timer = setTimeout(() => child.kill(), killAfterMs); return done.finally(() => clearTimeout(timer));
 }
 const withHost = async (handler, fn) => { const host = await fakeHost(handler); try { await fn(host); } finally { await host.close(); } };
 const LEASE = /^[a-z0-9]{8,64}$/;
@@ -242,4 +242,32 @@ test('a real host: lease, ack, release and read --as through /rpc; a second foll
     await call('prepare', { title: 'Phiên sau', fixture: true }); const b1 = (await call('fixture', { text: 'Cuộc họp B.' })).id;
     const next = await run('follow', '--as', 'dich', '--no-notes', '--minutes', '0.00002'); assert.match(next.out, new RegExp(`#${b1} .*Cuộc họp B\\.`));
   } finally { await call('shutdown').catch(() => {}); await sleep(500); for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; rmSync(directory, { recursive: true, force: true }); }
+});
+
+// 03/11 meeting: `pma recheck` failed with "fetch failed" while the host was still working on it (fetch stops waiting for headers after
+// 300 s). The CLI now talks to the host over node:http, limited only by the call's own timeout.
+test('a slow host answer still arrives: recheck waits for the host, and the host error text is what the CLI prints', async () => {
+  const delay = Number(process.env.PMA_SLOW_RPC_MS || 1500);
+  await withHost(async (method, args) => {
+    if (method === 'recheck' && args.sourceId === 5) { await sleep(delay); return { id: 1, sourceId: 5, text: 'nghe lại xong', language: 'vi', alternatives: [], silent: false }; }
+    if (method === 'recheck') throw new Error('SOURCE_OUTSIDE_SESSION: ' + args.sourceId);
+    throw new Error('UNEXPECTED ' + method);
+  }, async host => {
+    const t0 = Date.now(); const done = await cli(host, ['recheck', '5'], {}, delay + 30000);
+    assert.equal(done.code, 0); assert.match(done.out, /nghe lại xong/); assert.ok(Date.now() - t0 >= delay, 'it waited for the host');
+    const bad = await cli(host, ['recheck', '9']); assert.notEqual(bad.code, 0); assert.match(bad.out, /SOURCE_OUTSIDE_SESSION: 9/);
+  });
+});
+
+test('a listening worker that has gone quiet is reported as stalled, not hidden behind its last small lag', async () => {
+  let calls = 0;
+  await withHost((method, args) => {
+    if (method === 'status') return status({ captureInfo: { lagSeconds: 1.2, asrStalledSeconds: 120 } });
+    if (method === 'release') return { released: true };
+    if (method === 'next') { if (args.limit === 1) return reply([], args.after); calls++; return calls === 1 ? reply([row(1, 'câu cuối trước khi đứng')], 1) : sleep(300).then(() => reply([], 1, { ended: calls > 6 })); }
+    return null;
+  }, async host => {
+    const { out } = await cli(host, ['follow', '--batch', '1', '--no-notes']);
+    assert.match(out, /BỘ NGHE ĐỨNG: 120 giây chưa ra kết quả nào/); assert.doesNotMatch(out, /CẢNH BÁO TRỄ/);
+  });
 });

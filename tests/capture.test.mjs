@@ -83,7 +83,7 @@ test('the daemon never deletes audio by itself; `pma audio` lists and purges on 
   const ancient = '55555555-5555-4555-8555-555555555555', current = '66666666-6666-4666-8666-666666666666';
   wavIn(ancient, Date.now() - 400 * day); wavIn(current, Date.now() - day);
   try {
-    await pma('status');  // starts the daemon; the old purge-at-start is gone
+    await pma('history');  // starts the daemon (status no longer does); the old purge-at-start is gone
     assert.ok(existsSync(join(dir, 'audio', ancient)) && existsSync(join(dir, 'audio', current)));
     const listed = await pma('audio'); assert.equal(listed.length, 2); assert.equal(listed.find(item => item.session === current).mb, 3);
     assert.equal(listed[0].expiresAt, 'không hết hạn'); assert.deepEqual(listed.find(item => item.session === current).mix, ['đang ghép'], 'only segments so far');

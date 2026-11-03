@@ -9,6 +9,7 @@ import { applyGlossary, collapseLoops, foldRuns, isHallucination, micLabel, risk
 import { canonicalOwner } from './participants.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, soundRanges, soundWindows, uncovered, type Range } from './timeline.js';
+import { claimMachine, machineHolder, releaseMachine } from './machine_lock.js';
 
 export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
 export type Opener = (url: string) => void;
@@ -53,6 +54,10 @@ export function meetingLaunch(input: string) {
 const scheduledAt = (at: string | undefined, day = new Date()) => at && /^([01]?\d|2[0-3]):[0-5]\d$/.test(at) ? new Date(day.toDateString() + ' ' + at).toISOString() : undefined;
 // The follower that drives agentCursor/lastFollowAt (the synthesising session); `pma follow --as <name>` adds others.
 const MAIN_FOLLOWER = 'chinh';
+// A listening ASR worker sends something at least once per chunk (≤ 15 s of audio plus its inference); this long without a line means it is stuck.
+export const ASR_STALL_SECONDS = 90;
+// The whole-meeting picture grows with the meeting: a 30-minute meeting already reached a note's 8000 characters (03/11).
+export const PICTURE_MAX_CHARS = 30000;
 // A role's lease (one `pma follow` process) stays valid while its heartbeat is younger than this; after that another process may take the role.
 const LEASE_MS = 90000;
 const LEASE_PATTERN = /^[a-z0-9]{8,64}$/;
@@ -102,7 +107,8 @@ export class MeetingRuntime extends EventEmitter {
   lastFollowAt: string | null = null;
   // Every named follower (`pma follow --as <name>`): what it has read up to and its last heartbeat. "chinh" is the
   // main one and also drives agentCursor/lastFollowAt above; the others (e.g. "dich") must not move those.
-  // `lease` is the token of the follow process holding the role; cursor, at and lease live in this host's memory only (not across a host restart).
+  // `lease` is the token of the follow process holding the role. Cursor and heartbeat are also written to the database (table
+  // followers), so a host that takes over a live meeting after a restart resumes each role where it was; the lease is not kept.
   followers: Record<string, { cursor: number; at: string | null; lease?: string }> = {};
   // Injectable so tests can age a lease by 90 s.
   now = () => Date.now();
@@ -132,8 +138,11 @@ export class MeetingRuntime extends EventEmitter {
   restartDelayMs = 1500; drainIdleMs = 120000; drainMaxMs = 30 * 60000; recorderStopMs = 20000; mixWaitMs = 15 * 60000; recheckTimeoutMs = 600000;
   opener: Opener = defaultOpener;
   mixer: Mixer = defaultMixer;
-  constructor(public root: string, public dataDir: string, public testMode = false) {
-    super(); mkdirSync(dataDir, { recursive: true });
+  // The machine-wide lock (machine_lock.ts): set by the host (daemon.ts); a runtime made directly (tests) has none and takes no lock.
+  machine: { token: string; port: number | null } | null = null;
+  constructor(public root: string, public dataDir: string, public testMode = false, machine?: { port: number | null }) {
+    super(); mkdirSync(dataDir, { recursive: true }); // A diagnostic host takes the real machine lock only when a lock folder is given (tests use their own).
+    if (machine && !(testMode && !process.env.PMA_LOCK_DIR)) this.machine = { token: randomUUID(), port: machine.port };
     this.db = new DatabaseSync(join(dataDir, 'history.sqlite3'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL, created TEXT NOT NULL, ended TEXT, mode TEXT NOT NULL, context TEXT NOT NULL);
@@ -141,7 +150,8 @@ export class MeetingRuntime extends EventEmitter {
       CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, item_key TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, created TEXT NOT NULL, UNIQUE(session_id,item_key,revision));
       CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, source_ids TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS translations(source_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS rechecks(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, source_id INTEGER, from_wall TEXT NOT NULL, to_wall TEXT NOT NULL, channel TEXT NOT NULL, text TEXT NOT NULL, language TEXT NOT NULL, alternatives TEXT NOT NULL, silent INTEGER NOT NULL, created TEXT NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS rechecks(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, source_id INTEGER, from_wall TEXT NOT NULL, to_wall TEXT NOT NULL, channel TEXT NOT NULL, text TEXT NOT NULL, language TEXT NOT NULL, alternatives TEXT NOT NULL, silent INTEGER NOT NULL, created TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS followers(session_id TEXT NOT NULL, name TEXT NOT NULL, cursor INTEGER NOT NULL, at TEXT, PRIMARY KEY(session_id,name));`);
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
     if (!columns.includes('capture_id')) this.db.exec("ALTER TABLE sources ADD COLUMN capture_id TEXT NOT NULL DEFAULT ''");
     if (!columns.includes('language')) this.db.exec("ALTER TABLE sources ADD COLUMN language TEXT NOT NULL DEFAULT ''");
@@ -174,11 +184,16 @@ export class MeetingRuntime extends EventEmitter {
   // worker is started again from the last position stored in the database, and nothing is lost, only delayed.
   private reattach(previous: Registry) {
     const row: any = this.db.prepare('SELECT id,title,created,mode,context FROM sessions WHERE id=?').get(previous.sessionId); if (!row) return;
+    try { this.claim(row.id); } catch (error) { this.lastError = String(error); return; }
     const context = JSON.parse(row.context);
     this.session = { id: row.id, title: row.title, created: row.created, ended: null, mode: row.mode, languages: context.languages ?? ['vi', 'lo', 'th'], context };
     this.armedDevice = { index: -1, name: previous.speaker ?? this.profile.speaker?.name ?? 'nguồn đang ghi', kind: 'speaker_loopback_all_device_audio', grantedAt: new Date().toISOString(), expiresAt: null, reattached: true };
     this.asrWanted = previous.asr === 'listening'; this.everListened = this.asrWanted;
     this.asrPosition = this.lastProcessedWall(row.id);
+    // Each role resumes from its stored cursor. No heartbeat and no lease are restored: the follow process that is still running
+    // proves itself with its next call, and until then the role is free and the Stop hook sees no live reader.
+    for (const f of this.db.prepare('SELECT name,cursor FROM followers WHERE session_id=?').all(row.id) as any[]) this.followers[f.name] = { cursor: f.cursor, at: null };
+    this.agentCursor = this.followers[MAIN_FOLLOWER]?.cursor ?? 0;
     this.attachRecorder(previous.recorderPid!);
     if (process.env.PMA_WARM !== '0') {
       this.captureState = this.asrWanted ? 'LOADING_ASR' : 'WARMING';
@@ -210,11 +225,17 @@ export class MeetingRuntime extends EventEmitter {
   }
   shown(text: string) { return applyGlossary(collapseLoops(text), this.glossary); }
   ping() { this.emit('change'); }
+  claim(sessionId: string | null) { if (this.machine) claimMachine({ token: this.machine.token, dataDir: this.dataDir, root: this.root, port: this.machine.port, sessionId }); }
+  unclaim() { if (this.machine) releaseMachine(this.machine.token); }
+  // Who holds the machine (no token), for status; null when nobody does or this runtime takes no lock.
+  machineState() { if (!this.machine) return null; const h = machineHolder(); if (!h) return null; const { token, ...rest } = h; return { ...rest, mine: token === this.machine.token }; }
   prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
     if (this.session && !this.session.ended) return this.snapshot();
     if (this.capture || this.stoppingCapture || this.recorderAlive() || this.captureState === 'CLEANUP_UNCONFIRMED') throw new Error('PREVIOUS_CAPTURE_NOT_CLOSED');
     if (fixture && !this.testMode) throw new Error('FIXTURE_DISABLED');
+    // A fixture session has no audio, model or GPU: it takes no machine lock.
+    if (!fixture) this.claim(null);
     languages = [...new Set(languages)]; if (!languages.length || languages.some(code => code !== 'vi' && code !== 'lo' && code !== 'th')) throw new Error('LANGUAGES_MUST_BE_VI_LO_TH');
     const created = new Date().toISOString();
     // A saved agenda from another day must not be presented as context for today's meeting.
@@ -276,9 +297,9 @@ export class MeetingRuntime extends EventEmitter {
       const token = lease ? { lease } : {};
       if (name === MAIN_FOLLOWER) {
         this.agentCursor = ack;
-        if (follower || lease) { this.lastFollowAt = stamp; this.followers[name] = { cursor: ack, at: stamp, ...token }; }
-        else if (role) role.cursor = ack;
-      } else this.followers[name] = { cursor: ack, at: stamp, ...token };
+        if (follower || lease) { this.lastFollowAt = stamp; this.track(id, name, { cursor: ack, at: stamp, ...token }); }
+        else if (role) this.track(id, name, { ...role, cursor: ack });
+      } else this.track(id, name, { cursor: ack, at: stamp, ...token });
     }
     const until = Date.now() + Math.max(0, Math.min(waitMs, 25000));
     while (!this.sources(id, after, 1).length && !this.session.ended && !this.closing && Date.now() < until) {
@@ -299,9 +320,14 @@ export class MeetingRuntime extends EventEmitter {
     // The meeting may have just ended (follow prints its last batch, then releases): the same meeting, role and lease may still
     // record the final ack. Nothing reopens the session; another meeting, role or lease changes nothing.
     if (!this.session || this.session.id !== id || !role?.lease || role.lease !== lease) return { released: false };
-    this.followers[name] = { cursor: ack, at: null };
+    this.track(id, name, { cursor: ack, at: null });
     if (name === MAIN_FOLLOWER) this.agentCursor = ack;
     return { released: true };
+  }
+  // One role's progress, in memory and in the database (the lease stays in memory only).
+  private track(id: string, name: string, f: { cursor: number; at: string | null; lease?: string }) {
+    this.followers[name] = f;
+    this.db.prepare('INSERT INTO followers(session_id,name,cursor,at) VALUES(?,?,?,?) ON CONFLICT(session_id,name) DO UPDATE SET cursor=excluded.cursor,at=excluded.at').run(id, name, f.cursor, f.at);
   }
   // `read` as a share role (`as` other than "chinh") gets only shareable rows; no `as` is the owner's full read. nextCursor/done count the rows scanned.
   read(id: string, after = 0, limit = 100, as?: string) {
@@ -322,7 +348,7 @@ export class MeetingRuntime extends EventEmitter {
     const ids = this.sessionSourceIds(id, sourceIds).sort((a, b) => a - b); const latest = this.picture(id);
     if (latest && latest.text === text && latest.sourceIds.length === ids.length && [...latest.sourceIds].sort((a, b) => a - b).every((v, i) => v === ids[i])) return { saved: true, revision: latest.revision, duplicate: true };
     const revision = (latest?.revision ?? 0) + 1;
-    this.publish(id, PICTURE_KEY, revision, 'observation', text, ids); return { saved: true, revision };
+    this.publish(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS); return { saved: true, revision };
   }
   // Distinct IDs, each a source of this session.
   private sessionSourceIds(id: string, sourceIds: number[]) {
@@ -330,9 +356,9 @@ export class MeetingRuntime extends EventEmitter {
     for (const sourceId of ids) if (!Number.isSafeInteger(sourceId) || !this.db.prepare('SELECT id FROM sources WHERE session_id=? AND id=?').get(id, sourceId)) throw new Error('SOURCE_OUTSIDE_SESSION');
     return ids;
   }
-  publish(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[]) {
+  publish(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], maxChars = 8000) {
     this.requireSession(id);
-    if (!/^[\w-]{1,80}$/.test(key) || !Number.isSafeInteger(revision) || revision < 1 || text.length < 1 || text.length > 8000 || !['observation', 'decision', 'action', 'question', 'correction'].includes(kind) || !sourceIds.length || sourceIds.length > 50) throw new Error('INVALID_NOTE');
+    if (!/^[\w-]{1,80}$/.test(key) || !Number.isSafeInteger(revision) || revision < 1 || text.length < 1 || text.length > maxChars || !['observation', 'decision', 'action', 'question', 'correction'].includes(kind) || !sourceIds.length || sourceIds.length > 50) throw new Error('INVALID_NOTE');
     const ids = this.sessionSourceIds(id, sourceIds);
     const payload = JSON.stringify({ text, sourceIds: ids, author: 'assistant', semanticStatus: 'UNVERIFIED_AGENT_NOTE' });
     const existing: any = this.db.prepare('SELECT payload,kind FROM notes WHERE session_id=? AND item_key=? AND revision=?').get(id, key, revision);
@@ -357,8 +383,12 @@ export class MeetingRuntime extends EventEmitter {
     const backlog: any = id ? this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, this.agentCursor) : { count: 0 };
     const { type, ...worker } = this.captureInfo;
     // The microphone is opened by the recorder now; its facts (which mic, why, a mic change) read like the old worker's.
-    const captureInfo = { ...Object.fromEntries(['micDevice', 'micSelectedBy', 'micError', 'micDeviceChanged'].filter(key => this.recorder.info[key] !== undefined).map(key => [key, this.recorder.info[key]])), ...worker };
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
+    const captureInfo: any = { ...Object.fromEntries(['micDevice', 'micSelectedBy', 'micError', 'micDeviceChanged'].filter(key => this.recorder.info[key] !== undefined).map(key => [key, this.recorder.info[key]])), ...worker };
+    // lagSeconds only changes when a chunk is done, so a stalled worker still shows its last small lag (03/11: about 20 min of
+    // "LISTENING, lag 1.2 s" while a second runtime filled the GPU). Silence from a listening worker is reported on its own.
+    const silent = Math.round((Date.now() - this.lastWorkerEventAt) / 1000);
+    if (this.captureState === 'LISTENING' && this.lastWorkerEventAt && silent >= ASR_STALL_SECONDS) captureInfo.asrStalledSeconds = silent;
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
   }
   followersState(id?: string) {
     return Object.fromEntries(Object.entries(this.followers).map(([name, f]) => {
@@ -419,7 +449,7 @@ export class MeetingRuntime extends EventEmitter {
   // Speaker (loopback) source for the whole session. Recording starts here unless `start` already did it from the remembered
   // choice; a different speaker than the one recording means new segments. mic=false leaves the "Tôi" microphone out.
   async select(id: string, deviceIndex: number, mic = true) {
-    this.requireSession(id);
+    this.requireSession(id); this.claim(id);
     if (!this.devices.some(d => d.index === deviceIndex)) await this.listDevices(false);
     const device = this.devices.find(d => d.index === deviceIndex);
     if (device?.kind === 'microphone') throw new Error('MICROPHONE_NEEDS_SEPARATE_CONSENT: chỉ chọn nguồn loa (loopback) qua tool này');
@@ -569,7 +599,7 @@ export class MeetingRuntime extends EventEmitter {
   // `listen`: ASR on. The recorder is started if it is not running yet; a paused worker resumes and catches up from where
   // it paused, a missing one is started. (mic only matters when this is what starts the recorder.)
   async start(id: string, mic = true) {
-    this.requireSession(id);
+    this.requireSession(id); this.claim(id);
     if (this.stoppingCapture || this.finishing || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select');
     if (!this.recorderAlive() && !this.recorder.retry && this.recorder.state !== 'ERROR') { this.micWanted = mic && process.env.PMA_MIC !== '0'; this.ensureRecorder(id); }
@@ -584,7 +614,7 @@ export class MeetingRuntime extends EventEmitter {
   }
   // Replays a recording through the old per-listening worker, chunking and ASR as a live meeting. No device is opened.
   async replay(id: string, file: string, speed = 1) {
-    this.requireSession(id);
+    this.requireSession(id); this.claim(id);
     if (this.stoppingCapture || this.recorderAlive()) throw new Error('STOP_CURRENT_CAPTURE_FIRST');
     if (this.capture) { if (!this.followMode) throw new Error('STOP_CURRENT_CAPTURE_FIRST'); await this.drainWorker(); }  // the warm follower of this session makes way
     const path = resolve(file);
@@ -792,6 +822,8 @@ export class MeetingRuntime extends EventEmitter {
     let raw: any; try { raw = this.writeRaw(id); } catch (error) { raw = { error: String(error) }; }
     // The host of a finished session may leave now (daemon.ts); everything that writes files is done.
     if (first) this.emit('finished', id);
+    // Recorder and ASR are done: the machine is free for another host.
+    this.unclaim();
     return { ...this.compact(), raw };
   }
 
@@ -830,7 +862,13 @@ export class MeetingRuntime extends EventEmitter {
       if (!(to > from) || to - from > 30 * 60000) throw new Error('INVALID_RANGE: khoảng nghe lại phải dài hơn 0 và không quá 30 phút');
     }
     const fromIso = new Date(from).toISOString(); const toIso = new Date(to).toISOString();
-    const args = [join(this.root, 'tools', 'audio_worker.py'), '--recheck', dir, '--from', fromIso, '--to', toIso, ...(channel ? ['--channel', channel] : []), '--beam', String(input.beam ?? 8), '--languages', (session.context.languages ?? ['vi', 'lo', 'th']).join(','), ...this.laoModelArgs()];
+    // Listening again loads a model too: after the meeting it takes the machine for the time of the recheck only.
+    const borrowed = !this.session || this.session.id !== id || !!this.session.ended; this.claim(id);
+    try { return await this.recheckRun(id, sourceId, channel, fromIso, toIso, input.beam, session); } finally { if (borrowed && !(this.session && !this.session.ended)) this.unclaim(); }
+  }
+  private async recheckRun(id: string, sourceId: number | null, channel: string | undefined, fromIso: string, toIso: string, beam: number | undefined, session: any) {
+    const dir = audioDir(this.dataDir, id);
+    const args = [join(this.root, 'tools', 'audio_worker.py'), '--recheck', dir, '--from', fromIso, '--to', toIso, ...(channel ? ['--channel', channel] : []), '--beam', String(beam ?? 8), '--languages', (session.context.languages ?? ['vi', 'lo', 'th']).join(','), ...this.laoModelArgs()];
     const child = spawn(this.python(), args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let output = ''; let error = '';
     child.stdout.on('data', d => { output += d; }); child.stderr.on('data', d => { error = (error + d).slice(-2000); });
@@ -1052,6 +1090,6 @@ export class MeetingRuntime extends EventEmitter {
     if (this.closing) return; this.closing = true;
     if (this.session && !this.session.ended) await this.finish(this.session.id);
     for (const timer of [this.recorder.watch, this.recorder.retry, this.workerRetry]) if (timer) clearTimeout(timer);
-    this.ping(); this.db.close();
+    this.unclaim(); this.ping(); this.db.close();
   }
 }

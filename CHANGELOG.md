@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.12.1 — 03/11/2026
+
+Nhánh `pma/v5-cursor`, nền `pma/v5-int` `55a0394` (0.12.0 chưa tích hợp).
+
+- **Tiến độ từng vai bền qua host restart** (ENG-31):
+  - con trỏ đã ack và giờ của mỗi vai ghi thêm vào bảng SQLite `followers`;
+  - host mới nhận lại cuộc họp còn ghi thì `chinh` và `dich` đọc tiếp đúng chỗ, không chiếu lại 40 dòng;
+  - không khôi phục nhịp tim hay lease: tiến trình follow còn chạy giành lại vai ngay, không bị `FOLLOWER_BUSY`;
+  - bảng mới, thêm vào; bảng cũ không đổi, bản 0.11/0.12.0 bỏ qua bảng này.
+- **`pma recheck`/`pma stop` không còn "fetch failed" khi host làm lâu** (ENG-32; lỗi thật ở họp thầu 03/11, host 0.11: `pma recheck 1775` báo `{"error":"fetch failed"}` khi bộ nghe đang chạy):
+  - nguyên nhân: CLI gọi host bằng `fetch`, mà `fetch` của Node bỏ chờ sau 300 s chưa có header trả lời (`UND_ERR_HEADERS_TIMEOUT`), bất kể CLI cho chờ 15 phút (recheck) hay 20 phút (stop). Tái hiện bằng server giả cùng giới hạn của host, trả lời sau 330 s: `FAIL after 307 s … UND_ERR_HEADERS_TIMEOUT`;
+  - sửa: `src/client.ts` gọi `/rpc` bằng `node:http`, giới hạn duy nhất là thời gian của từng lệnh;
+  - host vẫn làm tiếp và lưu kết quả recheck khi CLI mất kết nối, nên chạy `pma coverage` trước khi gọi lại.
+- **`BỘ NGHE ĐỨNG`** (ENG-33; lỗi thật ở họp thầu 03/11): từ 09:08 một host PMA thứ hai (bản thử `PMA_MIC=0`, cổng 18816) ghi trùng loa và chạy bộ nghe riêng, GPU 6 GB đầy, bộ nghe của cuộc họp đứng khoảng 20 phút. Suốt lúc đó `status` vẫn báo `LISTENING`, trễ 1,2 s (số của đoạn cuối cùng làm xong), không lỗi. Nay host báo `captureInfo.asrStalledSeconds` khi bộ nghe đang nghe mà 90 s không gửi gì; `pma follow` in `BỘ NGHE ĐỨNG` thay cho cảnh báo trễ; skill `hop` ghi cách xử lý. Không tự dừng hay khởi động lại gì.
+- **Một máy chỉ một host họp** (ENG-36; họp thầu 03/11). Trước khi nạp model, mở thiết bị, ghi âm, nghe lại hay nhận lại cuộc họp, host lấy khoá máy `runtime.lock` (thư mục `PMA_LOCK_DIR`, mặc định `%LOCALAPPDATA%\pma`), không phụ thuộc checkout, thư mục dữ liệu hay cổng. Host thứ hai bị từ chối `RUNTIME_BUSY`, kèm pid, cổng, thư mục dữ liệu của host đang giữ.
+  - Khoá không có hạn giờ. Chỉ hết hiệu lực khi host giữ nó đã mất: PID chết, hoặc PID còn sống nhưng giờ khởi động khác (PID bị dùng lại).
+  - Host chết mà bộ ghi/bộ nghe của nó còn chạy thì máy vẫn bị giữ; chỉ host cùng thư mục dữ liệu được nhận lại cuộc họp đó.
+  - Phiên fixture (không âm thanh, không model) không lấy khoá. `recheck` sau họp mượn khoá trong lúc nghe lại.
+  - Giới hạn: host bản cũ (0.11, 0.12.0, bản thử `PMA_MIC=0` hiện tại) không biết khoá này nên không bị chặn.
+- **`pma status` và MCP `session_status` chỉ đọc** (ENG-37): không có host thì trả `NOT_RUNNING` kèm ai đang giữ máy, không tự bật host (03/11: `pma status` của một phiên khác đã bật host 0.11 lúc 09:01). MCP adapter vẫn bật host khi khởi động như trước; chưa đổi.
+- **Bức tranh cuộc họp tới 30.000 ký tự** (ENG-34; họp thầu 03/11: họp 30 phút đã chạm giới hạn 8.000 ký tự của ghi chú). Ghi chú thường vẫn 8.000.
+- **Báo cáo sau `pma stop` không cần `--session`** (ENG-35; họp thầu 03/11: `pma summary`/`pma tasks` báo "expected string, received undefined"). Sau `stop` host rời đi, lệnh kế tiếp mở host mới không có cuộc họp nào; `summary`, `tasks`, `raw` (như `recheck`, `coverage` đã làm) nay lấy cuộc họp đang mở, nếu không có thì cuộc họp gần nhất. Lệnh cần cuộc họp đang mở mà không có thì báo `NO_OPEN_SESSION: không có cuộc họp nào đang mở; thêm --session <id> (pma history)`.
+- **Lời nhắc `NHẮC GHI CHÚ`** chỉ sang `pma picture --file … --sources …`, không còn `pma note` (bức tranh đã thay ghi chú cuốn chiếu từ 0.11).
+- **Sửa khoá baseline:** khoá 0.12.0 hash `AGENTS.md`, `README.md`, `docs/PRODUCT_BASELINE.md` theo bản CRLF trong worktree tích hợp, trong khi git lưu LF. Mọi checkout mới vì vậy FAIL `verify_baseline` ở ba file đó. 0.12.1 khoá lại từ checkout sạch (LF).
+- **Giới hạn còn mở:** như 0.12.0, trừ mục "tiến độ follower nằm trong bộ nhớ host" đã đóng. Lease vẫn chỉ ở bộ nhớ.
+- **Trạng thái:** implemented trong worktree riêng; xem dòng Test bên dưới. Chưa integrated, chưa released, chưa used ở họp thật.
+
 ## 0.12.0 — 01/11/2026
 
 Refactor plan v5 (Codex audit → Opus quyết, 3 agent Sonnet làm song song trong worktree `pma/v5-host`, `pma/v5-worker`, `pma/v5-panel`, Opus gộp ở `pma/v5-int`). Plan và cách xử lý bản review độc lập S4: [docs/PLAN_0_12.md](docs/PLAN_0_12.md).
