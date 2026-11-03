@@ -46,7 +46,7 @@ test('a host that died while its recorder goes on still holds the machine: anoth
   assert.equal(lock.claimMachine({ token: 'gggg', dataDir: 'dataF', root: '.', port: 1 }).token, 'gggg'); lock.releaseMachine('gggg');
 });
 
-test('two real hosts, two data folders and ports: only one prepares a meeting; status of the other says who holds the machine; finish frees it; status with no host starts nothing', async () => {
+test('two data folders and ports, one machine: the second folder reaches the first host (attach), never a second host; finish frees the machine; status with no host starts nothing', async () => {
   const dirs = [mkdtempSync(join(tmpdir(), 'pma-machine-a-')), mkdtempSync(join(tmpdir(), 'pma-machine-b-'))];
   const ports = [String(await freePort()), String(await freePort())];
   const envOf = i => ({ ...process.env, PMA_PORT: ports[i], PMA_TEST_MODE: '1', PMA_DATA_DIR: dirs[i], PMA_LOCK_DIR: lockDir, PMA_STOP_HOOK: 'off', PMA_WARM: '0' });
@@ -55,8 +55,11 @@ test('two real hosts, two data folders and ports: only one prepares a meeting; s
     // No host yet: status only looks.
     const none = await pma(1, 'status'); assert.equal(none.json.host, 'NOT_RUNNING'); assert.ok(!existsSync(join(dirs[1], 'daemon.json')), 'status started no host');
     const a = await pma(0, 'start', '--title', 'Họp A', '--no-select'); assert.equal(a.code, 0, a.out);
-    const b = await pma(1, 'start', '--title', 'Họp B', '--no-select'); assert.notEqual(b.code, 0); assert.match(b.out, /RUNTIME_BUSY: một host PMA khác đang giữ máy/);
-    const seen = (await pma(1, 'status')).json; assert.equal(seen.session, null); assert.equal(seen.machine.mine, false); assert.equal(seen.machine.port, Number(ports[0])); assert.ok(!('token' in seen.machine));
+    // One activation point (0.12.1, client attach): from data folder B the command reaches A's host, the one meeting of this machine;
+    // no second host is started.
+    const b = await pma(1, 'start', '--title', 'Họp B', '--no-select'); assert.equal(b.code, 0, b.out); assert.equal(b.json.session.id, a.json.session.id, 'B joined the meeting A opened');
+    assert.ok(!existsSync(join(dirs[1], 'daemon.json')), 'no host was started for folder B');
+    const seen = (await pma(1, 'status')).json; assert.equal(seen.session.id, a.json.session.id); assert.equal(seen.attached.via, 'machine'); assert.equal(seen.attached.port, Number(ports[0])); assert.ok(!JSON.stringify(seen).includes('"token"'));
     const stopped = await pma(0, 'stop'); assert.equal(stopped.code, 0, stopped.out);
     const b2 = await pma(1, 'start', '--title', 'Họp B', '--no-select'); assert.equal(b2.code, 0, b2.out);
     assert.equal((await pma(1, 'status')).json.machine.mine, true);

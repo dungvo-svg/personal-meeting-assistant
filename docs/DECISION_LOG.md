@@ -124,6 +124,9 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-42 | 0.12.1: khoá phụ nguyên vẹn, không lấy từ người giữ còn sống; bộ ghi không chịu dừng giữ PID và khoá; `committed` của `chinh` là mốc cao chốt lúc lưu bức tranh; `status` không ghi; đoạn nhận dạng đối chiếu khúc ghi thật, không tin được thì không chia sẻ; skill dừng ghi ngay khi owner kết thúc | Review Codex 1def228 (điểm 1–4) và ee528c1 (thứ tự dừng) |
 | ENG-43 | 0.12.1: khoá phụ đóng an toàn (không host nào gỡ khoá phụ, kể cả của host đã chết; báo đúng file); tín hiệu dừng bộ ghi đi trước mọi lần ghi đĩa; điều khiển tiến trình qua điểm chèn để test không chạm tiến trình thật | Review Codex 13cd5e8 điểm 1–3 |
 | ENG-44 | 0.12.1: host kiểm lại bằng chứng micro (luật `share_ok`) ngay trước khi giao dòng micro cho vai chia sẻ; không đủ thì gắn `MIC_SHARE_REVOKED` vĩnh viễn, không đổi RAW/WAV | Phản biện Astra (gap 1): bằng chứng micro có thể đổi sau lúc nhận dạng |
+| ENG-45 | 0.12.1: gói context (`context_pack.ts`) có phiên bản sha256 và nguồn gốc từng mục; mỗi tiến trình follow gắn với phiên bản đã đọc; trạng thái sẵn sàng theo phiên + vai + người đọc + thế hệ + phiên bản; context đổi thì tự đọc lại | Mục tiêu tự chủ (owner 03/11 qua phiên điều phối): context đúng cuộc họp, đúng người đọc |
+| ENG-46 | 0.12.1: sổ việc nền, câu hỏi chờ chủ, suy giảm (`jobs.ts`); nhắc một lần, quá hạn thì xếp lại, im lặng không phải trả lời; `stop` dừng việc dở và liệt kê | Bảng ngoại lệ 0.12 (còn thiếu) |
+| ENG-47 | 0.12.1: client tìm host theo thứ tự thư mục dữ liệu của mình rồi host giữ khoá máy; không mở host thứ hai khi có người giữ còn sống | Họp thầu 03/11: host thứ hai từ checkout khác |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

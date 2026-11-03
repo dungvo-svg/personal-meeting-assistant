@@ -83,6 +83,29 @@ const methods: Record<string, (input: any) => any> = {
   // Pre-meeting context (participants, brief) and the owner's manual microphone state for the "Tôi" channel.
   participants: input => applyParticipants(runtime, z.object({ participants: z.array(z.any()).max(200) }).parse(input).participants),
   brief: input => ({ markdown: composeBrief(runtime, root, z.object({ sessionId: sid.optional() }).parse(input).sessionId) }),
+  // Context binding (ENG-45): a follow process says it read the context pack.
+  bind: input => { const a = z.object({ sessionId: sid.optional(), as: z.string().regex(/^[a-z0-9-]{1,24}$/), consumer: z.string().regex(/^[a-z0-9-]{1,80}$/) }).parse(input); return runtime.bind(current(a.sessionId), a.as, a.consumer); },
+  // Background jobs, owner questions, degraded conditions (jobs.ts, ENG-46). Recorded by the host; nothing here waits for anything.
+  job: input => {
+    const a = z.object({ sessionId: sid.optional(), action: z.enum(['start', 'done', 'fail', 'list']), kind: z.enum(['analysis', 'translation', 'other']).default('analysis'), title: z.string().trim().min(1).max(300).optional(), id: z.number().int().positive().optional(), result: z.string().min(1).max(40000).optional(), sourceIds: ids.max(200).default([]), note: z.string().max(2000).optional(), status: z.enum(['running', 'done', 'failed', 'cancelled']).optional() }).parse(input);
+    const jobs = runtime.ledger.jobs;
+    if (a.action === 'start') { if (!a.title) throw new Error('JOB_NEEDS_TITLE'); return { id: jobs.start(current(a.sessionId), a.kind, a.title) }; }
+    if (a.action === 'list') return jobs.list(afterwards(a.sessionId), { status: a.status });
+    if (!a.id) throw new Error('JOB_NEEDS_ID');
+    if (a.action === 'done') { if (!a.result) throw new Error('JOB_NEEDS_RESULT'); return { saved: jobs.finish(a.id, a.result, a.sourceIds), job: jobs.get(a.id) }; }
+    return { failed: jobs.fail(a.id, a.note ?? '') };
+  },
+  ask: input => { const a = z.object({ sessionId: sid.optional(), text: z.string().trim().min(1).max(2000), sourceIds: ids.max(50).default([]), ttl: z.number().min(1).max(240).default(10) }).parse(input); return { id: runtime.ledger.questions.ask(current(a.sessionId), a.text, a.sourceIds, a.ttl) }; },
+  answer: input => { const a = z.object({ id: z.number().int().positive(), text: z.string().trim().min(1).max(4000) }).parse(input); return { answered: runtime.ledger.questions.answer(a.id, a.text) }; },
+  // `due` marks the one reminder as given; expired open questions become parked (silence is not an answer).
+  questions: input => { const s = afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId); const q = runtime.ledger.questions; const due = q.due(s); q.park(s); return { due, open: q.open(s), parked: q.parked(s) }; },
+  degraded: input => {
+    const a = z.object({ sessionId: sid.optional(), action: z.enum(['mark', 'clear', 'list']).default('list'), kind: z.string().regex(/^[a-z0-9-]{1,40}$/).optional(), detail: z.string().max(1000).default('') }).parse(input);
+    const s = afterwards(a.sessionId); const board = runtime.ledger.degraded;
+    if (a.action === 'list') return board.list(s);
+    if (!a.kind) throw new Error('DEGRADED_NEEDS_KIND');
+    return a.action === 'mark' ? { first: board.mark(s, a.kind, a.detail) } : { cleared: board.clear(s, a.kind) };
+  },
   picture: input => {
     const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional() }).parse(input);
     const id = current(a.sessionId);

@@ -11,6 +11,8 @@ import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE
 import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
 import { claimMachine, machineHolder, releaseMachine } from './machine_lock.js';
 import { shareOk } from './mic_share.js';
+import { Ledger } from './jobs.js';
+import { bindingKey, bindRole, buildPack, CONTEXT_TABLES_SQL, readiness, type Bindings, type ContextPack } from './context_pack.js';
 
 // ownerBasis (0.12.1): how the owner of a task is known: said in the meeting, confirmed by the user afterwards, or only inferred.
 export type TaskItem = { task: string; owner?: string; due?: string; ownerBasis?: 'stated' | 'confirmed' | 'inferred'; sourceIds: number[] };
@@ -153,6 +155,8 @@ export class MeetingRuntime extends EventEmitter {
   mixer: Mixer = defaultMixer;
   // The machine-wide lock (machine_lock.ts): set by the host (daemon.ts); a runtime made directly (tests) has none and takes no lock.
   machine: { token: string; port: number | null } | null = null;
+  // Background jobs, questions waiting for the owner, degraded conditions (jobs.ts): durable, never blocking the central session.
+  ledger!: Ledger;
   constructor(public root: string, public dataDir: string, public testMode = false, machine?: { port: number | null }) {
     super(); mkdirSync(dataDir, { recursive: true }); // A diagnostic host takes the real machine lock only when a lock folder is given (tests use their own).
     if (machine && !(testMode && !process.env.PMA_LOCK_DIR)) this.machine = { token: randomUUID(), port: machine.port };
@@ -167,6 +171,7 @@ export class MeetingRuntime extends EventEmitter {
       CREATE TABLE IF NOT EXISTS followers(session_id TEXT NOT NULL, name TEXT NOT NULL, cursor INTEGER NOT NULL, at TEXT, PRIMARY KEY(session_id,name));
       CREATE TABLE IF NOT EXISTS translation_history(id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, session_id TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL, replaced TEXT NOT NULL);`);
     // `committed` (0.12.1): how far a role's work is saved, not only printed (see committedOf).
+    this.db.exec(CONTEXT_TABLES_SQL); this.ledger = new Ledger(this.db, () => this.now());
     if (!(this.db.prepare('PRAGMA table_info(followers)').all() as any[]).some(c => c.name === 'committed')) this.db.exec('ALTER TABLE followers ADD COLUMN committed INTEGER NOT NULL DEFAULT 0');
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
     if (!columns.includes('capture_id')) this.db.exec("ALTER TABLE sources ADD COLUMN capture_id TEXT NOT NULL DEFAULT ''");
@@ -418,7 +423,7 @@ export class MeetingRuntime extends EventEmitter {
     // "LISTENING, lag 1.2 s" while a second runtime filled the GPU). Silence from a listening worker is reported on its own.
     const silent = Math.round((Date.now() - this.lastWorkerEventAt) / 1000);
     if (this.captureState === 'LISTENING' && this.lastWorkerEventAt && silent >= ASR_STALL_SECONDS) captureInfo.asrStalledSeconds = silent;
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), context: id ? (({ version, missing }) => ({ version, missing }))(this.packOf(id)!) : null, ledger: id ? this.ledger.summaryOf(id) : null, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
   }
   // How far a role's work is saved. Never past what it was handed (its cursor).
   // - chinh, a high-water contract, not row-by-row coverage: the picture is rewritten as the WHOLE meeting (OWN-029), so a picture saved
@@ -446,6 +451,31 @@ export class MeetingRuntime extends EventEmitter {
       return false;
     });
   }
+  // ---- context pack and who read it (context_pack.ts, ENG-45) ----
+  // The pack is built from what the session holds (agenda, me, schedule, participants) and the glossary; the same context gives the
+  // same version. `store` keeps it (a role binds to a stored version); status only computes it.
+  packOf(id: string, store = false): ContextPack | null {
+    const row: any = this.db.prepare('SELECT title,context FROM sessions WHERE id=?').get(id); if (!row) return null;
+    const c = JSON.parse(row.context);
+    const pack = buildPack({ sessionId: id, title: row.title, scheduledStart: c.scheduledStart, me: c.me, agenda: c.agenda, participants: c.participants, glossary: this.glossary, createdAt: new Date(this.now()).toISOString() });
+    if (store) this.db.prepare('INSERT OR IGNORE INTO context_packs(session_id,version,created,json) VALUES(?,?,?,?)').run(id, pack.version, pack.createdAt, JSON.stringify(pack));
+    return pack;
+  }
+  private bindingsOf(id: string): Bindings {
+    const rows = this.db.prepare('SELECT role,consumer_id,generation,version,bound_at FROM context_bindings WHERE session_id=?').all(id) as any[];
+    return Object.fromEntries(rows.map(b => [bindingKey(id, b.role, b.consumer_id), { sessionId: id, role: b.role, consumerId: b.consumer_id, generation: b.generation, version: b.version, boundAt: b.bound_at }]));
+  }
+  // A role's consumer (one follow process: its lease) says it read the pack now; a restarted process is a new generation.
+  bind(id: string, role: string, consumerId: string) {
+    this.sessionRow(id); const pack = this.packOf(id, true)!;
+    const next = bindRole(this.bindingsOf(id), { sessionId: id, role, consumerId, generation: this.now(), version: pack.version, boundAt: new Date(this.now()).toISOString() });
+    const b = next[bindingKey(id, role, consumerId)];
+    this.db.prepare('INSERT INTO context_bindings(session_id,role,consumer_id,generation,version,bound_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,role,consumer_id) DO UPDATE SET generation=excluded.generation,version=excluded.version,bound_at=excluded.bound_at').run(id, role, consumerId, b.generation, b.version, b.boundAt);
+    return { version: pack.version, missing: pack.missing, readiness: this.readinessOf(id, role, consumerId) };
+  }
+  readinessOf(id: string, role: string, consumerId: string) {
+    return readiness({ pack: this.packOf(id), sessionId: id, asrListening: this.session?.id === id && !this.session.ended && this.captureState === 'LISTENING', bindings: this.bindingsOf(id), role, consumerId });
+  }
   // `persist` false (status): worked out and returned, nothing written; next() and release() store it.
   committedOf(id: string, name: string, persist = true) {
     const limit = this.followers[name]?.cursor ?? 0; let done = Math.min(this.committed[name] ?? 0, limit);
@@ -466,7 +496,7 @@ export class MeetingRuntime extends EventEmitter {
       const unread = !id ? 0 : name === MAIN_FOLLOWER
         ? (this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, f.cursor) as any).count
         : (this.db.prepare('SELECT origin,boundary FROM sources WHERE session_id=? AND id>?').all(id, f.cursor) as any[]).filter(shareable).length;
-      return [name, { cursor: f.cursor, committed: id ? this.committedOf(id, name, false) : 0, at: f.at, unread }];
+      return [name, { cursor: f.cursor, committed: id ? this.committedOf(id, name, false) : 0, at: f.at, unread, context: id ? this.readinessOf(id, name, f.lease ?? '') : null }];
     }));
   }
   // Saved audio of a session: where it is, how big, which mix file. Null when no WAV exists (nothing recorded yet).
@@ -929,13 +959,17 @@ export class MeetingRuntime extends EventEmitter {
       try { await this.stopCapture(); } finally { this.finishing = false; }
       if (!this.session.ended) { this.session.ended = new Date().toISOString(); this.db.prepare('UPDATE sessions SET ended=? WHERE id=?').run(this.session.ended, id); }
     }
-    this.armedDevice = null; this.armedMic = null; this.ping();
+    this.armedDevice = null; this.armedMic = null;
+    // Background work still running is stopped (its result is not waited for), questions still open are parked with their sources:
+    // both go to the summary as "Chưa làm xong" / "Câu hỏi mở", never as answered.
+    if (first) { this.ledger.jobs.cancelRunning(id); this.ledger.questions.park(id, { all: true }); }
+    this.ping();
     let raw: any; try { raw = this.writeRaw(id); } catch (error) { raw = { error: String(error) }; }
     // The host of a finished session may leave now (daemon.ts); everything that writes files is done.
     if (first) this.emit('finished', id);
     // Recorder and ASR are done: the machine is free for another host (unless their exit is not confirmed; see releaseWhenIdle).
     this.releaseWhenIdle();
-    return { ...this.compact(), raw };
+    return { ...this.compact(), raw, unfinished: this.ledger.unfinishedLines(id) };
   }
 
   // ---- listening again, from the WAV, to what the live ASR missed or doubted ----

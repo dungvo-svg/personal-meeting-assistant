@@ -30,7 +30,7 @@ Nguồn: owner 03/11 10:35 (giờ VN), chuyển qua phiên điều phối PMA: "
 
 | Tình huống | Trạng thái nhận ra | Việc an toàn làm ngay | Giả định đảo được / cần xác nhận | Phục hồi | Có ở mã/test |
 | --- | --- | --- | --- | --- | --- |
-| Owner vắng, không trả lời | câu hỏi chờ > 10 phút | nghe, giữ bức tranh, nghe lại | không giả định gì về câu hỏi; cần xác nhận | nhắc một lần, rồi để vào "Câu hỏi mở" | skill (nguyên tắc 1–3); **chưa** có trạng thái "câu hỏi chờ" ở host |
+| Owner vắng, không trả lời | câu hỏi chờ > 10 phút | nghe, giữ bức tranh, nghe lại | không giả định gì về câu hỏi; cần xác nhận | nhắc một lần, rồi để vào "Câu hỏi mở" | `pma ask`/`questions` (ENG-46); test đã viết, chưa chạy |
 | Owner sửa hai lần mâu thuẫn | hai lời sửa cùng chủ đề | ghi cả hai kèm giờ, dùng lời mới nhất cho hiển thị | lời mới nhất là giả định đảo được; nghiệp vụ cần xác nhận | hỏi một câu gộp | **chưa** (sửa lỗi chỉ ở glossary/RAW) |
 | Đổi mục tiêu/phạm vi giữa họp | owner nói rõ | ghi mốc đổi vào bức tranh | phạm vi mới thay cho phần sau mốc | — | skill |
 | Hai lệnh start / hai controller | `RUNTIME_BUSY` | báo đúng pid/cổng/thư mục | không tự tắt host kia; cần owner | owner duyệt rồi tắt sạch | ENG-36, `tests/machine.test.mjs` |
