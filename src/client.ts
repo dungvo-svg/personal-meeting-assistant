@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { machineHolder } from './machine_lock.js';
+import { callNeeds, missingFrom, needsFor, PICTURE_KEY } from './protocol.js';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -16,7 +17,8 @@ type Info ={ url: string; pid: number; token: string; version: string; startedAt
 type Holder = NonNullable<ReturnType<typeof machineHolder>>;
 // How the host was reached: 'local' = this data dir's daemon.json; 'machine' = the machine-lock holder's, from another data dir.
 export type Attached = { via: 'local' | 'machine'; dataDir: string; port: number | null; pid: number };
-type Found = { info: Info; attached: Attached };
+// pong: the host's answer to the ping that found it (version, protocol, capabilities).
+type Found = { info: Info; attached: Attached; pong: any };
 
 export function daemonInfo(): Info | null { return readInfo(dataDir); }
 function readInfo(dir: string): Info | null {
@@ -63,7 +65,8 @@ const testClient = process.env.PMA_TEST_MODE === '1';
 const allowed = (pong: any) => !!pong && (!testClient || pong.testMode === true);
 async function locate(): Promise<{ found: Found | null; holder: Holder | null; why: string }> {
   const own = readInfo(dataDir);
-  if (wellFormed(own) && allowed(await ping(own))) return { found: { info: own, attached: { via: 'local', dataDir: resolve(dataDir), port: portOf(own.url), pid: own.pid } }, holder: null, why: '' };
+  const ownPong = wellFormed(own) ? await ping(own) : null;
+  if (wellFormed(own) && allowed(ownPong)) return { found: { info: own, attached: { via: 'local', dataDir: resolve(dataDir), port: portOf(own.url), pid: own.pid }, pong: ownPong }, holder: null, why: '' };
   const holder = machineHolder();
   if (!holder?.alive) return { found: null, holder, why: '' };
   const theirs = resolve(holder.dataDir);
@@ -78,7 +81,7 @@ async function locate(): Promise<{ found: Found | null; holder: Holder | null; w
   if (!pong) return no('không trả lời');
   if (!allowed(pong)) return no('không phải host thử (lệnh đang ở chế độ thử)');
   if (pong.pid !== undefined && pong.pid !== holder.pid) return no(`trả lời từ pid ${pong.pid}, không phải pid giữ khoá`);
-  return { found: { info, attached: { via: 'machine', dataDir: theirs, port: portOf(info.url), pid: holder.pid } }, holder, why: '' };
+  return { found: { info, pong, attached: { via: 'machine', dataDir: theirs, port: portOf(info.url), pid: holder.pid } }, holder, why: '' };
 }
 
 const busy = (holder: Holder, why: string) => `RUNTIME_BUSY: host PMA của máy đang chạy (pid ${holder.pid}${holder.port ? `, cổng ${holder.port}` : ''}, dữ liệu ${holder.dataDir}) nhưng ${why || 'chưa kết nối được'}. Không mở host thứ hai. Kiểm host đó (pma status) hoặc dừng nó trước (pma stop/shutdown ở thư mục dữ liệu của nó).`;
@@ -129,14 +132,22 @@ export async function ensureDaemon(): Promise<Info> {
 // Never starts a host or loads a model.
 export async function inspect() {
   const { found, holder, why } = await locate();
-  if (found) return { ...(await post(found.info, 'status', {}, 15000)), attached: found.attached };
+  if (found) return { ...(await post(found.info, 'status', {}, 15000)), attached: found.attached, host: { version: found.pong?.version ?? null, protocol: found.pong?.protocol ?? null, capabilities: Array.isArray(found.pong?.capabilities) ? found.pong.capabilities : [], draftsAllowed: missingFrom(found.pong, needsFor('summary')).length === 0 } };
   const machine = holder ? (({ token, ...rest }) => rest)(holder) : null;
   const note = holder?.alive ? `Một host khác đang giữ máy nhưng chưa kết nối được (${why || 'chưa rõ'}); lệnh status không tự khởi động host.` : 'Không có host nào chạy trên máy này; lệnh status không tự khởi động host.';
   return { host: 'NOT_RUNNING', dataDir, machine, attached: null, note };
 }
 
 export async function call(method: string, args: unknown = {}, timeoutMs = 60000) {
+  const a: any = args;
+  if (method === 'note' && a?.key === PICTURE_KEY) throw new Error('PICTURE_KEY_RESERVED: bức tranh chỉ lưu bằng pma picture (--receipt, --base); ghi chú dùng khoá khác');
   const info = await ensureDaemon();
+  // A request that relies on a newer host's guarantee is refused before it is sent when the host does not say it gives it.
+  const needs = callNeeds(method, args);
+  if (needs.length) {
+    const missing = missingFrom(await ping(info), needs);
+    if (missing.length) throw new Error(`HOST_PROTOCOL_OLD: host pid ${info.pid} không có ${missing.join(', ')}; yêu cầu ${method} chưa được gửi (host cũ sẽ bỏ qua lựa chọn này). Kết thúc host đó (pma stop) rồi mở lại bằng bản này`);
+  }
   return post(info, method, args, timeoutMs);
 }
 
@@ -145,5 +156,9 @@ export async function call(method: string, args: unknown = {}, timeoutMs = 60000
 export async function attach(method: string, args: unknown = {}, timeoutMs = 60000) {
   const { found, holder, why } = await locate();
   if (!found) throw new Error(holder?.alive ? busy(holder, why) : 'HOST_NOT_RUNNING: không có host nào đang chạy; nội dung nháp không tự mở host. Mở host bằng một lệnh đọc (vd. pma history) hoặc pma start, rồi chạy lại');
+  // A host that does not say it enforces the draft contract (an older 0.11 host still running after an upgrade) gets nothing of the
+  // draft: refused here, before any request. Reading, status and stop keep working with it (call / inspect).
+  const missing = missingFrom(found.pong, needsFor(method));
+  if (missing.length) throw new Error(`HOST_PROTOCOL_OLD: host pid ${found.info.pid} (bản ${found.pong?.version ?? '?'}) không có ${missing.join(', ')}; nội dung nháp chưa được gửi. Kết thúc host đó (pma stop) rồi mở lại bằng bản này`);
   return post(found.info, method, args, timeoutMs);
 }

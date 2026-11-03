@@ -13,6 +13,7 @@ import { claimMachine, machineHolder, releaseMachine } from './machine_lock.js';
 import { shareOk } from './mic_share.js';
 import { Ledger } from './jobs.js';
 import { DecisionLedger } from './decisions.js';
+import { PICTURE_KEY } from './protocol.js';
 import { CoworkLedger, seatStatus, type HandledKind } from './cowork.js';
 import { applyCorrections, bindingKey, bindRole, buildPack, CONTEXT_TABLES_SQL, readiness, type Bindings, type ContextPack } from './context_pack.js';
 
@@ -99,7 +100,7 @@ const SKIP_AFTER_CRASH_SECONDS = 10;
 // A replay is a file played through the old per-listening worker; this is far beyond any recording, not a meeting limit.
 const REPLAY_MAX_SECONDS = 86400;
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
-export const PICTURE_KEY = 'buc-tranh';
+export { PICTURE_KEY };
 export class MeetingRuntime extends EventEmitter {
   db: DatabaseSync;
   session: any = null;
