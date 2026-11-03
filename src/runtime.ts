@@ -489,6 +489,13 @@ export class MeetingRuntime extends EventEmitter {
     if (this.session?.id === id) this.session.context = context;
     this.ping(); return { version: this.packOf(id, true)!.version, [field]: context[field].length };
   }
+  // A decision (or a change of one) by `by`. Without authority it is not decided and the dependent part waits for the right person
+  // as ONE owner question; everything else goes on (ENG-49).
+  decide(id: string, decisionId: number, by: string, sourceIds: number[], opts: { scope?: string; change?: string } = {}) {
+    const result: any = opts.change ? this.decisions.supersede(decisionId, opts.change, by, sourceIds, { scope: opts.scope }) : this.decisions.decide(decisionId, by, sourceIds, { scope: opts.scope });
+    if (result.park) result.question = this.ledger.questions.ask(id, `Cần ${result.park.who.join(' / ') || 'chủ (chưa ai được giao thẩm quyền)'} chốt QĐ${result.id}: ${result.park.why}`, sourceIds);
+    this.ping(); return result;
+  }
   // The part of the pack the brief does not show: corrections (as the display applies them) and document pointers, short.
   contextBlock(id: string) {
     const pack = this.packOf(id); if (!pack) return '';

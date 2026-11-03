@@ -6,6 +6,9 @@ import { resolve, join } from 'node:path';
 import { MeetingRuntime } from '../dist/runtime.js';
 import { EventEmitter } from 'node:events';
 
+// Astra review of 75feff5: a runtime made here with testMode false would warm (load the real ASR worker) on prepare(). Two walls:
+// PMA_WARM=0 for this whole file, and every non-test prepare below passes warm:false. No worker, recorder or model is ever started.
+process.env.PMA_WARM = '0';
 async function withRuntime(fn, testMode = true) {
   const directory = mkdtempSync(join(tmpdir(), 'personal-meeting-test-'));
   const runtime = new MeetingRuntime(resolve('.'), directory, testMode); runtime.mixer = () => {};  // no real mix process from tests that fake the worker
@@ -15,7 +18,7 @@ test('capture cannot be started by a model-supplied session ID without local sou
   await withRuntime(async r => { r.prepare(); await assert.rejects(r.start(r.session.id), /SELECT_SOURCE_FIRST/); assert.equal(r.capture, null); });
 });
 test('normal runtime refuses synthetic meeting evidence', async () => {
-  await withRuntime(async r => { assert.throws(() => r.prepare('fixture', true), /FIXTURE_DISABLED/); r.prepare(); assert.throws(() => r.ingest('fake', 'synthetic_fixture'), /FIXTURE_SOURCE_REJECTED/); }, false);
+  await withRuntime(async r => { assert.throws(() => r.prepare('fixture', true), /FIXTURE_DISABLED/); r.prepare(undefined, false, undefined, undefined, { warm: false }); assert.equal(r.capture, null, 'nothing was started'); assert.throws(() => r.ingest('fake', 'synthetic_fixture'), /FIXTURE_SOURCE_REJECTED/); }, false);
 });
 test('genuine repeated utterances retain distinct source IDs and ordered cursor reads', async () => {
   await withRuntime(async r => { r.prepare('synthetic', true); const a=r.ingest('Có ba xe.', 'synthetic_fixture'); const b=r.ingest('Có ba xe.', 'synthetic_fixture'); assert.notEqual(a,b); const first=await r.next(r.session.id,0,0,1); assert.equal(first.items[0].id,a); const second=await r.next(r.session.id,first.nextCursor,0); assert.equal(second.items[0].id,b); });

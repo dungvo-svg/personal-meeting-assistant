@@ -101,11 +101,8 @@ const methods: Record<string, (input: any) => any> = {
   propose: input => { const a = z.object({ sessionId: sid.optional(), text: z.string().trim().min(1).max(2000), sourceIds: ids.max(50).default([]) }).parse(input); return { id: runtime.decisions.propose(current(a.sessionId), a.text, a.sourceIds) }; },
   decide: input => {
     const a = z.object({ sessionId: sid.optional(), id: z.number().int().positive(), by: z.string().trim().min(1).max(80), sourceIds: ids.max(50).default([]), scope: z.string().max(120).optional(), change: z.string().trim().min(1).max(2000).optional() }).parse(input);
-    const s = current(a.sessionId); const ledger = runtime.decisions; owned(ledger.get(a.id), s, 'DECISION');
-    const result: any = a.change ? ledger.supersede(a.id, a.change, a.by, a.sourceIds, { scope: a.scope }) : ledger.decide(a.id, a.by, a.sourceIds, { scope: a.scope });
-    // Not decided for want of authority: the dependent part waits for the right person as one owner question; the rest goes on.
-    if (result.park) result.question = runtime.ledger.questions.ask(s, `Cần ${result.park.who.join(' / ') || 'chủ (chưa ai được giao thẩm quyền)'} chốt QĐ${result.id}: ${result.park.why}`, a.sourceIds);
-    return result;
+    const s = current(a.sessionId); owned(runtime.decisions.get(a.id), s, 'DECISION');
+    return runtime.decide(s, a.id, a.by, a.sourceIds, { scope: a.scope, change: a.change });
   },
   withdraw: input => { const a = z.object({ sessionId: sid.optional(), id: z.number().int().positive(), by: z.string().trim().min(1).max(80), note: z.string().max(1000).default(''), scope: z.string().max(120).optional() }).parse(input); const s = current(a.sessionId); owned(runtime.decisions.get(a.id), s, 'DECISION'); return runtime.decisions.withdraw(a.id, a.by, a.note, { scope: a.scope }); },
   action: input => {
