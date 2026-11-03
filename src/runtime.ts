@@ -537,7 +537,10 @@ export class MeetingRuntime extends EventEmitter {
     const rec = this.recorder; const info = Object.fromEntries(Object.entries(rec.info).filter(([key, value]) => key !== 'type' && (value === null || ['string', 'number', 'boolean'].includes(typeof value))).map(([key, value]) => [key, typeof value === 'string' ? value.slice(0, 200) : value]));
     return { state: rec.state, pid: rec.pid, restarts: rec.restarts.length, error: rec.error, ...info };
   }
-  recorderAlive() { return !!this.recorder.child || (this.recorder.attached && !!this.recorder.pid && this.alive(this.recorder.pid)); }
+  // Only a clear "no" means a process is gone: a reading that throws or answers anything but a boolean counts as alive (fail closed;
+  // late-exit fixtures of 03/11). A wrong "alive" only keeps the machine lock a little longer; a wrong "gone" could let a second host in.
+  isAlive(pid: number) { try { return this.alive(pid) !== false; } catch { return true; } }
+  recorderAlive() { return !!this.recorder.child || (this.recorder.attached && !!this.recorder.pid && this.isAlive(this.recorder.pid)); }
   // RAW is written once the mix has been made (finish waits for it); a mix that is not there yet is named as pending.
   audioNote(id: string) {
     const info = audioInfo(this.dataDir, id);
@@ -696,7 +699,7 @@ export class MeetingRuntime extends EventEmitter {
   private attachRecorder(pid: number) {
     const rec = this.recorder; rec.pid = pid; rec.attached = true; rec.state = 'RECORDING'; rec.stopping = false;
     rec.watch = setInterval(() => {
-      if (this.alive(pid)) return;
+      if (this.isAlive(pid)) return;
       clearInterval(rec.watch!); rec.watch = null; rec.attached = false; rec.pid = null;
       if (rec.stopping || this.closing || !this.session || this.session.ended) { rec.state = 'OFF'; this.ping(); return; }
       if (readTimeline(audioDir(this.dataDir, this.session.id)).at(-1)?.type === 'end') { void this.finish(this.session.id).catch(() => {}); return; }
@@ -793,7 +796,13 @@ export class MeetingRuntime extends EventEmitter {
       try { this.onWorkerEvent(JSON.parse(line), follow); }
       catch (e) { this.lastError = String(e); if (!follow) { this.captureState = 'ERROR'; void this.stopCapture(); } }
     });
-    const gone = (code: number | null) => { if (this.capture !== child || this.workerStopping) return; this.capture = null; this.workerGone(id, follow, code, error); };
+    const gone = (code: number | null) => {
+      if (this.capture !== child || this.workerStopping) return;
+      // We asked it to stop and could not confirm its exit (CLEANUP_UNCONFIRMED): this late exit is that confirmation, not a crash. No
+      // restart, no gap row (late-exit fixtures of 03/11: it used to restart a worker after stopCapture).
+      if (this.captureState === 'CLEANUP_UNCONFIRMED') { this.capture = null; this.captureState = 'OFF'; this.lastError = null; this.ping(); return; }
+      this.capture = null; this.workerGone(id, follow, code, error);
+    };
     child.on('error', e => { error = e.message; gone(-1); });
     // `close`, not `exit`: the last lines and the error text may still be in the pipes when the process has exited.
     child.on('close', code => { lines.close(); gone(code); });
