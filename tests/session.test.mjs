@@ -230,6 +230,7 @@ test('the machine lock is kept while anything of the host still runs: recorder, 
       const wall = new Date(Date.now() - 20000).toISOString(); const heard = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 0, 3, '', 'cap', 'lo', wall, 1);
       await r.finish(id); assert.equal(lock.readLock(), null, 'all stopped and confirmed: given back');
       r.claim(id); r.captureState = 'CLEANUP_UNCONFIRMED'; assert.equal(r.releaseWhenIdle(), false); assert.equal(lock.readLock().token, 'tokn', 'kept while a worker exit is not confirmed');
+      assert.throws(() => lock.claimMachine({ token: 'other', dataDir: join(dir, 'elsewhere'), root: '.', port: 9 }), /RUNTIME_BUSY/, 'finish barrier: another host is still refused');
       r.captureState = 'OFF'; r.recorder.attached = true; r.recorder.pid = process.pid; assert.equal(r.releaseWhenIdle(), false, 'kept while the recorder is alive');
       r.recorder.attached = false; r.recorder.pid = null; r.rechecking = 1; assert.equal(r.releaseWhenIdle(), false, 'kept while a recheck runs'); r.rechecking = 0;
       assert.equal(r.releaseWhenIdle(), true); assert.equal(lock.readLock(), null);
