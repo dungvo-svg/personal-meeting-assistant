@@ -66,3 +66,30 @@ test('two real hosts, two data folders and ports: only one prepares a meeting; s
     await sleep(500); for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });
   }
 });
+
+test('the MCP adapter starts no host on connect, and session_status only looks', async () => {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+  const data = mkdtempSync(join(tmpdir(), 'pma-mcp-inspect-')); const port = String(await freePort());
+  const env = { ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => v !== undefined)), PMA_TEST_MODE: '1', PMA_DATA_DIR: data, PMA_PORT: port, PMA_LOCK_DIR: lockDir };
+  const client = new Client({ name: 'pma-inspect-test', version: '1.0.0' });
+  const transport = new StdioClientTransport({ command: process.execPath, args: [resolve('dist/server.js')], env, stderr: 'pipe' });
+  try {
+    await client.connect(transport); await sleep(1500);
+    assert.ok(!existsSync(join(data, 'daemon.json')), 'connecting started no host');
+    const status = JSON.parse((await client.callTool({ name: 'session_status', arguments: {} })).content[0].text);
+    assert.equal(status.host, 'NOT_RUNNING'); assert.ok(!existsSync(join(data, 'daemon.json')), 'status started no host');
+  } finally { await client.close().catch(() => {}); await sleep(300); rmSync(data, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+});
+
+test('two hosts that judge the same lock stale at once: the second does not move the first one\'s fresh lock (deterministic interleaving)', () => {
+  writeFileSync(lockFile, JSON.stringify(owner({ pid: deadPid(), token: 'old0' })));
+  // B has read the stale lock and is about to take it; right then A takes it all the way (the replayed race of review finding a).
+  assert.throws(() => lock.claimMachine({ token: 'bbbb', dataDir: 'dataB', root: '.', port: 2 }, { onStale: () => lock.claimMachine({ token: 'aaaa', dataDir: 'dataA', root: '.', port: 1 }) }), /RUNTIME_BUSY: một host PMA khác đang giữ máy/);
+  assert.equal(lock.readLock().token, 'aaaa', 'A keeps the lock it took');
+  assert.ok(!existsSync(lockFile + '.takeover'), 'the takeover guard is gone');
+  lock.releaseMachine('aaaa');
+  // A guard left by a host that died is cleared, and the claim goes on.
+  writeFileSync(lockFile, JSON.stringify(owner({ pid: deadPid(), token: 'old1' }))); writeFileSync(lockFile + '.takeover', JSON.stringify({ pid: deadPid(), at: Date.now() }));
+  assert.equal(lock.claimMachine({ token: 'cccc', dataDir: 'dataC', root: '.', port: 3 }).token, 'cccc'); lock.releaseMachine('cccc');
+});

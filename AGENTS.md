@@ -12,13 +12,15 @@ Read `docs/PRODUCT_BASELINE.md` (v0.12, current authority) and `docs/DECISION_LO
   - the runtime must not miss or be interrupted;
   - live ASR may miss things, but must say where.
 - **Re-listening is Claude's job** (`pma recheck`). If it is still unclear, mark `[chưa nghe rõ]`; never guess.
-- **Two sessions while a meeting runs:**
-  - raw translation (Haiku, effort low, batch 15 s) is the "screen" the owner shares with attendees;
-  - synthesis (Sonnet, batch 60 s) chats with the owner.
+- **One central session while a meeting runs** (owner 03/11, OWN-031):
+  - the `/hop` session (Sonnet, batch 60 s) facilitates the meeting, keeps the whole-meeting picture and chats with the owner;
+  - raw translation (role `dich`, Haiku, batch 15 s) is optional and runs as a background agent, never a visible chat; translations are saved and read back on request;
+  - long analysis also runs as a background agent while the central session keeps answering;
+  - the owner states intents (start, ask, correct, end); every `pma` command is the agent's job.
   - Build no web screen.
 - **Languages:** Vietnamese, Lao, Thai. Lao heard as Thai script passes if the Vietnamese translation keeps the meaning. Terminology depends on the pre-meeting context.
-- **Mic "Tôi":** always recorded, classified as mic on / mic off (private) / unknown. Off and unknown speech never reaches the shared raw-translation session (owner 01/11, OWN-030); the host filters it before delivery. Speaker audio is unaffected; WAV/RAW unchanged.
-- **The owner only types `/hop`.** The only thing shared with attendees is the raw-translation session window. There is no web panel (removed in 0.12).
+- **Mic "Tôi":** always recorded, classified as mic on / mic off (private) / unknown. Off and unknown speech never reaches the translation role (owner 01/11, OWN-030); the host filters it before delivery. Speaker audio is unaffected; WAV/RAW unchanged.
+- **The owner only types `/hop`.** Nothing is shared with attendees by the tool; there is no translation window, web panel or screen (panel removed in 0.12, visible translation session retired by OWN-031).
 - **Way of working:** audit → plan → ask the owner once → build → push. Opus decides architecture; Sonnet implements in parallel worktrees. Consult strong agents like experts; do not copy their decisions. Acceptance is the owner's next real meeting; do not record audio to test yourself.
 
 ## Implementation boundaries

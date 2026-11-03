@@ -237,7 +237,7 @@ test('a real host: lease, ack, release and read --as through /rpc; a second foll
     assert.deepEqual(await call('release', { as: 'dich', lease: 'zzzzzzzz1', ack: 0 }), { released: false }); assert.equal((await call('status')).followers.dich.cursor, second2);
     await call('finish'); await stopped; assert.match(held, /KẾT THÚC/);
     // the final release after the meeting ended still lands (same meeting, role, lease): the role is free, at the last line printed
-    assert.deepEqual((await call('status')).followers.dich, { cursor: second2, at: null, unread: 0 });
+    const { committed, ...dich } = (await call('status')).followers.dich; assert.deepEqual(dich, { cursor: second2, at: null, unread: 0 }); assert.ok(committed <= second2);
     // a new meeting: a follower of it works as usual
     await call('prepare', { title: 'Phiên sau', fixture: true }); const b1 = (await call('fixture', { text: 'Cuộc họp B.' })).id;
     const next = await run('follow', '--as', 'dich', '--no-notes', '--minutes', '0.00002'); assert.match(next.out, new RegExp(`#${b1} .*Cuộc họp B\\.`));
@@ -269,5 +269,18 @@ test('a listening worker that has gone quiet is reported as stalled, not hidden 
   }, async host => {
     const { out } = await cli(host, ['follow', '--batch', '1', '--no-notes']);
     assert.match(out, /BỘ NGHE ĐỨNG: 120 giây chưa ra kết quả nào/); assert.doesNotMatch(out, /CẢNH BÁO TRỄ/);
+  });
+});
+
+test('a role comes back where its work is saved (committed), not where it had printed to', async () => {
+  await withHost((method, args) => {
+    if (method === 'status') return status({ followers: { dich: { cursor: 10, committed: 6, at: null, unread: 0 } } });
+    if (method === 'release') return { released: true };
+    if (method === 'read') return { items: [], nextCursor: args.after, done: true };
+    if (method === 'next') return reply([], args.after, { ended: args.limit !== 1 });
+    return null;
+  }, async host => {
+    const { out } = await cli(host, ['follow', '--as', 'dich', '--no-notes']);
+    assert.match(out, /FOLLOWING dich .* từ #6 /); assert.equal(host.calls('next')[0].after, 6); assert.equal(host.calls('next')[0].ack, 6);
   });
 });

@@ -38,7 +38,8 @@ const mine = (owner: LockOwner | null, token: string) => !!owner && owner.pid ==
 const describe = (o: LockOwner) => `pid ${o.pid}${o.port ? `, cổng ${o.port}` : ''}, dữ liệu ${o.dataDir}, từ ${o.since}${o.sessionId ? `, cuộc họp ${o.sessionId}` : ''}`;
 
 // Takes the machine for this host, or throws RUNTIME_BUSY. Calling it again while holding it changes nothing.
-export function claimMachine(me: { token: string; dataDir: string; root: string; port: number | null; sessionId?: string | null }) {
+// `hooks.onStale` (tests only): runs after this host has judged the lock stale and before it takes it, to replay a racing host.
+export function claimMachine(me: { token: string; dataDir: string; root: string; port: number | null; sessionId?: string | null }, hooks: { onStale?: () => void } = {}) {
   mkdirSync(lockDir(), { recursive: true });
   const record: LockOwner = { pid: process.pid, pidStartedAt: ownStart, token: me.token, dataDir: resolve(me.dataDir), root: resolve(me.root), port: me.port, since: new Date().toISOString(), sessionId: me.sessionId ?? null, recorderPid: null, workerPid: null };
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -52,10 +53,29 @@ export function claimMachine(me: { token: string; dataDir: string; root: string;
     if (holderAlive(owner)) throw new Error(`RUNTIME_BUSY: một host PMA khác đang giữ máy (${describe(owner)}). Không mở thêm bộ ghi, bộ nghe hay model. Dừng host đó trước (pma stop/shutdown ở đúng thư mục dữ liệu của nó).`);
     const orphans = [owner.recorderPid, owner.workerPid].filter(pid => pidAlive(pid));
     if (orphans.length && resolve(owner.dataDir) !== record.dataDir) throw new Error(`RUNTIME_BUSY: host cũ đã dừng nhưng bộ ghi/bộ nghe của nó còn chạy (pid ${orphans.join(', ')}, dữ liệu ${owner.dataDir}). Chỉ host của thư mục dữ liệu đó được nhận lại.`);
-    // Stale: move it aside atomically (a racing host that moved it first makes this rename fail, and the loop looks again).
-    try { renameSync(lockFile(), `${lockFile()}.stale-${owner.pid}-${Date.now()}`); } catch {}
+    hooks.onStale?.();
+    takeOver(owner);
   }
   throw new Error('RUNTIME_BUSY: không giành được khoá máy (có host khác đang giành cùng lúc)');
+}
+// Moves a stale lock aside, one host at a time. Without this, two hosts that both judged the same lock stale could each move a lock
+// away, and the second would move the FIRST host's fresh lock (review of 5e903de, finding a). Under the takeover guard the lock is
+// read again and moved only if it is still the very record judged stale; a lock someone took meanwhile is left alone.
+function takeOver(stale: LockOwner) {
+  const guard = `${lockFile()}.takeover`; let fd: number;
+  try { fd = openSync(guard, 'wx'); }
+  catch (error: any) {
+    if (error?.code !== 'EEXIST') throw error;
+    // A guard is held for milliseconds; one left by a host that died, or older than 10 s, is removed and the claim tries again.
+    let held: any = null; try { held = JSON.parse(readFileSync(guard, 'utf8')); } catch {}
+    if (!held || !pidAlive(held.pid) || Date.now() - Number(held.at) > 10000) { try { rmSync(guard, { force: true }); } catch {} }
+    return;
+  }
+  try {
+    writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })); closeSync(fd);
+    const now = readLock();
+    if (now && now.token === stale.token && now.pid === stale.pid) renameSync(lockFile(), `${lockFile()}.stale-${stale.pid}-${Date.now()}`);
+  } finally { try { rmSync(guard, { force: true }); } catch {} }
 }
 // What daemon.json also says (session, recorder, worker), kept in the lock so a later host can judge it. Only by the holder.
 export function updateMachine(token: string, change: Partial<Pick<LockOwner, 'sessionId' | 'recorderPid' | 'workerPid' | 'port'>>) {

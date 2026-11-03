@@ -3,7 +3,7 @@
 Trợ lý họp chạy trên máy của owner. **Claude trong phiên làm việc dùng bộ công cụ này** để nghe, ghi, dịch thô và tổng hợp cuộc họp Zoom / Google Meet nói tiếng Việt, Lào, Thái. Sau họp, Claude làm RAW + SUMMARY + TASKS.
 
 - **Định hướng hiện hành:** [docs/PRODUCT_BASELINE.md](docs/PRODUCT_BASELINE.md) (v0.12). Quyết định có nguồn: [docs/DECISION_LOG.md](docs/DECISION_LOG.md).
-- **Cách họp:** skill [`hop`](.claude/skills/hop/SKILL.md). Owner gõ `/hop` kèm link + nội dung họp, Claude làm phần còn lại qua `./pma`. Owner chỉ share cửa sổ phiên dịch thô; không có trang web nào.
+- **Cách họp:** skill [`hop`](.claude/skills/hop/SKILL.md). Owner gõ `/hop` kèm link + nội dung họp, Claude làm phần còn lại qua `./pma`. Mọi việc trong một phiên trung tâm; dịch thô Lào/Thái là việc chạy nền, tuỳ chọn (OWN-031). Không có trang web hay màn hình nào.
 - **Kiến trúc và quy ước file:** [docs/PLAN_0_11.md](docs/PLAN_0_11.md); thay đổi 0.12: [docs/PLAN_0_12.md](docs/PLAN_0_12.md).
 - **Thay đổi theo bản:** [CHANGELOG.md](CHANGELOG.md).
 - **Tài liệu cũ** (bảng dịch trực tiếp, pilot 26/10, MCP…): [docs/history/](docs/history/). Chỉ để tra lại.

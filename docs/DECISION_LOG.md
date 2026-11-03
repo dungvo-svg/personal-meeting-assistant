@@ -34,6 +34,7 @@ Revision v0.12.1 — 03/11/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là
 | U26 | 31/10, sau buổi thử trên máy: "lô 60s là phải đảm bảo được toàn bộ cảnh họp liên tục ra gì chứ không phải chỉ đóng khung 60s"; "tôi chỉ /họp để bạn biết chuẩn bị vào nghe… ta không xây hệ thống riêng mà nó được sử dụng ngay trên máy này" |
 | U27 | 01/11, qua phiên điều phối Codex (`OWNER-MIC-SHARE-DECISION.md`): "lời của anh lúc mic tắt không nhé vì phòng có khi nhiễu tiếng ồn k cần thiết hoặc âm thanh nhwungx người ngồi chung phòng"; với câu hỏi trạng thái không rõ (UNKNOWN): "đúng ẩn nhé" |
 | U28 | 01/11, trong phiên này: "bạn sửa đi tôi duyệt cho" — duyệt thu hẹp luật cấm ghi file của dự án để mở 4 worktree `v5-*` cho bản 0.12 |
+| U29 | 03/11 (sau họp thầu): 02:49Z chọn một phiên trung tâm, Sonnet tổng hợp và Haiku dịch chạy nền; 03:06:10Z: "hoặc có insight phân tích ngắn như tôi nói đấy thay vì mất3phút thì phải có một background task làm việc này nếu nó chặn phần tổng hợp ra giữa ... chạy ẩn thôi nhưng khi hỏi thì vẫn lôi ra được ... dịch thô cách cũ chạy nền không chạy ra session"; 03:31:27Z: cuộc họp phải tự chủ khi được kích hoạt, lệnh là việc của Agent chứ không phải của owner. Nguồn: phiên điều phối PMA (nnc-bidops-agent-78, personal-meeting-assistant-9e) chuyển lời và đối chiếu message gốc; phiên này không thấy trực tiếp |
 
 Ảnh định hướng trong U1 và tài liệu b15f178 của repo AIOS chỉ cung cấp bối cảnh hai sản phẩm độc lập. Không nhập runtime, quyền phiên họp hoặc tiêu chí nghiệm thu của repo đó vào đây.
 
@@ -65,12 +66,13 @@ Revision v0.12.1 — 03/11/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là
 | OWN-022 | U23, U24 | WAV là âm thanh thật cả buổi (hộp đen), ghi từ `pma start` tới khi owner gõ kết thúc; runtime ưu tiên không sót/ngắt; nghe real-time được phép thiếu nhưng phải báo. Thay OWN-005 |
 | OWN-023 | U24 | WAV giữ tới khi người dùng tự xoá. Thay phần tự xoá 7 ngày của OWN-018 |
 | OWN-024 | U25 | Nghe lại là việc của Claude: chưa nghe rõ thì tự nghe lại từ WAV hoặc đánh dấu `[chưa nghe rõ]`, không đoán |
-| OWN-025 | U24, U25 | Hai phiên khi họp: dịch thô (Haiku, effort low, lô 15 s) là "màn hình" owner share cho người dự; tổng hợp (Sonnet, lô 60 s) chat với owner. Không build màn hình/trang web. Giữ OWN-019 |
+| OWN-025 | U24, U25 | Hai phiên khi họp: dịch thô (Haiku, effort low, lô 15 s) là "màn hình" owner share cho người dự; tổng hợp (Sonnet, lô 60 s) chat với owner. Không build màn hình/trang web. Giữ OWN-019. **Phần "phiên dịch thô hiện ra để share" đã thay bởi OWN-031**; hai vai logic giữ nguyên |
 | OWN-026 | U23, U24 | Ba ngôn ngữ Việt/Lào/Thái (Tai-Kadai). Đạt khi người nói Lào mà máy ra chữ Thái, dịch ra tiếng Việt không đổi nghĩa. Thay OWN-012 |
 | OWN-027 | U24 | Micro "Tôi" khi mute vẫn ghi nhưng phân loại: mic bật / mic tắt (nói riêng) / không rõ |
 | OWN-028 | U24 | Kết thúc phiên khi owner gõ kết thúc trong chat; học câu chào cuối buổi sau khi có thêm buổi họp |
 | OWN-029 | U26 | Phiên tổng hợp giữ **bức tranh cả cuộc họp** liên tục (đang bàn, diễn tiến, đã chốt, việc–người–hạn, câu hỏi mở, chỗ chưa nghe rõ), viết lại sau mỗi lô, không chỉ tóm khung 60 s; owner chỉ gõ `/hop`, mọi thứ chạy ngay trên máy và trong phiên Claude |
 | OWN-030 | U27 | Lời trên micro "Tôi" khi **mic tắt** hoặc **không rõ trạng thái** không được đưa tới phiên dịch thô đang share: không chữ gốc, không phương án `↳`, không bản dịch, không trích lại. Tiếng loa (người dự khác, âm hệ thống) vẫn nghe và dịch bình thường. Không đổi WAV/RAW/ghi âm (OWN-022, OWN-023, OWN-027); không suy ra quyền lưu thêm hay danh tính người nói |
+| OWN-031 | U29 | Một phiên trung tâm (`/hop`) xúc tiến cuộc họp, tổng hợp, trả lời owner. Dịch thô (vai `dich`) tuỳ chọn, chạy nền, không mở phiên chat hiện ra; bản dịch lưu và đọc khi được hỏi. Phân tích dài chạy nền, không chặn tổng hợp. Owner nói ý định (bắt đầu, hỏi, sửa, kết thúc); lệnh và tiến trình là việc của agent. Giữ OWN-027 (micro ghi), OWN-030 (mic tắt/không rõ không tới vai dịch) |
 
 U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi máy. U11 là ranh giới vận hành lần này: không restart Claude hoặc thực hiện đề nghị thu thử thay người dùng. Claude đã ghi đè lần chỉnh config khi còn chạy; installer hiện yêu cầu app đóng trước khi apply. Host/device acceptance vẫn chờ. Hỏi đáp/ghi chú trong Claude khi người dùng yêu cầu là hỗ trợ theo scope pilot, không phải đã hoàn thành giao diện hỏi đáp hoặc V1 phiên dịch.
 
@@ -114,7 +116,8 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-34 | 0.12.1: bức tranh cuộc họp (`pma picture`) tối đa 30.000 ký tự; ghi chú khác vẫn 8.000 | Họp thầu 03/11: họp 30 phút đã chạm 8.000 |
 | ENG-35 | 0.12.1: `summary`, `tasks`, `raw`, `recheck`, `coverage` không kèm `--session` lấy cuộc họp đang mở, nếu không có thì cuộc họp gần nhất; lệnh khác báo `NO_OPEN_SESSION` bằng lời | Họp thầu 03/11: sau `pma stop` host mới không có cuộc họp, `pma summary` báo lỗi zod khó hiểu |
 | ENG-36 | 0.12.1: khoá máy toàn cục (`runtime.lock` ngoài mọi checkout): một host lấy trước khi prepare (không phải fixture), select, listen, replay, reattach và recheck; host khác bị `RUNTIME_BUSY`. Khoá không hết hạn theo giờ; hết hiệu lực khi PID chết hoặc giờ khởi động PID khác; host chết mà bộ ghi/bộ nghe còn sống thì chỉ host cùng thư mục dữ liệu nhận lại | Họp thầu 03/11: host thử thứ hai ghi trùng loa và làm đầy GPU |
-| ENG-37 | 0.12.1: `pma status` và MCP `session_status` không tự bật host; không có host thì báo `NOT_RUNNING` và ai giữ máy | 03/11: một lệnh status từ phiên khác đã bật host |
+| ENG-37 | 0.12.1: `pma status`, MCP `session_status` và việc MCP adapter khởi động không tự bật host; không có host thì báo `NOT_RUNNING` và ai giữ máy | 03/11: một lệnh status từ phiên khác đã bật host |
+| ENG-38 | 0.12.1: `committed` theo vai, tính từ đầu ra đã lưu (bức tranh cho `chinh`, bản dịch cho vai dịch), liền mạch, không vượt chỗ đã giao; lưu lỗi không tiến; follow bật lại đọc từ `committed`. Khoá máy: giành khoá cũ qua khoá phụ rồi đọc lại trước khi dời; chỉ nhả khi không còn bộ nghe, bộ ghi, recheck hay dọn dẹp chưa xác nhận | Họp thầu 03/11: bản dịch in ra mà không lưu được; review Codex 5e903de điểm a, b |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

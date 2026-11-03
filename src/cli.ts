@@ -75,7 +75,8 @@ function line(item: any) {
   const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : '';
   // The other Lao/Thai reading of an unsure chunk, for the translation session to read both (owner 31/10).
   const others = (item.alternatives ?? []).map((a: any) => `\n  ↳ ${a.language}: ${a.text}`).join('');
-  return `#${item.id} ${clock(item.wall || item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}${others}`;
+  const translated = item.translation ? `\n  → (Claude dịch) ${item.translation}` : '';
+  return `#${item.id} ${clock(item.wall || item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}${others}${translated}`;
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
 // A group keeps the mic label (foldRuns never joins different ones): `#3–#5 Tôi (mic bật) lặp ×3: …`.
@@ -102,8 +103,9 @@ async function follow(flags: Record<string, string>) {
   if (!/^[a-z0-9-]{1,24}$/.test(name)) { out({ error: 'INVALID_FOLLOWER_NAME', hint: '--as chỉ gồm a-z, 0-9, dấu gạch ngang, tối đa 24 ký tự' }); process.exitCode = 1; return; }
   // One lease per process: it is what keeps two followers of the same role from printing the same lines twice.
   const lease = randomBytes(12).toString('hex');
-  // Resume where this follower stopped; a new one starts at the main cursor (what the main follower has read).
-  const resumeAt = (s: any) => s.followers?.[name]?.cursor ?? s.agentCursor;
+  // Resume where this follower's work is saved (committed), not only where it had printed to: rows printed but never translated or
+  // put in the picture come again. A new one starts at the main cursor (what the main follower has read).
+  const resumeAt = (s: any) => s.followers?.[name]?.committed ?? s.followers?.[name]?.cursor ?? s.agentCursor;
   // `after`: scanned up to here (hidden lines included). `batch`: visible lines not yet printed. `ack` sent to the host is ackOf(batch, after).
   let after = flags.after ? Number(flags.after) : resumeAt(status);
   let batch: any[] = []; let batchStarted = 0; let state = status.captureState; let failures = 0;

@@ -283,11 +283,12 @@ test('G2: translate is idempotent in content: the same text twice is one row, th
   });
 });
 
-test('translations are never in what a share role reads', async () => {
+test('translations are never in what a share role reads, nor in what any role is handed; the owner read shows them', async () => {
   await withRuntime(async r => {
     r.prepare('Họp'); const id = r.session.id; const lo = ing(r, 'ສະບາຍດີ', LIVE, { language: 'lo' }); const secret = ing(r, 'ລັບ', `${MIC}; MIC_STATE_OFF`, { language: 'lo' });
     r.translate(id, [{ sourceId: lo, text: 'bản dịch công khai' }, { sourceId: secret, text: 'bản dịch của dòng riêng' }]);
-    for (const out of [JSON.stringify(await nx(r, { as: 'dich' })), JSON.stringify(r.read(id, 0, 100, 'dich')), JSON.stringify(await nx(r, { as: 'chinh' })), JSON.stringify(r.read(id, 0, 100))]) assert.ok(!out.includes('bản dịch'), 'a translation is read from RAW only');
+    for (const out of [JSON.stringify(await nx(r, { as: 'dich' })), JSON.stringify(r.read(id, 0, 100, 'dich')), JSON.stringify(await nx(r, { as: 'chinh' }))]) assert.ok(!out.includes('bản dịch'), 'a translation is never handed to a role');
+    assert.equal(r.read(id, 0, 100).items.find(item => item.id === lo).translation, 'bản dịch công khai', 'the owner read shows it');
     assert.match(readFileSync(r.writeRaw(id).path, 'utf8'), /→ \(Claude dịch\) bản dịch của dòng riêng/);
   });
 });

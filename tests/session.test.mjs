@@ -197,6 +197,51 @@ test('status says the ASR worker is stalled when a listening worker has sent not
   });
 });
 
+test('committed: a role is done with a row only when its work is saved, over a gap-free run; printing is not enough and a failed save advances nothing', async () => {
+  await withFakes(async r => {
+    r.prepare('Họp', false, undefined, undefined, { warm: false }); const id = r.session.id; const live = 'SOURCE_LIVE_FOLLOW';
+    const [a, b, c, d, e] = [['xin chào', 'vi', live], ['ສະບາຍດີ', 'lo', live], ['ສ່ວນຕົວ', 'lo', live + '; CHANNEL_MIC'], ['สวัสดี', 'th', live], ['cảm ơn', 'vi', live]]
+      .map(([text, language, boundary]) => r.ingest(text, 'local_asr_unverified', 0, 3, boundary, 'cap', language));
+    await r.next(id, e, 0, 12, true, 'dich', { lease: 'dichcommit1' });   // everything printed (ack e)
+    assert.equal(r.committedOf(id, 'dich'), a, 'the Lao row b is printed but not translated');
+    assert.throws(() => r.translate(id, [{ sourceId: e, text: 'thanks' }]));   // a Vietnamese row cannot be "translated": nothing saved
+    assert.equal(r.committedOf(id, 'dich'), a);
+    r.translate(id, [{ sourceId: b, text: 'xin chào (Lào)' }]);
+    assert.equal(r.committedOf(id, 'dich'), c, 'b saved; c is hidden from the role (mic without MIC_SHARE_OK), so it needs nothing; d still waits');
+    r.translate(id, [{ sourceId: d, text: 'xin chào (Thái)' }]);
+    assert.equal(r.committedOf(id, 'dich'), e);
+    // chinh: the saved picture is its work, and it covers the rows up to the highest source it cites, never past what was handed over.
+    await r.next(id, c, 0, 12, true, 'chinh', { lease: 'chinhcommit1' });
+    assert.equal(r.committedOf(id, 'chinh'), 0, 'no picture yet');
+    r.savePicture(id, 'Bức tranh', [b]); assert.equal(r.committedOf(id, 'chinh'), b);
+    r.savePicture(id, 'Bức tranh 2', [e]); assert.equal(r.committedOf(id, 'chinh'), c, 'capped at what chinh was handed');
+    const roles = r.compact().followers; assert.equal(roles.dich.committed, e); assert.equal(roles.dich.cursor, e); assert.equal(roles.chinh.committed, c);
+    assert.equal(r.db.prepare('SELECT committed FROM followers WHERE session_id=? AND name=?').get(id, 'dich').committed, e, 'stored for a host that takes over');
+  });
+});
+
+test('the machine lock is kept while anything of the host still runs: recorder, worker, unconfirmed cleanup or a recheck; rechecks take it one after the other', async () => {
+  const saved = process.env.PMA_LOCK_DIR; process.env.PMA_LOCK_DIR = mkdtempSync(join(tmpdir(), 'pma-lock-session-'));
+  const lock = await import('../dist/machine_lock.js');
+  try {
+    await withFakes(async (r, dir) => {
+      r.machine = { token: 'tokn', port: null };
+      const { id } = await openSession(r, dir); r.claim(id); assert.equal(lock.readLock().token, 'tokn');
+      const wall = new Date(Date.now() - 20000).toISOString(); const heard = r.ingest('ສະບາຍດີ', 'local_asr_unverified', 0, 3, '', 'cap', 'lo', wall, 1);
+      await r.finish(id); assert.equal(lock.readLock(), null, 'all stopped and confirmed: given back');
+      r.claim(id); r.captureState = 'CLEANUP_UNCONFIRMED'; assert.equal(r.releaseWhenIdle(), false); assert.equal(lock.readLock().token, 'tokn', 'kept while a worker exit is not confirmed');
+      r.captureState = 'OFF'; r.recorder.attached = true; r.recorder.pid = process.pid; assert.equal(r.releaseWhenIdle(), false, 'kept while the recorder is alive');
+      r.recorder.attached = false; r.recorder.pid = null; r.rechecking = 1; assert.equal(r.releaseWhenIdle(), false, 'kept while a recheck runs'); r.rechecking = 0;
+      assert.equal(r.releaseWhenIdle(), true); assert.equal(lock.readLock(), null);
+      // Two rechecks asked together after the meeting: each takes the machine and gives it back before the next one starts.
+      const events = []; const claim = r.claim.bind(r), unclaim = r.unclaim.bind(r);
+      r.claim = sid => { events.push('claim'); return claim(sid); }; r.unclaim = () => { events.push('give back'); return unclaim(); };
+      await Promise.all([r.recheck(id, { sourceId: heard }), r.recheck(id, { sourceId: heard })]);
+      assert.deepEqual(events, ['claim', 'give back', 'claim', 'give back']); assert.equal(lock.readLock(), null);
+    });
+  } finally { if (saved === undefined) delete process.env.PMA_LOCK_DIR; else process.env.PMA_LOCK_DIR = saved; }
+});
+
 test('stop: the recorder ends first, the ASR worker delivers what is left, the mix is made, and only then are RAW written and the host told it may leave', async () => {
   await withFakes(async (r, dir) => {
     const { id, audio } = await openSession(r, dir);
@@ -356,7 +401,10 @@ test('the follow worker\'s rows are stamped live by the host; what a recheck hea
     for (const sourceId of [lo, secret]) assert.equal((await r.recheck(id, { sourceId })).text, 'xin chào đã nghe lại');
     assert.match(r.sources(id).find(row => row.id === secret).boundary, /RECHECKED$/);
     const outputs = [await r.next(id, 0, 0, 100, true, 'dich'), await r.next(id, 0, 0, 100, true, 'chinh'), r.read(id, 0, 100, 'dich'), r.read(id, 0, 100), r.read(id, 0, 100, 'chinh')];
-    for (const output of outputs) { const text = JSON.stringify(output); assert.ok(!text.includes('đã nghe lại') && !text.includes('สวัสดี') && !text.includes('bản dịch'), 'recheck answers and translations live in their own tables and RAW only'); }
+    for (const output of outputs) { const text = JSON.stringify(output); assert.ok(!text.includes('đã nghe lại') && !text.includes('สวัสดี'), 'recheck answers live in their own table and RAW only'); }
+    // Translations never go back into what a role is handed (next) nor to a share role; the owner's read shows them (0.12.1, OWN-031).
+    for (const output of outputs.slice(0, 3)) assert.ok(!JSON.stringify(output).includes('bản dịch'), 'no translation in next or in a share role read');
+    for (const output of outputs.slice(3)) assert.equal(output.items.find(item => item.id === lo).translation, 'bản dịch công khai');
     assert.deepEqual(outputs[0].items.map(item => item.id), [heard.id, lo], 'the mic-off row stays out, rechecked or not'); assert.deepEqual(outputs[2].items.map(item => item.id), [heard.id, lo]);
     const raw = readFileSync(r.writeRaw(id).path, 'utf8'); assert.ok(raw.includes('(đã nghe lại: [lo] xin chào đã nghe lại') && raw.includes('bản dịch dòng riêng'), 'RAW keeps them for the owner');
   });
