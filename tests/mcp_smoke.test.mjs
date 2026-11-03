@@ -11,7 +11,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { applyEnv, guardedCall, isolatedEnv, recordingHost, teardown } from './harness.mjs';
+import { applyEnv, assertCleaned, guardedCall, isolatedEnv, recordingHost, teardown } from './harness.mjs';
 
 const text = reply => reply.content?.[0]?.text ?? '';
 const parsed = reply => JSON.parse(text(reply));
@@ -78,7 +78,8 @@ test('MCP over stdio: context receipt, base revision, resend, late result, conte
     assert.equal((await call('status')).revisions.summary, 3, 'the failed save recorded nothing');
     rmSync(path, { recursive: true, force: true });
   } finally {
+    // The adapter (an SDK-owned stdio child) is closed first, so it cannot start a host again; then the host, then the root.
     try { await client?.close(); } catch {}
-    await teardown(world); restoreEnv();
+    try { assertCleaned(await teardown(world)); } finally { restoreEnv(); }
   }
 });

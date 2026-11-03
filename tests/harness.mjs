@@ -3,9 +3,9 @@
 // request the harness sends itself (shutdown in cleanup, mostly) goes out only after the target is PROVEN to be a host this test
 // started: loopback url, a ping that says testMode: true and the same pid as daemon.json, and that pid recorded by recordHost() right
 // after the test started it. Anything else is refused with HARNESS_REFUSED and nothing but (at most) a ping is sent: fail closed.
-// No function here spawns a process or opens a device, and none sends a signal: the one process call is the existence probe
-// process.kill(pid, 0) (nothing is delivered), only for a pid this test recorded, to know that its own host has exited before its files
-// are removed. Cleanup fails closed: while that is not proven, the root is kept and reported. The bearer token is never printed.
+// No function here spawns a process or opens a device. Signals: ownedChildren().closeAll() stops, through its own handle, a child the
+// test spawned itself (child.kill()); the only other process call is the existence probe process.kill(pid, 0) (nothing is delivered),
+// only for a pid this test recorded, to know that its own host has exited before its files are removed. Nothing is found by name. Cleanup fails closed: while that is not proven, the root is kept and reported. The bearer token is never printed.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
 import { createServer as createNet } from 'node:net';
@@ -162,6 +162,25 @@ export async function ownedShutdown(env, { waitMs = 15000 } = {}) {
     await sleep(150);
   }
   return { ...(skipped ? { skipped } : {}), exited: pids.filter(pid => !exists(pid)), pending: unresolved(), note: foreign.length ? 'daemon.json names a host this test did not record' : unknownStart ? 'a launch attempt left no recorded pid (UNKNOWN_START)' : 'not proven exited after ' + waitMs + ' ms' };
+}
+
+// Children a test spawned itself (follow, a hook, a second host): kept by their handle, closed through it before the host is stopped,
+// so none can poll or start a host again after teardown. Only these handles are touched; nothing is found by pid or process name.
+export function ownedChildren() {
+  const live = new Set();
+  const own = child => { live.add(child); child.once('exit', () => live.delete(child)); return child; };
+  // Closes every child still running and waits for its exit. The handles that did not exit in time are returned (empty = all closed).
+  const closeAll = async (waitMs = 5000) => {
+    const running = [...live].filter(c => c.exitCode === null && c.signalCode === null);
+    await Promise.all(running.map(c => new Promise(done => { const t = setTimeout(done, waitMs); c.once('exit', () => { clearTimeout(t); done(); }); try { c.kill(); } catch { clearTimeout(t); done(); } })));
+    return running.filter(c => c.exitCode === null && c.signalCode === null).map(c => c.pid);
+  };
+  return { own, closeAll };
+}
+// A teardown result that is not a full, proven cleanup fails the test (the root is then kept; the error names why).
+export function assertCleaned(result) {
+  if (result?.cleanup?.removed !== true || result?.stop?.pending?.length) throw new Error('HARNESS_CLEANUP_NOT_CONFIRMED: ' + JSON.stringify({ stop: result?.stop, cleanup: result?.cleanup }));
+  return result;
 }
 
 // The usual ending: stop our own host, then remove the root ONLY when every host this test recorded has exited. Otherwise the root is

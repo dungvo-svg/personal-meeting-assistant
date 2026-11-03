@@ -2,7 +2,7 @@
 // reports written after `pma stop` reach the meeting even when the host that ran it has gone. Synthetic rows; no audio, no ASR.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEnv, guardedCall, isolatedEnv, ownedShutdown, recordingHost, teardown } from './harness.mjs';
+import { applyEnv, assertCleaned, guardedCall, isolatedEnv, ownedShutdown, recordingHost, teardown } from './harness.mjs';
 
 test('a 30-minute picture longer than 8000 characters is saved; after stop and a new host, summary and tasks go to the latest meeting; with no meeting open the error says so', async () => {
   // A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*); process.env is set from it only, before the import.
@@ -35,7 +35,7 @@ test('a 30-minute picture longer than 8000 characters is saved; after stop and a
   } finally {
     // Stop the host only if it is proven ours (and wait until it is gone: Windows keeps its files locked until the process exits),
     // whatever failed above; then remove the root (the host may still hold its database for a moment: cleanup retries).
-    await teardown(world); restoreEnv();
+    try { assertCleaned(await teardown(world)); } finally { restoreEnv(); }
   }
 });
 

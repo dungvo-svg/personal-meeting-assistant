@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
-import { applyEnv, guardedCall, isolatedEnv, proveOwned, recordingHost, teardown } from './harness.mjs';
+import { applyEnv, assertCleaned, guardedCall, isolatedEnv, ownedChildren, proveOwned, recordingHost, teardown } from './harness.mjs';
 
 const run = promisify(execFile);
 // A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*): the host started below can never be the user's.
@@ -22,9 +22,19 @@ const pma = async (...args) => (await cli(...args)).stdout;
 const json = async (...args) => JSON.parse(await pma(...args));
 const jsonRaw = async (...args) => JSON.parse((await cliRaw(...args)).stdout);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Every child this file spawns is owned by handle and closed before the host is stopped, whatever assertion failed.
+const children = ownedChildren(); const spawnOwned = (...args) => children.own(spawn(...args));
 
-// Stops only a host proven to be this test's own (recorded at start, testMode ping, same pid), then removes the root.
-test.after(async () => { await teardown(world); restoreEnv(); });
+// Closes this file's own children, then stops only a host proven to be this test's own (recorded at start, testMode ping, same pid),
+// then removes the root; a cleanup that is not confirmed fails the run.
+test.after(async () => {
+  try {
+    const stuck = await children.closeAll();
+    // A child that would not stop could start a host again: then nothing is stopped or removed, and the run fails.
+    if (stuck.length) throw new Error('CHILDREN_NOT_STOPPED: pid ' + stuck.join(', ') + '; host and root kept: ' + world.root);
+    assertCleaned(await teardown(world));
+  } finally { restoreEnv(); }
+});
 
 test('the CLI starts one runtime that outlives the command; a second runtime exits without touching history', async () => {
   // status only looks (0.12.1, ENG-37): with no host it says so and starts none; the next real command starts it.
@@ -35,7 +45,7 @@ test('the CLI starts one runtime that outlives the command; a second runtime exi
   assert.equal(status.session, null);
   const info = daemonInfo();
   await call('prepare', { title: 'Phiên thử', fixture: true });
-  const second = spawn(process.execPath, [resolve('dist/daemon.js')], { env, stdio: 'ignore' });
+  const second = spawnOwned(process.execPath, [resolve('dist/daemon.js')], { env, stdio: 'ignore' });
   const code = await new Promise(r => second.on('exit', r));
   assert.equal(code, 1);
   assert.equal(daemonInfo().pid, info.pid);
@@ -54,7 +64,7 @@ test('RPC needs the local token and rejects browsers', async () => {
 
 test('follow prints batched lines with flags, marks the follower heartbeat and stops when the session ends', async () => {
   await proveOwned(env);
-  const follower = spawn(process.execPath, [resolve('dist/cli.js'), 'follow', '--batch', '1'], { env });
+  const follower = spawnOwned(process.execPath, [resolve('dist/cli.js'), 'follow', '--batch', '1'], { env });
   const exited = new Promise(r => follower.on('exit', r));
   let output = ''; follower.stdout.on('data', d => { output += d; });
   await sleep(1500);
@@ -94,7 +104,7 @@ test('Stop hook: blocks a following session while text is unread, ignores sessio
   await call('prepare', { title: 'Phiên hook', fixture: true });
   await call('fixture', { text: 'Chưa ai đọc đoạn này.' });
   const transcript = join(directory, 'transcript.jsonl');
-  const runHook = lines => new Promise((res, rej) => { writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n')); const child = spawn(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '' } }); let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript })); });
+  const runHook = lines => new Promise((res, rej) => { writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n')); const child = spawnOwned(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '' } }); let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript })); });
   assert.equal(await runHook([{ type: 'text', text: 'chạy ./pma follow nhé' }]), '');
   assert.equal(await runHook([{ type: 'tool_use', name: 'Bash', input: { command: 'export PMA_PORT=1 && ./pma follow' } }]), '');
   const follower = [{ type: 'tool_use', name: 'Bash', input: { command: './pma follow --batch 60' } }];
@@ -112,7 +122,7 @@ test('follow --as dich keeps its own cursor and never touches the main one; the 
   const before = await json('status');
   assert.equal(before.agentCursor, first); assert.equal(before.followers.chinh.unread, 1);
   await proveOwned(env);
-  const dich = spawn(process.execPath, [resolve('dist/cli.js'), 'follow', '--as', 'dich', '--no-notes', '--batch', '1'], { env });
+  const dich = spawnOwned(process.execPath, [resolve('dist/cli.js'), 'follow', '--as', 'dich', '--no-notes', '--batch', '1'], { env });
   const exited = new Promise(r => dich.on('exit', r));
   let output = ''; dich.stdout.on('data', d => { output += d; });
   await sleep(2500);
@@ -124,7 +134,7 @@ test('follow --as dich keeps its own cursor and never touches the main one; the 
   assert.equal(mid.followers.chinh.cursor, first); assert.equal(mid.followers.chinh.unread, 1);
 
   const transcript = join(directory, 'transcript-follow.jsonl');
-  const runHook = lines => new Promise((res, rej) => { writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n')); const child = spawn(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '' } }); let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript })); });
+  const runHook = lines => new Promise((res, rej) => { writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n')); const child = spawnOwned(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '' } }); let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript })); });
   const bash = command => ({ type: 'tool_use', name: 'Bash', input: { command } });
   const asDich = bash('./pma follow --batch 15 --as dich --no-notes'), asMain = bash('./pma follow --batch 60');
   // The dich session has read everything: nothing to block on. The main session still has #2 unread.
@@ -188,7 +198,7 @@ test('manual text: `pma say` ingests operator_text, RAW shows "nhập tay", bad 
 test('Stop hook: no daemon.json means allow; a live-looking session with nobody following means block', async () => {
   const run1 = (dataDir, lines) => new Promise((res, rej) => {
     const transcript = join(directory, 'transcript-nodaemon.jsonl'); writeFileSync(transcript, lines.map(l => JSON.stringify(l)).join('\n'));
-    const child = spawn(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '', PMA_DATA_DIR: dataDir } });
+    const child = spawnOwned(process.execPath, [resolve('tools/meeting_stop_hook.mjs')], { env: { ...env, PMA_STOP_HOOK: '', PMA_DATA_DIR: dataDir } });
     let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript }));
   });
   const follower = [{ type: 'tool_use', name: 'Bash', input: { command: './pma follow --batch 60' } }];
