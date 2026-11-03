@@ -1,0 +1,8 @@
+{
+  "name": "hop-vai",
+  "version": "0.1.0-draft",
+  "description": "Vào vai họp thầu: skill cho Claude của Quân, Oanh nhận context và việc từ phiên trung tâm của Dũng qua một folder Google Drive công ty, rồi gửi biên nhận và trả lời. Chỉ có skill, không có ghi âm, không có code, không có MCP server. Bản nháp, chưa dùng ở họp thật.",
+  "author": {"name": "NNC Lao Group - Ban R&D AI"},
+  "license": "MIT",
+  "keywords": ["hop", "thau", "meeting", "seat", "google-drive", "nnc"]
+}

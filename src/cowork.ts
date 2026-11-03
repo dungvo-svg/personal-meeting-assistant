@@ -28,8 +28,8 @@ import type { Bindings, ContextPack, RosterItem } from './context_pack.js';
 //   seat(...)
 //     1  person is an unknown speaker / channel / not a real name                                   UNKNOWN_SPEAKER
 //     2  kind is not simulated_role | remote_claude                                                 INVALID_SEAT_KIND
-//     3  remote_claude without BOTH endpoint and consentRef                                         REMOTE_NOT_CONSENTED
-//     4  simulated_role that carries an endpoint or consentRef (would pretend to be remote)         INVALID_SEAT
+//     3  remote_claude without endpoint, consentRef AND identity (the person's company email)       REMOTE_NOT_CONSENTED
+//     4  simulated_role that carries an endpoint, consentRef or identity (would pretend to be remote) INVALID_SEAT
 //     5  older generation than the recorded one, whatever the consumer (a zombie of a previous one) STALE_GENERATION
 //     6  identical to the current seat                                                              the same seat, no new row
 //     7  otherwise                                                                                  new row (the latest row per person is the current seat)
@@ -61,12 +61,14 @@ export type CentralKind = 'proposal' | 'declined' | 'overdue' | 'parked_question
 
 export type Seat = {
   sessionId: string; person: string; kind: SeatKind; endpoint: string | null; consentRef: string | null; boundAt: number;
-  role: string; consumerId: string | null; generation: number; roleDescription: string | null; scope: string | null;
+  role: string; consumerId: string | null; generation: number; roleDescription: string | null; scope: string | null; identity: string | null;
 };
-export type SeatInput = { person: string; kind: SeatKind; endpoint?: string; consentRef?: string; role?: string; consumerId?: string; generation?: number; roleDescription?: string; scope?: string };
+export type SeatInput = { person: string; kind: SeatKind; endpoint?: string; consentRef?: string; identity?: string; role?: string; consumerId?: string; generation?: number; roleDescription?: string; scope?: string };
+// A remote person's receipt: which context version that person's own Claude said it read, as relayed from the shared folder.
+export type SeatReceipt = { id: number; sessionId: string; person: string; generation: number; version: string; fileId: string; modifiedTime: string; byEmail: string; at: number };
 export type SeatStatus = {
   person: string; kind: SeatKind; simulated: boolean; live: false; label: string; boundAt: number; role: string; consumerId: string | null; generation: number;
-  endpoint: string | null; consentRef: string | null; roleDescription: string | null; scope: string | null; missing: string[];
+  endpoint: string | null; consentRef: string | null; identity: string | null; roleDescription: string | null; scope: string | null; missing: string[];
 };
 export type CoworkStatus = { sessionId: string; seats: SeatStatus[]; simulated: number; remote: number; liveRemote: 0; missing: string[]; note: string };
 export type Assignment = {
@@ -113,6 +115,8 @@ export const COWORK_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS cowork_replies(id INTEGER PRIMARY KEY AUTOINCREMENT, assignment_id INTEGER NOT NULL, session_id TEXT NOT NULL, person TEXT NOT NULL, text TEXT NOT NULL, source_ids TEXT NOT NULL DEFAULT '[]', proposal TEXT, seat_kind TEXT NOT NULL, simulated INTEGER NOT NULL, decision_id INTEGER, created INTEGER NOT NULL);
   CREATE INDEX IF NOT EXISTS cowork_replies_by_assignment ON cowork_replies(assignment_id);
   CREATE TABLE IF NOT EXISTS cowork_marks(session_id TEXT NOT NULL, ref_kind TEXT NOT NULL, ref_id INTEGER NOT NULL, person_key TEXT NOT NULL, person TEXT NOT NULL, created INTEGER NOT NULL, PRIMARY KEY(session_id, ref_kind, ref_id, person_key));
+  CREATE TABLE IF NOT EXISTS cowork_receipts(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, person_key TEXT NOT NULL, person TEXT NOT NULL, generation INTEGER NOT NULL, version TEXT NOT NULL, file_id TEXT NOT NULL, modified_time TEXT NOT NULL, by_email TEXT NOT NULL, at INTEGER NOT NULL, UNIQUE(file_id, modified_time));
+  CREATE TABLE IF NOT EXISTS cowork_imports(file_id TEXT NOT NULL, modified_time TEXT NOT NULL, session_id TEXT NOT NULL, result TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(file_id, modified_time));
   CREATE TABLE IF NOT EXISTS cowork_handled(ref_kind TEXT NOT NULL, ref_id INTEGER NOT NULL, session_id TEXT NOT NULL, by TEXT NOT NULL, note TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(ref_kind, ref_id));`;
 
 type Clock = () => number;
@@ -148,7 +152,11 @@ function tx<T>(db: DatabaseSync, fn: () => T): T {
   try { const out = fn(); db.exec('COMMIT'); return out; } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
-const seatOf = (r: any): Seat => ({ sessionId: r.session_id, person: r.person, kind: r.kind, endpoint: r.endpoint ?? null, consentRef: r.consent_ref ?? null, boundAt: r.bound_at, role: r.role, consumerId: r.consumer_id ?? null, generation: r.generation, roleDescription: r.role_description ?? null, scope: r.scope ?? null });
+const seatOf = (r: any): Seat => ({ sessionId: r.session_id, person: r.person, kind: r.kind, endpoint: r.endpoint ?? null, consentRef: r.consent_ref ?? null, boundAt: r.bound_at, role: r.role, consumerId: r.consumer_id ?? null, generation: r.generation, roleDescription: r.role_description ?? null, scope: r.scope ?? null, identity: r.identity ?? null });
+const receiptOf = (r: any): SeatReceipt => ({ id: r.id, sessionId: r.session_id, person: r.person, generation: r.generation, version: r.version, fileId: r.file_id, modifiedTime: r.modified_time, byEmail: r.by_email, at: r.at });
+const EMAIL_RE = /^[^\s@]{1,64}@[A-Za-z0-9.-]{1,190}\.[A-Za-z]{2,24}$/;
+// The key used in shared file names: lower case, no diacritics, a-z0-9 and '-' (Quân -> quan).
+export const personKeyOf = (name: string) => name.normalize('NFD').replace(/\p{M}/gu, '').replace(/[đĐ]/g, 'd').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 const assignmentOf = (r: any): Assignment => ({ id: r.id, sessionId: r.session_id, person: r.person, text: r.text, sourceIds: parseIds(r.source_ids), fromDecisionId: r.from_decision_id ?? null, status: r.status, dueAt: r.due_at ?? null, seatKind: r.seat_kind, created: r.created, updated: r.updated, note: r.note ?? null });
 const replyOf = (r: any): Reply => ({ id: r.id, assignmentId: r.assignment_id, sessionId: r.session_id, person: r.person, text: r.text, sourceIds: parseIds(r.source_ids), proposal: r.proposal ?? null, seatKind: r.seat_kind, simulated: !!r.simulated, decisionId: r.decision_id ?? null, created: r.created });
 const questionOf = (r: any): OwnerQuestion => ({ id: r.id, sessionId: r.session_id, text: r.text, asked: r.asked, reminded: r.reminded ?? null, expires: r.expires, closed: r.closed ?? null, status: r.status, answer: r.answer ?? null, sourceIds: parseIds(r.source_ids) });
@@ -174,10 +182,10 @@ export function seatStatus(seat: Seat, pack?: ContextPack | null): SeatStatus {
   const simulated = seat.kind === 'simulated_role';
   const label = simulated
     ? 'Vai giả lập của ' + seat.person + ' trên máy này, không phải Claude thật của ' + seat.person
-    : 'Claude của ' + seat.person + ' (từ xa): owner đã ghi endpoint và consent; chưa kiểm được kết nối thật';
+    : 'Claude của ' + seat.person + ' (từ xa, ' + seat.identity + '): owner đã ghi endpoint và consent; host không tự kiểm được kết nối';
   return {
     person: seat.person, kind: seat.kind, simulated, live: false, label, boundAt: seat.boundAt, role: seat.role, consumerId: seat.consumerId, generation: seat.generation,
-    endpoint: seat.endpoint, consentRef: seat.consentRef, roleDescription: seat.roleDescription, scope: seat.scope, missing: missingOfSeat(seat, pack),
+    endpoint: seat.endpoint, consentRef: seat.consentRef, identity: seat.identity, roleDescription: seat.roleDescription, scope: seat.scope, missing: missingOfSeat(seat, pack),
   };
 }
 
@@ -235,18 +243,20 @@ export class CoworkLedger {
   constructor(private db: DatabaseSync, private now: Clock = Date.now, private opts: { requireContext?: boolean } = {}) {
     // The owner's questions and the decisions live in the sibling modules' tables; creating them is idempotent (IF NOT EXISTS).
     db.exec(JOBS_TABLES_SQL); db.exec(DECISIONS_TABLES_SQL); db.exec(COWORK_TABLES_SQL);
+    if (!(db.prepare('PRAGMA table_info(cowork_seats)').all() as any[]).some(c => c.name === 'identity')) db.exec('ALTER TABLE cowork_seats ADD COLUMN identity TEXT');
   }
 
   // ---- seats ------------------------------------------------------------------------------------------------------------
   seat(sessionId: string, input: SeatInput): Seat {
     const sid = text(sessionId, 100, 'INVALID_SESSION'), person = realPerson(input?.person), key = keyOf(person);
     if (!KINDS.includes(input?.kind)) throw new Error('INVALID_SEAT_KIND: ' + String(input?.kind));
-    const endpoint = opt(input.endpoint, 300, 'INVALID_ENDPOINT'), consentRef = opt(input.consentRef, 300, 'INVALID_CONSENT_REF');
+    const endpoint = opt(input.endpoint, 300, 'INVALID_ENDPOINT'), consentRef = opt(input.consentRef, 300, 'INVALID_CONSENT_REF'), identity = opt(input.identity, 254, 'INVALID_IDENTITY')?.toLowerCase() ?? null;
     if (endpoint !== null && /\s/.test(endpoint)) throw new Error('INVALID_ENDPOINT');
-    if (input.kind === 'remote_claude' && (!endpoint || !consentRef)) {
-      throw new Error('REMOTE_NOT_CONSENTED: một phiên Claude từ xa của ' + person + ' cần cả endpoint và consent do owner ghi; thiếu ' + [!endpoint && 'endpoint', !consentRef && 'consent'].filter(Boolean).join(' và ') + '. Chưa có thì dùng vai giả lập (simulated_role)');
+    if (identity !== null && !EMAIL_RE.test(identity)) throw new Error('INVALID_IDENTITY: cần email công ty của người đó');
+    if (input.kind === 'remote_claude' && (!endpoint || !consentRef || !identity)) {
+      throw new Error('REMOTE_NOT_CONSENTED: một phiên Claude từ xa của ' + person + ' cần endpoint, consent và email do owner ghi; thiếu ' + [!endpoint && 'endpoint', !consentRef && 'consent', !identity && 'email'].filter(Boolean).join(', ') + '. Chưa có thì dùng vai giả lập (simulated_role)');
     }
-    if (input.kind === 'simulated_role' && (endpoint || consentRef)) throw new Error('INVALID_SEAT: vai giả lập không mang endpoint hoặc consent, để khỏi bị hiểu là Claude thật');
+    if (input.kind === 'simulated_role' && (endpoint || consentRef || identity)) throw new Error('INVALID_SEAT: vai giả lập không mang endpoint, consent hay email, để khỏi bị hiểu là Claude thật');
     const role = opt(input.role, 60, 'INVALID_ROLE') ?? 'participant';
     const consumerId = opt(input.consumerId, 128, 'INVALID_CONSUMER');
     if (consumerId !== null && !ID_RE.test(consumerId)) throw new Error('INVALID_CONSUMER');
@@ -260,8 +270,8 @@ export class CoworkLedger {
       const scope = input.scope === undefined ? prev?.scope ?? null : opt(input.scope, 500, 'INVALID_SCOPE');
       // Compared whatever the consumer (Codex review of a3e1fb3): a zombie must not take the seat back by naming another consumer.
       if (prev && prev.generation > generation) throw new Error('STALE_GENERATION: phiên của ' + person + ' đã ở thế hệ ' + prev.generation + ', không nhận thế hệ ' + generation);
-      if (prev && prev.kind === input.kind && prev.endpoint === endpoint && prev.consentRef === consentRef && prev.role === role && prev.consumerId === consumerId && prev.generation === generation && prev.roleDescription === roleDescription && prev.scope === scope) return prev;
-      this.db.prepare('INSERT INTO cowork_seats(session_id,person,person_key,kind,endpoint,consent_ref,role,consumer_id,generation,role_description,scope,bound_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(sid, person, key, input.kind, endpoint, consentRef, role, consumerId, generation, roleDescription, scope, at);
+      if (prev && prev.kind === input.kind && prev.endpoint === endpoint && prev.consentRef === consentRef && prev.identity === identity && prev.role === role && prev.consumerId === consumerId && prev.generation === generation && prev.roleDescription === roleDescription && prev.scope === scope) return prev;
+      this.db.prepare('INSERT INTO cowork_seats(session_id,person,person_key,kind,endpoint,consent_ref,identity,role,consumer_id,generation,role_description,scope,bound_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run(sid, person, key, input.kind, endpoint, consentRef, identity, role, consumerId, generation, roleDescription, scope, at);
       return this.latestSeat(sid, key)!;
     });
   }
@@ -471,6 +481,36 @@ export class CoworkLedger {
       if (!row) throw new Error('REF_NOT_FOUND: ' + refKind + ' #' + refId);
       return this.db.prepare('INSERT OR IGNORE INTO cowork_handled(ref_kind,ref_id,session_id,by,note,at) VALUES(?,?,?,?,?,?)').run(refKind, refId, row.session_id, who, n, at).changes > 0;
     });
+  }
+
+  // ---- remote receipts and imports (pma-seat/1, docs/SEAT_CONTRACT.md) -------------------------------------------------
+  // A receipt says a remote person's own Claude read one context version, as relayed from the shared folder (file id + time +
+  // the account that wrote it). The same file and time again is the same receipt.
+  receipt(sessionId: string, person: string, input: { generation: number; version: string; fileId: string; modifiedTime: string; byEmail: string }): { id: number; already: boolean } {
+    const sid = text(sessionId, 100, 'INVALID_SESSION'), name = realPerson(person), key = keyOf(name), at = this.now();
+    const version = text(input?.version, 200, 'INVALID_VERSION'), fileId = text(input?.fileId, 200, 'INVALID_FILE_ID'), modifiedTime = text(input?.modifiedTime, 64, 'INVALID_TIME'), byEmail = text(input?.byEmail, 254, 'INVALID_IDENTITY').toLowerCase();
+    if (!Number.isSafeInteger(input.generation) || input.generation < 0) throw new Error('INVALID_GENERATION');
+    return tx(this.db, () => {
+      const same: any = this.db.prepare('SELECT id FROM cowork_receipts WHERE file_id=? AND modified_time=?').get(fileId, modifiedTime);
+      if (same) return { id: Number(same.id), already: true };
+      const id = Number(this.db.prepare('INSERT INTO cowork_receipts(session_id,person_key,person,generation,version,file_id,modified_time,by_email,at) VALUES(?,?,?,?,?,?,?,?,?)').run(sid, key, name, input.generation, version, fileId, modifiedTime, byEmail, at).lastInsertRowid);
+      return { id, already: false };
+    });
+  }
+  lastReceipt(sessionId: string, person: string): SeatReceipt | null {
+    const r = this.db.prepare('SELECT * FROM cowork_receipts WHERE session_id=? AND person_key=? ORDER BY id DESC LIMIT 1').get(sessionId, keyOf(String(person ?? '')));
+    return r ? receiptOf(r) : null;
+  }
+  hasReceipt(sessionId: string, person: string, generation: number, version: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM cowork_receipts WHERE session_id=? AND person_key=? AND generation=? AND version=?').get(sessionId, keyOf(String(person ?? '')), generation, version);
+  }
+  // A file already imported (same Drive file id and modified time) gives back what it gave the first time.
+  importedResult(fileId: string, modifiedTime: string): unknown {
+    const r: any = this.db.prepare('SELECT result FROM cowork_imports WHERE file_id=? AND modified_time=?').get(fileId, modifiedTime);
+    return r ? JSON.parse(r.result) : undefined;
+  }
+  recordImport(sessionId: string, fileId: string, modifiedTime: string, result: unknown) {
+    this.db.prepare('INSERT OR IGNORE INTO cowork_imports(file_id,modified_time,session_id,result,at) VALUES(?,?,?,?,?)').run(fileId, modifiedTime, sessionId, JSON.stringify(result), this.now());
   }
 
   // ---- internals ------------------------------------------------------------------------------------------------------------

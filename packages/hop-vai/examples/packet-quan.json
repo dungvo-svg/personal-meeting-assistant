@@ -1,0 +1,34 @@
+{
+  "schema": "pma-seat/1",
+  "kind": "packet",
+  "meetingId": "00000000-0000-4000-8000-000000000001",
+  "meetingTitle": "VÍ DỤ: họp thầu giả lập",
+  "person": "Quân",
+  "personKey": "quan",
+  "seatGeneration": 1762182000000,
+  "contextVersion": "ctx-vi-du-001",
+  "issuedAt": "2026-11-03T08:00:00.000Z",
+  "role": {
+    "description": "VÍ DỤ: người soát tiến độ hồ sơ",
+    "scope": null
+  },
+  "missing": ["role_scope:Quân"],
+  "view": {
+    "topics": ["VÍ DỤ: tiến độ gói A", "VÍ DỤ: câu hỏi mở về hạn giao"],
+    "decisions": [
+      { "id": 3, "text": "VÍ DỤ: soát hạn giao gói A trước khi báo lại", "status": "proposed" }
+    ],
+    "actions": [
+      { "id": 1, "decisionId": 3, "description": "VÍ DỤ: soát hạn giao gói A", "status": "open" }
+    ],
+    "questions": [
+      { "id": 2, "text": "VÍ DỤ: hạn giao gói A có đổi không?" }
+    ],
+    "assignments": [
+      { "id": 7, "text": "VÍ DỤ: soát hạn giao gói A", "status": "open", "dueAt": null, "sourceIds": [12, 13] }
+    ]
+  },
+  "rules": [
+    "VÍ DỤ: chỉ trả lời trong phạm vi việc được giao"
+  ]
+}

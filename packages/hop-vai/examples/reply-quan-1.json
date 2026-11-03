@@ -1,0 +1,14 @@
+{
+  "schema": "pma-seat/1",
+  "kind": "reply",
+  "meetingId": "00000000-0000-4000-8000-000000000001",
+  "person": "Quân",
+  "seatGeneration": 1762182000000,
+  "contextVersion": "ctx-vi-du-001",
+  "assignmentId": 7,
+  "step": "accept",
+  "text": "VÍ DỤ: nhận việc soát hạn giao gói A.",
+  "propose": "VÍ DỤ: báo lại kết quả soát trong phiên họp kế tiếp.",
+  "sourceIds": [12],
+  "writtenAt": "2026-11-03T08:10:00.000Z"
+}

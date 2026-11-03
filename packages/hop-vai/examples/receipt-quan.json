@@ -1,0 +1,15 @@
+{
+  "schema": "pma-seat/1",
+  "kind": "receipt",
+  "meetingId": "00000000-0000-4000-8000-000000000001",
+  "person": "Quân",
+  "seatGeneration": 1762182000000,
+  "contextVersion": "ctx-vi-du-001",
+  "readAt": "2026-11-03T08:05:00.000Z",
+  "preflight": {
+    "plugin": "hop-vai 0.1.0-draft",
+    "driveAccount": "vi-du@example.invalid",
+    "folderReadable": true,
+    "folderWritable": true
+  }
+}
