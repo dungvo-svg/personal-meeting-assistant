@@ -407,7 +407,7 @@ export class MeetingRuntime extends EventEmitter {
     // How far this picture covers the meeting: its highest cited source, but never past what chinh had been handed when it was saved
     // (citing a row chinh has not been handed yet covers nothing).
     const coversUpTo = Math.min(Math.max(...ids), this.followers[MAIN_FOLLOWER]?.cursor ?? 0);
-    this.publish(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS, { coversUpTo }); return { saved: true, revision };
+    this.publishNote(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS, { coversUpTo }); return { saved: true, revision };
   }
   // Distinct IDs, each a source of this session.
   private sessionSourceIds(id: string, sourceIds: number[]) {
@@ -415,7 +415,13 @@ export class MeetingRuntime extends EventEmitter {
     for (const sourceId of ids) if (!Number.isSafeInteger(sourceId) || !this.db.prepare('SELECT id FROM sources WHERE session_id=? AND id=?').get(id, sourceId)) throw new Error('SOURCE_OUTSIDE_SESSION');
     return ids;
   }
-  publish(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], maxChars = 8000, extra: Record<string, unknown> = {}) {
+  // Notes from outside (note RPC, MCP note_publish). The picture's key is reserved for savePicture, so no writer gets past its receipt
+  // and base revision through the generic note path (Codex review of 9124eb3).
+  publish(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[]) {
+    if (key === PICTURE_KEY) throw new Error('PICTURE_KEY_RESERVED: bức tranh chỉ lưu bằng pma picture (--receipt, --base)');
+    return this.publishNote(id, key, revision, kind, text, sourceIds);
+  }
+  private publishNote(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], maxChars = 8000, extra: Record<string, unknown> = {}) {
     this.requireSession(id);
     if (!/^[\w-]{1,80}$/.test(key) || !Number.isSafeInteger(revision) || revision < 1 || text.length < 1 || text.length > maxChars || !['observation', 'decision', 'action', 'question', 'correction'].includes(kind) || !sourceIds.length || sourceIds.length > 50) throw new Error('INVALID_NOTE');
     const ids = this.sessionSourceIds(id, sourceIds);
