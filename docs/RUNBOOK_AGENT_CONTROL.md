@@ -3,10 +3,10 @@
 Dành cho phiên Claude điều khiển bộ họp, không phải lệnh chủ phải nhớ. Chạy được từ bất kỳ thư mục nào (vd. dự án BidOps), bằng đường dẫn tuyệt đối của bản đang dùng:
 
 ```
-node "<thư mục PMA>\dist\cli.js" <lệnh>
+"D:\APP\NodeJS\node.exe" "<thư mục PMA>\dist\cli.js" <lệnh>
 ```
 
-Lệnh `pma` trần chỉ chạy được trong thư mục PMA; chưa có cài đặt dùng chung (global).
+`D:\APP\NodeJS\node.exe` là Node trên máy Dũng (AdminPC). Đừng giả định `node` hay `pma` trần đã có trên PATH: `pma` trần chỉ chạy được trong thư mục PMA, chưa có cài đặt dùng chung (global).
 
 ## 1. Luôn xem trước: `status`
 
@@ -39,7 +39,7 @@ PMA_DATA_DIR=<main checkout>\.local\runtime node "<bản này>\dist\cli.js" stat
 
 Không dùng `pma status` của 0.11: bản cũ có thể tự mở host. Không quét hay tắt tiến trình toàn máy. Nếu bị từ chối (vd. truy vấn CIM) thì không thử lại bằng đường khác; báo người dùng.
 
-Sau một `start` hợp lệ, ghi lại `session.id`, `attached.pid`, `attached.dataDir` mà lệnh trả về. Đừng tự đặt UUID cho `start`.
+Sau một `start` hợp lệ, giữ `session.id` mà lệnh trả về. `start` **không** trả `attached.pid` hay `attached.dataDir`: chạy `status` ngay sau đó để ghi lại hai trường này và kiểm cùng UUID. Đừng tự đặt UUID cho `start`.
 
 Chỉ chạy `start` khi người dùng muốn bắt đầu một cuộc họp thật (skill `hop`). Kiểm thử không ghi âm thì dùng phiên fixture qua RPC chẩn đoán (`prepare {fixture: true}` trong thế giới thử riêng, như `tests/control_session.test.mjs`), không dùng CLI `start`.
 
