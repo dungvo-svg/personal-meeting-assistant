@@ -69,7 +69,11 @@ test('a proposal converges to the central session and enters the decision ledger
     assert.deepEqual(r.promoteReply(id, reply.id), { decisionId: promoted.decisionId, status: 'proposed', already: true });
     assert.equal(r.cowork.convergeToCentral(id).length, 0, 'tracked by the decision ledger from here');
     assert.equal(r.cowork.provenanceOfDecision(promoted.decisionId).simulated, true);
-    assert.throws(() => r.handleCentral(meeting(r), 'reply', reply.id, 'Dũng', 'x'), /REF_OF_ANOTHER_MEETING/);
+    // A ref of another meeting cannot be handled from this one, and is told apart from a missing one by nothing (REF_NOT_FOUND).
+    const other = meeting(r); const otherTask = r.cowork.assign(id, 'Oanh', 'Việc khác', [3]);
+    for (const [kind, ref] of [['reply', reply.id], ['assignment', otherTask], ['reply', 99999]]) assert.throws(() => r.handleCentral(other, kind, ref, 'Dũng', 'x'), /REF_NOT_FOUND/, kind + ' #' + ref);
+    assert.equal(r.db.prepare('SELECT COUNT(*) AS n FROM cowork_handled').get().n, 0, 'nothing was recorded as handled');
+    assert.equal(r.handleCentral(id, 'assignment', otherTask, 'Dũng', 'giao lại').handled, true, 'the same ref is handled from its own meeting');
   });
 });
 

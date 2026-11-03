@@ -560,8 +560,9 @@ export class MeetingRuntime extends EventEmitter {
     } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
   handleCentral(id: string, refKind: HandledKind, refId: number, by: string, note: string) {
+    // A ref of another meeting is reported exactly like one that does not exist (REF_NOT_FOUND): nothing about other meetings is told.
     const of = refKind === 'reply' ? this.cowork.replies(id).find(x => x.id === refId)?.sessionId : refKind === 'assignment' ? this.cowork.get(refId)?.sessionId : this.ledger.questions.get(refId)?.sessionId;
-    if (!of) throw new Error('REF_NOT_FOUND'); if (of !== id) throw new Error('REF_OF_ANOTHER_MEETING');
+    if (of !== id) throw new Error('REF_NOT_FOUND: ' + refKind + ' #' + refId + ' không có trong cuộc họp này');
     return { handled: this.cowork.handle(refKind, refId, by, note) };
   }
   // Corrections and document pointers given in the meeting go into the session context, so into the pack (a new version) with their
