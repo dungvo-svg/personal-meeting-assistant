@@ -4,13 +4,12 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test, withFakes, until, readLog } from './fakes.mjs';
-import { DAEMON_ENV } from '../dist/client.js';
 
 const micArgs = argv => argv.filter(a => a === '--mic-auto' || a === '--mic-device');
 const recorderSpawns = audio => readLog(audio, 'recorder-log.jsonl').filter(e => e.what === 'spawn');
 
 test('PMA_MIC travels to a launched host: it is in the client list and in the host allow-list', () => {
-  assert.ok(DAEMON_ENV.includes('PMA_MIC'));
+  assert.match(readFileSync(resolve('src/client.ts'), 'utf8'), /DAEMON_ENV = \[[^\]]*'PMA_MIC'/, 'read as text: no client module is loaded');
   assert.match(readFileSync(resolve('src/daemon.ts'), 'utf8'), /ALLOWED_ENV = \[[^\]]*'PMA_MIC'/);
 });
 
