@@ -210,8 +210,11 @@ export class DecisionLedger {
   chain(id: number): Decision[] {
     let cur = this.get(id);
     if (!cur) return [];
+    // Each walk has its own cycle guard: the forward walk must pass again over the nodes the backward walk visited (review of
+    // 8822601: chain(latest) returned only the root because both walks shared one set).
+    const back = new Set<number>([cur.id]);
+    while (cur.supersedes != null && !back.has(cur.supersedes)) { const prev = this.get(cur.supersedes); if (!prev) break; back.add(prev.id); cur = prev; }
     const seen = new Set<number>([cur.id]);
-    while (cur.supersedes != null && !seen.has(cur.supersedes)) { const prev = this.get(cur.supersedes); if (!prev) break; seen.add(prev.id); cur = prev; }
     const out: Decision[] = [cur];
     while (cur.supersededBy != null && !seen.has(cur.supersededBy)) { const next = this.get(cur.supersededBy); if (!next) break; seen.add(next.id); out.push(next); cur = next; }
     const waiting = this.db.prepare("SELECT * FROM decisions WHERE supersedes=? AND status='proposed' ORDER BY id").all(cur.id).map(decisionOf).filter(d => !seen.has(d.id));
