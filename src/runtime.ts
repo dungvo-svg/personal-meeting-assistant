@@ -149,6 +149,8 @@ export class MeetingRuntime extends EventEmitter {
   // Real time up to which the ASR has handled the audio (ISO); a restarted worker continues from here.
   private asrPosition: string | null = null;
   private micWanted = process.env.PMA_MIC !== '0';
+  // Whether the running recorder was started with the microphone (null: not known, e.g. a recorder taken over from a dead host).
+  private recorderMic: boolean | null = null;
   private recheckChain: Promise<unknown> = Promise.resolve();
   // A recheck worker is running (it loads a model too): the machine lock is kept meanwhile.
   rechecking = 0;
@@ -262,7 +264,9 @@ export class MeetingRuntime extends EventEmitter {
   }
   // Who holds the machine (no token), for status; null when nobody does or this runtime takes no lock.
   machineState() { if (!this.machine) return null; const h = machineHolder(); if (!h) return null; const { token, ...rest } = h; return { ...rest, mine: token === this.machine.token }; }
-  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean } = {}) {
+  // extra.mic false: no microphone for this meeting, decided before anything can open one (the remembered speaker starts the recorder
+  // right here, so a later `select --no-mic` would be too late for the first seconds).
+  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean; mic?: boolean } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
     if (this.session && !this.session.ended) return this.snapshot();
     if (this.capture || this.stoppingCapture || this.recorderAlive() || this.captureState === 'CLEANUP_UNCONFIRMED') throw new Error('PREVIOUS_CAPTURE_NOT_CLOSED');
@@ -282,7 +286,7 @@ export class MeetingRuntime extends EventEmitter {
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
     this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.followers = {}; this.committed = {}; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.captureState = 'OFF'; this.captureInfo = {};
-    this.recorder = newRecorder(); this.asrWanted = false; this.workerPaused = false; this.modelReady = false; this.everListened = false; this.asrPosition = null; this.workerCrashes = []; this.micWanted = process.env.PMA_MIC !== '0';
+    this.recorder = newRecorder(); this.asrWanted = false; this.workerPaused = false; this.modelReady = false; this.everListened = false; this.asrPosition = null; this.workerCrashes = []; this.micWanted = extra.mic !== false && process.env.PMA_MIC !== '0'; this.recorderMic = null;
     // The session host lives as long as the meeting: models load now (ASR stays paused until `listen`), and when the last
     // speaker source is still there the recorder starts at once, so the whole meeting is on disk from the first second.
     if (!fixture && extra.warm !== false) { this.warmUp(this.session.id); void this.resumeRemembered(this.session.id); }
@@ -591,7 +595,10 @@ export class MeetingRuntime extends EventEmitter {
     const armed = this.arm(id, deviceIndex);
     this.micWanted = mic && process.env.PMA_MIC !== '0';
     this.saveProfile({ speaker: { name: armed.name } });
-    if (changed && this.recorderAlive()) await this.restartRecorder(id); else this.ensureRecorder(id);
+    // `select --no-mic` after the recorder already started with the microphone (the remembered speaker started it): restart it
+    // without, at once. A recorder whose microphone use is not known is restarted too when no microphone is wanted.
+    const micChanged = this.recorderAlive() && (this.recorderMic === null ? !this.micWanted : this.recorderMic !== this.micWanted);
+    if ((changed || micChanged) && this.recorderAlive()) await this.restartRecorder(id); else this.ensureRecorder(id);
     return armed;
   }
   suggest(devices: any[]) {
@@ -643,6 +650,7 @@ export class MeetingRuntime extends EventEmitter {
     const device = this.armedDevice; if (!device || this.closing || !this.session || this.session.id !== id || this.session.ended) return;
     const rec = this.recorder; const dir = markAudioDir(this.dataDir, id).dir; rmSync(join(dir, 'STOP'), { force: true });
     const mic = !this.micWanted ? [] : this.armedMic ? ['--mic-device', String(this.armedMic.index), '--mic-name', String(this.armedMic.name)] : ['--mic-auto'];
+    this.recorderMic = mic.length > 0;
     rec.state = rec.restarts.length ? 'RESTARTING' : 'STARTING'; rec.stopping = false;
     // No --parent: the recorder must keep recording if this host dies (a new host takes the session over by its PID).
     const child = spawn(this.python(), [join(this.root, 'tools', 'recorder.py'), '--dir', dir, '--speaker-device', String(device.index), '--speaker-name', String(device.name), ...mic], { windowsHide: true, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });

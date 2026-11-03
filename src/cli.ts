@@ -245,7 +245,7 @@ async function main() {
     case 'start': {
       // The participants file is read first: a bad file stops here, before any session exists.
       const listed = flags.participants ? JSON.parse(readFileSync(flags.participants, 'utf8')) : undefined;
-      const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at });
+      const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}) });
       // Right after the session exists; a list the runtime refuses is reported, the session stays open.
       const people = listed ? await call('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
       const opened = flags.link ? await call('open', { url: flags.link }) : undefined;
