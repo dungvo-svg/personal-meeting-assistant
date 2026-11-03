@@ -155,6 +155,8 @@ test('the MCP adapter needs the receipt and base for reports, sends them attach-
   }
   for (const tool of ['session_prepare', 'source_select', 'hearing_start']) assert.match(lineOf(tool), /mic: z\.boolean\(\)\.optional\(\)/, tool + ' has an explicit mic choice');
   assert.match(server, /registerTool\('session_status'[\s\S]*?inspect\(\)/, 'status stays a pure inspect');
+  // session_prepare is an activation (warm-up, remembered speaker): its description must not promise a harmless prepare (Codex 03/11).
+  assert.doesNotMatch(lineOf('session_prepare'), /No capture until/); assert.match(lineOf('session_prepare'), /starts recording it at once/);
 });
 
 test('the picture key is reserved: note_publish cannot write a picture revision past its receipt and base', async () => {

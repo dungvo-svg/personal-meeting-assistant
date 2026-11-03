@@ -46,7 +46,7 @@
     "src/client.ts": "d419d51e2ecb884e5c425ff07db2d324b66fd53f757be79f6cc388ce6ed2832e",
     "src/daemon.ts": "90e4b3b67c5d701d4a3cfb31212220acac017ebf9f7561d412f67fe7d4fbfd26",
     "src/runtime.ts": "a7939d7240cab46ea83318f96518b39f2973295e407d08e2c945d1a656b2278f",
-    "src/server.ts": "d4fff3f86be6faa493b7b87d99cf17b9d0654f9b99deae4d8a1aaf606a547215",
+    "src/server.ts": "4c4f76d7adb57ffea15e286b49d26f3e96e791d6610e14db9a44d1a75ee99dc1",
     "src/text.ts": "e6ca80ea9417427d4fefb819e4c2755f1fe694b2fbbf20a4066d034b4c160ca2",
     "tests/daemon.test.mjs": "a99128fe02de75fdee8dec15e290e9d3f46d11c088914c789dd511d79b6aa053",
     "tests/follow.test.mjs": "18584315a93820e057d9e4bd03d1d3737f65ead052f1bc2133091aaa2ce34ff9",

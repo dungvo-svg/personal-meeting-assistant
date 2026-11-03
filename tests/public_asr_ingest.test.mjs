@@ -33,8 +33,11 @@ test('public ASR line → isolated host source row → reference correction kept
 
     // The central draft needs the receipt of a read of THIS context (after the correction) and the base revision.
     const { receipt, markdown } = await owned('brief', { sessionId, as: 'chinh' });
-    assert.match(receipt, /^rcpt-[a-f0-9]{16}$/); assert.match(markdown, /"bật" → "vật" \(suy luận, cuộc họp này, nguồn #\d+\)/);
-    const picture = await owned('picture', { sessionId, text: `${LABEL}. Một câu tiếng Việt về văn hóa và bộ lạc cổ xưa nuôi động vật để lấy sữa, thịt và da [#${sourceId}]. Không có người nói, quyết định hay việc.`, sourceIds: [sourceId], receipt, expectedRevision: 0 });
+    // An inferred correction is shown with what was heard ("vật (nghe: bật)", context_pack.applyCorrections); only a user-confirmed
+    // one would show the corrected word alone. The source id is the row's.
+    assert.match(receipt, /^rcpt-[a-f0-9]{16}$/);
+    assert.ok(markdown.includes(`- Sửa: "bật" → "vật (nghe: bật)" (suy luận, cuộc họp này, nguồn #${sourceId})`), markdown);
+    const picture = await owned('picture', { sessionId, text: `${LABEL}. Một câu tiếng Việt, nguyên văn ở nguồn #${sourceId} (không diễn giải lại). Không có người nói, quyết định hay việc.`, sourceIds: [sourceId], receipt, expectedRevision: 0 });
     assert.equal(picture.revision, 1); assert.equal(picture.receipt.state, 'SAVED');
 
     const finished = await owned('finish', { sessionId });
