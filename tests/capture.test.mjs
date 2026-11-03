@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { MeetingRuntime } from '../dist/runtime.js';
 import { audioInfo, isExpired, listAudio, markAudioDir, purgeAudio } from '../dist/audio.js';
+import { isolatedEnv, recordingHost, teardown } from './harness.mjs';
 
 test('saved audio does not expire: expires.json says null, and nothing but an explicit purge removes it', () => {
   const dir = mkdtempSync(join(tmpdir(), 'pma-audio-test-')); const day = 86400000;
@@ -76,14 +77,14 @@ test('audio list: finished mix files, and the mix the segments are still waiting
 
 test('the daemon never deletes audio by itself; `pma audio` lists and purges on request only', async () => {
   const { execFile } = await import('node:child_process'); const { promisify } = await import('node:util'); const run = promisify(execFile);
-  const dir = mkdtempSync(join(tmpdir(), 'pma-audio-cli-')); const day = 86400000;
-  const env = { ...process.env, PMA_PORT: process.env.PMA_CAPTURE_TEST_PORT || '8814', PMA_TEST_MODE: '1', PMA_DATA_DIR: dir, PMA_STOP_HOOK: 'off' };
+  // A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*): the host this starts can never be the user's.
+  const world = await isolatedEnv('audio-cli'); const env = world.env; const dir = env.PMA_DATA_DIR; const day = 86400000;
   const pma = async (...args) => JSON.parse((await run(process.execPath, [resolve('dist/cli.js'), ...args], { env })).stdout);
   const wavIn = (id, now) => { const marked = markAudioDir(dir, id, now); const file = join(marked.dir, 'seg-0001-speaker.wav'); writeFileSync(file, Buffer.alloc(3 * 1048576)); utimesSync(file, new Date(now), new Date(now)); };
   const ancient = '55555555-5555-4555-8555-555555555555', current = '66666666-6666-4666-8666-666666666666';
   wavIn(ancient, Date.now() - 400 * day); wavIn(current, Date.now() - day);
   try {
-    await pma('history');  // starts the daemon (status no longer does); the old purge-at-start is gone
+    await recordingHost(env, () => pma('history'));  // starts the daemon (status no longer does); the old purge-at-start is gone; its pid is recorded as this test's
     assert.ok(existsSync(join(dir, 'audio', ancient)) && existsSync(join(dir, 'audio', current)));
     const listed = await pma('audio'); assert.equal(listed.length, 2); assert.equal(listed.find(item => item.session === current).mb, 3);
     assert.equal(listed[0].expiresAt, 'không hết hạn'); assert.deepEqual(listed.find(item => item.session === current).mix, ['đang ghép'], 'only segments so far');
@@ -92,5 +93,5 @@ test('the daemon never deletes audio by itself; `pma audio` lists and purges on 
     assert.deepEqual(await pma('audio', 'purge'), { removed: 0, kept: 2, freedMb: 0 });
     assert.deepEqual(await pma('audio', 'purge', '--older-than', '30'), { removed: 1, kept: 1, freedMb: 3 });
     assert.deepEqual(await pma('audio', 'purge', '--older-than', '0'), { removed: 1, kept: 0, freedMb: 4 });
-  } finally { await pma('shutdown').catch(() => {}); await new Promise(resolve => setTimeout(resolve, 600)); rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+  } finally { await teardown(world); }   // stops the host only if it is proven this test's own, then removes the root
 });

@@ -1,28 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFile, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
+import { applyEnv, isolatedEnv, recordingHost, teardown } from './harness.mjs';
 
 const run = promisify(execFile);
-const directory = mkdtempSync(join(tmpdir(), 'pma-daemon-test-'));
-const env = { ...process.env, PMA_PORT: process.env.PMA_TEST_PORT || '8798', PMA_TEST_MODE: '1', PMA_DATA_DIR: directory, PMA_STOP_HOOK: 'off' };
-Object.assign(process.env, env);
+// A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*): the host started below can never be the user's.
+const world = await isolatedEnv('daemon');
+const env = world.env; const directory = env.PMA_DATA_DIR;
+const restoreEnv = applyEnv(env);   // before the import: client reads them once
 const { call, daemonInfo } = await import('../dist/client.js');
 const pma = async (...args) => { const { stdout } = await run(process.execPath, [resolve('dist/cli.js'), ...args], { env }); return stdout; };
 const json = async (...args) => JSON.parse(await pma(...args));
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-test.after(async () => { await call('shutdown').catch(() => {}); await sleep(500); rmSync(directory, { recursive: true, force: true }); });
+// Stops only a host proven to be this test's own (recorded at start, testMode ping, same pid), then removes the root.
+test.after(async () => { await teardown(world); restoreEnv(); });
 
 test('the CLI starts one runtime that outlives the command; a second runtime exits without touching history', async () => {
   // status only looks (0.12.1, ENG-37): with no host it says so and starts none; the next real command starts it.
   const before = await json('status');
   assert.equal(before.host, 'NOT_RUNNING'); assert.equal(daemonInfo(), null);
-  await json('history');
+  await recordingHost(env, () => json('history'));   // starts the host: its pid is recorded as this test's
   const status = await json('status');
   assert.equal(status.session, null);
   const info = daemonInfo();
@@ -180,18 +182,18 @@ test('Stop hook: no daemon.json means allow; a live-looking session with nobody 
     let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => code === 0 ? res(out) : rej(new Error('hook exit ' + code))); child.stdin.end(JSON.stringify({ transcript_path: transcript }));
   });
   const follower = [{ type: 'tool_use', name: 'Bash', input: { command: './pma follow --batch 60' } }];
-  const empty = mkdtempSync(join(tmpdir(), 'pma-hook-empty-'));
+  const empty = mkdtempSync(join(world.root, 'hook-empty-'));
   try {
     assert.equal(await run1(empty, follower), '');
     // The retired panel.json is no longer a fallback: a lone panel.json does not make the hook query anything.
     writeFileSync(join(empty, 'panel.json'), JSON.stringify({ url: daemonInfo().url }));
     assert.equal(await run1(empty, follower), '');
-  } finally { rmSync(empty, { recursive: true, force: true }); }
+  } finally { world.cleanup(empty); }
   // A fake host that looks live (LISTENING, 3 unread) and is not followed: block. A fresh heartbeat of the main follower: allow.
   let status = { session: { title: 'Phiên giả đang họp', ended: null }, captureState: 'LISTENING', unread: 3, agentCursor: 0, lastFollowAt: null, followers: {} };
   const fake = createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: true, result: status })); }); });
   await new Promise(r => fake.listen(0, '127.0.0.1', r));
-  const fakeDir = mkdtempSync(join(tmpdir(), 'pma-hook-fake-'));
+  const fakeDir = mkdtempSync(join(world.root, 'hook-fake-'));
   try {
     writeFileSync(join(fakeDir, 'daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:' + fake.address().port, token: 'fake' }));
     const reason = JSON.parse(await run1(fakeDir, follower)).reason;
@@ -200,5 +202,5 @@ test('Stop hook: no daemon.json means allow; a live-looking session with nobody 
     assert.equal(await run1(fakeDir, follower), '');
     status = { ...status, lastFollowAt: null, session: { ...status.session, ended: new Date().toISOString() } };
     assert.equal(await run1(fakeDir, follower), '');
-  } finally { fake.close(); rmSync(fakeDir, { recursive: true, force: true }); }
+  } finally { fake.close(); world.cleanup(fakeDir); }
 });
