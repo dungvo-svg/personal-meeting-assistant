@@ -128,6 +128,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-46 | 0.12.1: sổ việc nền, câu hỏi chờ chủ, suy giảm (`jobs.ts`); nhắc một lần, quá hạn thì xếp lại, im lặng không phải trả lời; `stop` dừng việc dở và liệt kê | Bảng ngoại lệ 0.12 (còn thiếu) |
 | ENG-47 | 0.12.1: client tìm host theo thứ tự thư mục dữ liệu của mình rồi host giữ khoá máy; không mở host thứ hai khi có người giữ còn sống | Họp thầu 03/11: host thứ hai từ checkout khác |
 | ENG-48 | 0.12.1: ở chế độ thử, khoá máy không bao giờ là khoá của người dùng và client chỉ nói chuyện với host thử; host khác chỉ nhận ping | Review Astra 75feff5: test có thể điều khiển host thật qua đường nối vào |
+| ENG-49 | 0.12.1: sổ quyết định (`decisions.ts`): thẩm quyền chỉ do chủ giao (`grant`), đề xuất khác quyết định, chốt cần bằng chứng và người có thẩm quyền, thay quyết định chặn việc cũ, việc có kết quả/hoàn tác; thiếu thẩm quyền thì hỏi đúng người, phần khác vẫn chạy. Biên nhận context là `pma brief --as`; id phải thuộc đúng cuộc họp | Owner 03/11 (qua phiên điều phối): công cụ họp để xúc tiến, nghe hiểu và thực thi nhanh quyết định với hai người cấp cao; review Astra/Codex các lỗ chức năng |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

@@ -75,12 +75,27 @@ Thiếu thông tin thì để trống, không đoán.
   - trong lúc chờ vẫn trả lời người dùng và theo dõi họp; người dùng hỏi tiến độ thì `./pma job list`;
   - khi được báo agent xong, đưa kết quả ngắn và ghi điều quan trọng vào bức tranh. Không chặn phần tổng hợp để chờ.
 - **Câu hỏi cần người dùng quyết** (ai nhận việc, con số nào đúng…): hỏi một lần trong chat và ghi `./pma ask "<câu hỏi>" --sources <id,…>`. Người dùng trả lời thì `./pma answer <id> "<trả lời>"`. Không trả lời: follow in `NHẮC HỎI` đúng một lần, quá hạn thì câu hỏi vào "Câu hỏi mở" của bức tranh và SUMMARY. **Im lặng không phải đồng ý**: không tự chốt thay; việc không phụ thuộc câu hỏi vẫn làm tiếp.
-- **Context:** mỗi follow in `CONTEXT v<phiên bản>: <trạng thái>` lúc bắt đầu. `DEGRADED (thiếu: …)` là thiếu một phần context: vẫn nghe và ghi, nhưng không chốt quyết định, người hay hạn dựa trên phần thiếu. Khi người dự hoặc nội dung được thêm giữa họp, follow tự in `CONTEXT ĐỔI …`: đọc lại `./pma brief`.
+- **Context:** đọc bằng `./pma brief --as chinh` (agent dịch nền: `--as dich`). Thiếu một phần context (`DEGRADED`) vẫn nghe và ghi, nhưng không chốt quyết định, người hay hạn dựa trên phần thiếu.
 - Không build màn hình/trang web nào.
 - **Monitor tự dừng sau 30 phút** dù xin lâu hơn. Khi Monitor báo hết hạn, hoặc `follow` thoát mà phiên chưa kết thúc, bật lại ngay đúng lệnh cũ. Stop hook chặn kết thúc lượt khi họp còn chạy mà phiên không còn theo dõi. Monitor là công cụ nội bộ để theo dõi lô; nó chưa được kiểm ở họp thật dài.
 - `follow` không làm mất dòng khi bị ngắt: bật lại thì in tiếp từ chỗ công việc đã được lưu (bức tranh với `chinh`, bản dịch với `dich`), không chỉ từ chỗ đã in. Mỗi vai chỉ một tiến trình: `CHỜ: vai … đang có tiến trình theo dõi khác` là Monitor cũ chưa thoát hẳn, lệnh tự chờ tối đa 100 giây.
 
-## 4. Trong lúc họp (phiên trung tâm)
+## 4. Xúc tiến: quyết định → việc → kết quả (việc chính)
+
+Ý nghĩa của công cụ họp (owner 03/11): nghe hiểu, rồi biến quyết định **đã rõ** thành việc làm được ngay trong phiên, với đúng người có thẩm quyền. Dịch chỉ là tuỳ chọn.
+
+- **Thẩm quyền chỉ từ lời chủ trong chat.** Chủ nói "Quân và Oanh được chốt phần X" thì `./pma grant "Quân" --scope "X" --source "<câu chủ nói>"` (mỗi người một lệnh). Không suy thẩm quyền từ chức danh, số đông, giọng nói hay sự im lặng. Kênh `Tôi` là micro của máy này, không phải một người.
+- **Đề xuất và quyết định là hai thứ khác nhau.**
+  - Nghe một đề xuất: `./pma propose "<nội dung>" --sources <id,…>`.
+  - Người có thẩm quyền chốt rõ trong họp: `./pma decide <id> --by "<người>" --sources <id câu chốt>`.
+  - Chưa có thẩm quyền: lệnh không chốt; host tự tạo một câu hỏi chờ đúng người. Việc phụ thuộc thì dừng, việc khác vẫn làm.
+- **Quyết định đổi:** `./pma change <id> "<nội dung mới>" --by "<người>" --sources …`. Quyết định cũ thành "đã thay"; việc của nó chưa làm thì bị chặn để xem lại; việc đã làm thì được đánh dấu cần xem có hoàn tác không.
+- **Việc từ quyết định đã chốt:** `./pma act <idQĐ> "<việc>"`. Làm trong phạm vi chủ đã giao cho bạn. Xong thì `./pma action done <idViệc> "<kết quả>"`, lỗi thì `action fail`, hoàn tác thì `action rollback <idViệc> "<đã hoàn tác thế nào>"`. Việc cần quyền bạn chưa có, hoặc là quyết định nghiệp vụ (giá, hợp đồng, người): không tự làm, hỏi đúng người một lần.
+- Người dùng hỏi "đã chốt gì / còn gì": `./pma decisions`. Cuối họp, `stop` in `decisions`: đưa vào SUMMARY.
+- **Sửa nghe sai:** người dùng xác nhận "MTP là Mittaphab" thì `./pma correct --raw "MTP" --to "Mittaphab" --confirmed --source <id>`; bạn chỉ đoán thì bỏ `--confirmed`. Tài liệu được nhắc: `./pma doc --label "…" --pointer "<đường dẫn/link>"`. Không sửa hàng loạt chữ như "Ta", "tôi".
+- **Đọc context:** `./pma brief --as chinh` là lúc ghi nhận bạn đã đọc phiên bản context nào. Follow in `CONTEXT CHƯA ĐỌC` hoặc `CONTEXT ĐỔI` thì chạy lại đúng lệnh đó.
+
+## 5. Trong lúc họp (phiên trung tâm)
 
 - **Mỗi lô 60 giây giữ bức tranh của CẢ cuộc họp, không chỉ khung 60 giây vừa nghe.**
   - Sau mỗi lô (follow in `CẬP NHẬT BỨC TRANH`), viết lại toàn bộ bức tranh từ đầu buổi tới đoạn mới nhất:
@@ -108,7 +123,7 @@ Thiếu thông tin thì để trống, không đoán.
 - Trả lời người dùng dựa trên `#id`, phân biệt điều đã nói với suy luận. Không viết cập nhật dài cho mỗi lô.
 - Đoạn `Tôi (mic tắt — nói riêng)` không phải lời phát biểu trong họp. Không trích lời riêng (mic tắt / `?`) sang bộ dịch hay cho người dự.
 
-## 5. Kết thúc và báo cáo
+## 6. Kết thúc và báo cáo
 
 1. Người dùng gõ kết thúc: chạy **`./pma stop` ngay**, trước mọi việc chờ khác. Không chờ dịch hay phân tích xong rồi mới dừng: ghi âm phải dừng đúng lúc người dùng nói.
    - Trong lúc `stop` cho bộ nghe nhận dạng nốt, các vai vẫn nhận phần chữ còn lại, nên dịch nền vẫn dịch được lô cuối. Agent dịch nền tự dừng khi follow in `KẾT THÚC`.
@@ -145,7 +160,7 @@ Thiếu thông tin thì để trống, không đoán.
 Gửi nguyên văn làm `prompt` của agent nền (thay `<tên họp>`):
 
 > Bạn là **bộ dịch thô chạy nền** cho cuộc họp "<tên họp>". Không ai đọc chat của bạn; kết quả của bạn là các bản dịch lưu bằng `./pma translate`. Làm ở thư mục dự án `personal-meeting-assistant`. Chỉ dùng ba lệnh: `./pma brief`, `./pma follow …` và `./pma translate …`. Không chạy lệnh `pma` nào khác (read, recheck, picture, stop…). Không sửa file nào ngoài file bản dịch, không tóm tắt, không gửi gì cho ai.
-> 1. Chạy `./pma brief` một lần để biết người dự và thuật ngữ.
+> 1. Chạy `./pma brief --as dich` một lần để biết người dự và thuật ngữ (lệnh in `CONTEXT CHƯA ĐỌC` hoặc `CONTEXT ĐỔI` thì chạy lại).
 > 2. Lặp: chạy `./pma follow --batch 15 --as dich --no-notes --minutes 9` bằng Bash với timeout 600000 ms. Lệnh tự thoát sau 9 phút (`BẬT LẠI`): chạy lại đúng lệnh đó. `CHỜ:` thì để lệnh tự chờ. Lệnh in `KẾT THÚC: phiên đã đóng` hoặc `DỪNG` thì thôi lặp.
 > 3. Với mỗi dòng `lo` hoặc `th` follow đưa:
 >    - dịch theo nghĩa sang tiếng Việt, giữ nguyên số, tên, mã hàng. Tiếng Lào và tiếng Thái cùng gốc;
@@ -178,7 +193,7 @@ Mỗi dòng có dạng `#id HH:MM:SS [Tôi …] ngôn ngữ⚠cờ: nội dung`.
 | `CHỜ:` / `DỪNG: vai … đang có tiến trình theo dõi khác` | Đã có một follow khác cùng vai. Chờ là bình thường; DỪNG thì kiểm Monitor cũ. |
 | `[KHOẢNG TRỐNG ASR]` | Đoạn nhận dạng lỗi; âm vẫn có trong WAV. Hãy `recheck`. |
 | `(đã nghe lại)` | Bạn đã nhận dạng lại đoạn này từ WAV. |
-| `CONTEXT v… : READY / DEGRADED / NEEDS_REBIND …` | Phiên bản context vai này đã đọc, và nó có đủ để dùng không. |
+| `CONTEXT CHƯA ĐỌC` / `CONTEXT ĐỔI (v…)` | Vai này chưa đọc, hoặc đọc bản context cũ: chạy `./pma brief --as <vai>`. |
 | `NHẮC HỎI #id: …` | Câu hỏi đang chờ người dùng, nhắc đúng một lần. |
 | `→ (Claude dịch) …` | Bản dịch bộ dịch nền đã lưu (chỉ hiện trong `./pma read` của phiên trung tâm và trong RAW). |
 

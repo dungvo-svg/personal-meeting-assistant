@@ -10,7 +10,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
-import { MeetingRuntime, PICTURE_MAX_CHARS } from './runtime.js';
+import { BRIEF_READER, MeetingRuntime, PICTURE_MAX_CHARS } from './runtime.js';
 import { releaseMachine, updateMachine } from './machine_lock.js';
 import { composeBrief } from './brief.js';
 import { applyParticipants } from './participants.js';
@@ -42,6 +42,8 @@ const current = (sessionId?: string) => { const id = sessionId ?? runtime.sessio
 // the next command starts a new host with no open meeting (03/11: `pma summary` without --session failed).
 const afterwards = (sessionId?: string) => sid.parse(sessionId ?? runtime.session?.id ?? runtime.latestSessionId());
 const languages = z.array(z.enum(['vi', 'lo', 'th'])).min(1).max(3).default(['vi', 'lo', 'th']);
+// An id given by a command must belong to the meeting it acts on (fencing): a job, question, decision or action of another meeting is refused.
+const owned = (item: { sessionId: string } | null, sessionId: string, what: string) => { if (!item) throw new Error(`${what}_NOT_FOUND`); if (item.sessionId !== sessionId) throw new Error(`${what}_OF_ANOTHER_MEETING`); return item; };
 
 // Every operation the CLI and MCP adapter may call. Inputs are validated here, once, for both.
 const methods: Record<string, (input: any) => any> = {
@@ -82,7 +84,38 @@ const methods: Record<string, (input: any) => any> = {
   },
   // Pre-meeting context (participants, brief) and the owner's manual microphone state for the "Tôi" channel.
   participants: input => applyParticipants(runtime, z.object({ participants: z.array(z.any()).max(200) }).parse(input).participants),
-  brief: input => ({ markdown: composeBrief(runtime, root, z.object({ sessionId: sid.optional() }).parse(input).sessionId) }),
+  // Reading the brief as a role is the context receipt (ENG-45): the pack version that role's agent was shown is recorded then.
+  brief: input => {
+    const a = z.object({ sessionId: sid.optional(), as: z.string().regex(/^[a-z0-9-]{1,24}$/).optional() }).parse(input);
+    const markdown = composeBrief(runtime, root, a.sessionId); const id = a.sessionId ?? runtime.session?.id;
+    if (!id) return { markdown };
+    const block = runtime.contextBlock(id);
+    if (!a.as) return { markdown: markdown + (block ? '\n\n' + block + '\n' : '') };
+    const bound = runtime.bind(id, a.as, BRIEF_READER);
+    return { markdown: markdown + '\n\n' + block + `\nĐã ghi nhận: vai ${a.as} đọc context v${bound.version} (${bound.readiness.state}).\n`, context: bound };
+  },
+  correct: input => { const a = z.object({ sessionId: sid.optional(), raw: z.string().trim().min(1).max(120), corrected: z.string().trim().min(1).max(120), sourceId: z.number().int().positive().optional(), basis: z.enum(['user_confirmed', 'inferred']).default('inferred'), scope: z.enum(['meeting', 'company']).default('meeting') }).parse(input); return runtime.addToContext(current(a.sessionId), 'corrections', { raw: a.raw, corrected: a.corrected, ...(a.sourceId ? { sourceId: String(a.sourceId) } : {}), basis: a.basis, scope: a.scope, source: 'correction' }); },
+  doc: input => { const a = z.object({ sessionId: sid.optional(), label: z.string().trim().min(1).max(120), pointer: z.string().trim().min(1).max(500) }).parse(input); return runtime.addToContext(current(a.sessionId), 'docs', { label: a.label, pointer: a.pointer, source: 'owner_docs' }); },
+  // Decisions -> actions (decisions.ts, ENG-49). `grant` records authority the OWNER gave in chat; nothing reads it from the transcript.
+  grant: input => { const a = z.object({ sessionId: sid.optional(), person: z.string().trim().min(1).max(80), scope: z.string().trim().min(1).max(120).default('*'), source: z.string().trim().min(1).max(300) }).parse(input); return { granted: runtime.decisions.grant(current(a.sessionId), a.person, a.scope, 'owner', a.source) }; },
+  propose: input => { const a = z.object({ sessionId: sid.optional(), text: z.string().trim().min(1).max(2000), sourceIds: ids.max(50).default([]) }).parse(input); return { id: runtime.decisions.propose(current(a.sessionId), a.text, a.sourceIds) }; },
+  decide: input => {
+    const a = z.object({ sessionId: sid.optional(), id: z.number().int().positive(), by: z.string().trim().min(1).max(80), sourceIds: ids.max(50).default([]), scope: z.string().max(120).optional(), change: z.string().trim().min(1).max(2000).optional() }).parse(input);
+    const s = current(a.sessionId); const ledger = runtime.decisions; owned(ledger.get(a.id), s, 'DECISION');
+    const result: any = a.change ? ledger.supersede(a.id, a.change, a.by, a.sourceIds, { scope: a.scope }) : ledger.decide(a.id, a.by, a.sourceIds, { scope: a.scope });
+    // Not decided for want of authority: the dependent part waits for the right person as one owner question; the rest goes on.
+    if (result.park) result.question = runtime.ledger.questions.ask(s, `Cần ${result.park.who.join(' / ') || 'chủ (chưa ai được giao thẩm quyền)'} chốt QĐ${result.id}: ${result.park.why}`, a.sourceIds);
+    return result;
+  },
+  withdraw: input => { const a = z.object({ sessionId: sid.optional(), id: z.number().int().positive(), by: z.string().trim().min(1).max(80), note: z.string().max(1000).default(''), scope: z.string().max(120).optional() }).parse(input); const s = current(a.sessionId); owned(runtime.decisions.get(a.id), s, 'DECISION'); return runtime.decisions.withdraw(a.id, a.by, a.note, { scope: a.scope }); },
+  action: input => {
+    const a = z.object({ sessionId: sid.optional(), step: z.enum(['plan', 'done', 'fail', 'rollback']), id: z.number().int().positive(), text: z.string().trim().min(1).max(4000) }).parse(input);
+    const s = afterwards(a.sessionId); const ledger = runtime.decisions;
+    if (a.step === 'plan') { owned(ledger.get(a.id), s, 'DECISION'); return { id: ledger.plan(a.id, a.text) }; }
+    owned(ledger.getAction(a.id), s, 'ACTION');
+    return { ok: a.step === 'done' ? ledger.done(a.id, a.text) : a.step === 'fail' ? ledger.fail(a.id, a.text) : ledger.rollback(a.id, a.text), action: ledger.getAction(a.id) };
+  },
+  decisions: input => { const s = afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId); const ledger = runtime.decisions; return { list: ledger.list(s), pending: ledger.pending(s), summary: ledger.summaryOf(s), report: ledger.reportLines(s) }; },
   // Context binding (ENG-45): a follow process says it read the context pack.
   bind: input => { const a = z.object({ sessionId: sid.optional(), as: z.string().regex(/^[a-z0-9-]{1,24}$/), consumer: z.string().regex(/^[a-z0-9-]{1,80}$/) }).parse(input); return runtime.bind(current(a.sessionId), a.as, a.consumer); },
   // Background jobs, owner questions, degraded conditions (jobs.ts, ENG-46). Recorded by the host; nothing here waits for anything.
@@ -92,11 +125,12 @@ const methods: Record<string, (input: any) => any> = {
     if (a.action === 'start') { if (!a.title) throw new Error('JOB_NEEDS_TITLE'); return { id: jobs.start(current(a.sessionId), a.kind, a.title) }; }
     if (a.action === 'list') return jobs.list(afterwards(a.sessionId), { status: a.status });
     if (!a.id) throw new Error('JOB_NEEDS_ID');
+    owned(jobs.get(a.id), afterwards(a.sessionId), 'JOB');
     if (a.action === 'done') { if (!a.result) throw new Error('JOB_NEEDS_RESULT'); return { saved: jobs.finish(a.id, a.result, a.sourceIds), job: jobs.get(a.id) }; }
     return { failed: jobs.fail(a.id, a.note ?? '') };
   },
   ask: input => { const a = z.object({ sessionId: sid.optional(), text: z.string().trim().min(1).max(2000), sourceIds: ids.max(50).default([]), ttl: z.number().min(1).max(240).default(10) }).parse(input); return { id: runtime.ledger.questions.ask(current(a.sessionId), a.text, a.sourceIds, a.ttl) }; },
-  answer: input => { const a = z.object({ id: z.number().int().positive(), text: z.string().trim().min(1).max(4000) }).parse(input); return { answered: runtime.ledger.questions.answer(a.id, a.text) }; },
+  answer: input => { const a = z.object({ sessionId: sid.optional(), id: z.number().int().positive(), text: z.string().trim().min(1).max(4000) }).parse(input); owned(runtime.ledger.questions.get(a.id), afterwards(a.sessionId), 'QUESTION'); return { answered: runtime.ledger.questions.answer(a.id, a.text) }; },
   // `due` marks the one reminder as given; expired open questions become parked (silence is not an answer).
   questions: input => { const s = afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId); const q = runtime.ledger.questions; const due = q.due(s); q.park(s); return { due, open: q.open(s), parked: q.parked(s) }; },
   degraded: input => {

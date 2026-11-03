@@ -182,7 +182,10 @@ export function applyCorrections(text: string, corrections: Correction[] | undef
   const usable = (corrections ?? []).filter(c => c.raw && c.corrected && c.raw !== c.corrected && (scope === 'meeting' || c.scope === 'company'));
   if (!usable.length) return text;
   const byRaw = new Map<string, Correction>();
-  for (const c of [...usable].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))) byRaw.set(c.raw, c); // later `at` wins; ties keep list order
+  // A user_confirmed correction always wins over an inferred one, however late the inferred one came; within the same basis the later
+  // `at` wins, ties keep list order.
+  const rank = (c: Correction) => c.basis === 'user_confirmed' ? 1 : 0;
+  for (const c of [...usable].sort((a, b) => rank(a) - rank(b) || (a.at < b.at ? -1 : a.at > b.at ? 1 : 0))) byRaw.set(c.raw, c);
   const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(?:${[...byRaw.keys()].sort((a, b) => b.length - a.length).map(escape).join('|')})(?![\\p{L}\\p{N}])`, 'gu');
   return text.replace(pattern, match => { const c = byRaw.get(match)!; return c.basis === 'user_confirmed' ? c.corrected : `${c.corrected} (nghe: ${match})`; });
 }

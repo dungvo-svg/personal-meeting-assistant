@@ -31,6 +31,11 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    việc nền (phân tích dài, dịch): ghi lại để phiên trung tâm không phải chờ; kết thúc họp thì việc dở được dừng và liệt kê
   pma ask "<câu hỏi cho chủ>" [--sources 1,2] [--ttl 10] | answer <id> "<trả lời>" | questions
                                    câu hỏi chờ chủ: nhắc một lần sau --ttl phút, quá hạn thì đưa vào "Câu hỏi mở" (im lặng không phải đồng ý)
+  pma brief [--as chinh|dich]       context trước họp; --as ghi nhận vai đó đã đọc phiên bản context này
+  pma correct --raw "nghe sai" --to "đúng" [--source ID] [--confirmed] [--company] | doc --label "…" --pointer "đường dẫn/link"
+  pma grant "<người>" [--scope "<chủ đề>"] --source "<lời chủ trong chat>"   CHỈ khi chủ giao thẩm quyền chốt
+  pma propose "<đề xuất>" --sources 1,2 | decide <id> --by "<người>" --sources … | change <id> "<nội dung mới>" --by … --sources …
+  pma withdraw <id> --by "<người>" --note "…" | act <idQĐ> "<việc>" | action done|fail|rollback <idViệc> "<kết quả/cách hoàn tác>" | decisions
   pma degraded <loại> "<chi tiết>" | degraded clear <loại>   ghi một tình trạng suy giảm (vd. save-denied); chỉ báo lần đầu
   pma say --text "…" [--session ID]   gõ tay một đoạn vào phiên đang mở (nguồn nhập tay, hiện "nhập tay" trong RAW; không phải lời nghe được)
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
@@ -165,7 +170,7 @@ async function follow(flags: Record<string, string>) {
     const s = await call('status').catch(() => null); if (!s) return;
     if (s.recorder?.error && s.recorder.error !== recorderError) { recorderError = s.recorder.error; console.log(`GHI ÂM ${s.recorder.state}: ${s.recorder.error}`); }
     // The context changed (participants or agenda added): bind again by itself, and say so once.
-    if (s.followers?.[name]?.context?.state === 'NEEDS_REBIND') await bind(true);
+    contextCheck(s);
     // The central session gives each waiting question its one reminder; expired ones are parked by the host.
     if (name === MAIN) { const q = await call('questions', { sessionId }).catch(() => null); for (const item of q?.due ?? []) console.log(`NHẮC HỎI #${item.id}: ${item.text} (nhắc một lần; không trả lời thì đưa vào Câu hỏi mở)`); }
     if (s.captureState !== 'LISTENING') return;
@@ -187,9 +192,15 @@ async function follow(flags: Record<string, string>) {
   if (claimed === 'ended') return ended();
   if (!claimed) return giveUp();
   await catchUp();
-  // This process reads the meeting's context pack now (ENG-45): the host records which version which consumer read.
-  const bind = async (again: boolean) => { const b = await call('bind', { sessionId, as: name, consumer: lease }).catch(() => null); if (b) console.log(`${again ? 'CONTEXT ĐỔI' : 'CONTEXT'} v${b.version}: ${b.readiness.state}${b.missing?.length ? ' (thiếu: ' + b.missing.join(', ') + ')' : ''}${again ? ' — đọc lại ./pma brief' : ''}`); };
-  await bind(false);
+  // The context receipt is the agent reading `pma brief --as <role>` (ENG-45); follow only says when that reading is missing or old, once
+  // per context version. It never acknowledges for the agent.
+  let toldContext = '';
+  const contextCheck = (s: any) => {
+    const ctx = s?.followers?.[name]?.context; if (!ctx || ctx.state === 'READY' || ctx.state === 'DEGRADED' || ctx.state === 'NOT_READY' && ctx.reasons?.includes('ASR_NOT_LISTENING')) return;
+    const key = `${s.context?.version}:${ctx.state}`; if (key === toldContext) return; toldContext = key;
+    console.log(`CONTEXT ${ctx.reasons?.includes('STALE_CONTEXT') ? 'ĐỔI' : 'CHƯA ĐỌC'} (v${s.context?.version}, ${ctx.state}): chạy ./pma brief --as ${name}`);
+  };
+  contextCheck(await call('status').catch(() => null));
   for (;;) {
     let reply: any;
     // With a batch pending, wait no longer than what is left of its window.
@@ -247,7 +258,7 @@ async function main() {
       if (!flags.file) throw new Error('pma participants --file p.json');
       return out(await call('participants', { participants: JSON.parse(readFileSync(flags.file, 'utf8')) }));
     }
-    case 'brief': { const r = await call('brief', session); return process.stdout.write(r.markdown); }
+    case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
     case 'picture': {
       if (flags.file) return out(await call('picture', { ...session, text: readFileSync(flags.file, 'utf8'), sourceIds: list(flags.sources) }));
@@ -282,7 +293,17 @@ async function main() {
       throw new Error('pma job start|done|fail|list');
     }
     case 'ask': return out(await call('ask', { ...session, text: positional.join(' ') || flags.text, sourceIds: list(flags.sources), ...(flags.ttl ? { ttl: Number(flags.ttl) } : {}) }));
-    case 'answer': return out(await call('answer', { id: Number(positional[0]), text: positional.slice(1).join(' ') || flags.text }));
+    case 'answer': return out(await call('answer', { ...session, id: Number(positional[0]), text: positional.slice(1).join(' ') || flags.text }));
+    case 'correct': return out(await call('correct', { ...session, raw: flags.raw, corrected: flags.to, ...(flags.source ? { sourceId: Number(flags.source) } : {}), basis: flags.confirmed === 'true' ? 'user_confirmed' : 'inferred', scope: flags.company === 'true' ? 'company' : 'meeting' }));
+    case 'doc': return out(await call('doc', { ...session, label: flags.label, pointer: flags.pointer }));
+    case 'grant': return out(await call('grant', { ...session, person: positional.join(' ') || flags.person, ...(flags.scope ? { scope: flags.scope } : {}), source: flags.source }));
+    case 'propose': return out(await call('propose', { ...session, text: positional.join(' ') || flags.text, sourceIds: list(flags.sources) }));
+    case 'decide': return out(await call('decide', { ...session, id: Number(positional[0]), by: flags.by, sourceIds: list(flags.sources), ...(flags.scope ? { scope: flags.scope } : {}) }));
+    case 'change': return out(await call('decide', { ...session, id: Number(positional[0]), change: positional.slice(1).join(' ') || flags.text, by: flags.by, sourceIds: list(flags.sources), ...(flags.scope ? { scope: flags.scope } : {}) }));
+    case 'withdraw': return out(await call('withdraw', { ...session, id: Number(positional[0]), by: flags.by, note: flags.note ?? '' }));
+    case 'act': return out(await call('action', { ...session, step: 'plan', id: Number(positional[0]), text: positional.slice(1).join(' ') || flags.text }));
+    case 'action': return out(await call('action', { ...session, step: positional[0], id: Number(positional[1]), text: positional.slice(2).join(' ') || flags.text }));
+    case 'decisions': return out(await call('decisions', session));
     case 'questions': return out(await call('questions', session));
     case 'degraded': {
       if (positional[0] === 'clear') return out(await call('degraded', { ...session, action: 'clear', kind: positional[1] }));
@@ -307,7 +328,7 @@ async function main() {
       return out({ removed: r.removed.length, kept: r.kept, freedMb: megabytes(r.freedBytes) });
     }
     // Stop = recorder stops, ASR drains, the mix is made, then RAW: minutes on a long meeting, so wait much longer than usual.
-    case 'stop': { const r = await call('finish', session, 20 * 60000); return out({ session: r.session, raw: r.raw, audio: r.audio?.mix, ...(r.unfinished?.length ? { unfinished: r.unfinished } : {}), next: 'pma coverage (chỗ chưa nghe rõ → pma recheck) → pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }
+    case 'stop': { const r = await call('finish', session, 20 * 60000); return out({ session: r.session, raw: r.raw, audio: r.audio?.mix, ...(r.unfinished?.length ? { unfinished: r.unfinished } : {}), ...(r.decisions?.length ? { decisions: r.decisions } : {}), next: 'pma coverage (chỗ chưa nghe rõ → pma recheck) → pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }
     case 'recheck': {
       const target = positional[0]?.replace(/^#/, ''); const sourceId = target ? Number(target) : undefined;
       if (target !== undefined && !Number.isInteger(sourceId)) throw new Error('pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS');
