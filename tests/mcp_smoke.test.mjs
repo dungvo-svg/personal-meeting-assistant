@@ -1,7 +1,7 @@
 // MCP smoke (0.12.1): a real MCP client (the SDK's Client over stdio) talks to dist/server.js, which forwards to a diagnostic host of
 // this test's own world (harness.mjs: temp root, data dir, lock dir, free loopback port, no inherited PMA_*, PMA_TEST_MODE=1,
-// PMA_WARM=0). The meeting is a fixture session (synthetic text, no device, no audio, no model). The host is started by the adapter's
-// first tool call that needs one and recorded as this test's right after; the test's own requests go through guardedCall (ping says
+// PMA_WARM=0). The meeting is a fixture session (synthetic text, no device, no audio, no model). The host is started by a read-only
+// tool call of the adapter (history_list) and recorded and proven as this test's before any change; the test's own requests go through guardedCall (ping says
 // testMode and the recorded pid) and teardown stops only that host. Checks the draft contract end to end over stdio: status is a pure
 // look, reports need the context receipt and the base revision, a resend is a duplicate, a late result is a conflict, a context change
 // needs a new read, a new adapter process (reconnect) keeps the host's records, and a report the disk refuses is not recorded.
@@ -34,10 +34,13 @@ test('MCP over stdio: context receipt, base revision, resend, late result, conte
     assert.equal(parsed(await tool(client, 'session_status')).host, 'NOT_RUNNING');
     assert.equal(existsSync(join(world.env.PMA_DATA_DIR, 'daemon.json')), false, 'session_status started no host');
 
-    // The first call that needs a host starts one in this world; it is recorded as this test's right after.
-    const opened = parsed(await recordingHost(world.env, () => tool(client, 'session_prepare', { title: 'Họp thử MCP', fixture: true })));
-    const sessionId = opened.session.id; assert.match(sessionId, /^[0-9a-f-]{36}$/);
+    // A read-only tool starts the host in this world; it is recorded as this test's and proven (ping: testMode, same pid) before the
+    // first tool call that changes anything.
+    const history = await recordingHost(world.env, () => tool(client, 'history_list'));
+    assert.notEqual(history.isError, true, text(history));
     assert.equal((await call('ping')).testMode, true);
+    const opened = parsed(await tool(client, 'session_prepare', { title: 'Họp thử MCP', fixture: true }));
+    const sessionId = opened.session.id; assert.match(sessionId, /^[0-9a-f-]{36}$/);
     const first = parsed(await tool(client, 'fixture_append', { text: 'Đoạn một của buổi thử.' })).id;
 
     // Without the receipt and base the adapter refuses the call before the host is asked.

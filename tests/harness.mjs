@@ -40,7 +40,8 @@ export async function isolatedEnv(label = 'test') {
   mkdirSync(data, { recursive: true }); mkdirSync(lock, { recursive: true });
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !isPma(key)));
   Object.assign(env, { PMA_TEST_MODE: '1', PMA_DATA_DIR: data, PMA_LOCK_DIR: lock, PMA_STOP_HOOK: 'off', PMA_WARM: '0', PMA_PORT: String(await freePort()) });
-  worlds.set(keyOf(data), { root, createdAt: Date.now(), pids: new Set() });
+  // unknownStarts: launch attempts (recordingHost) after which no pid could be recorded: a host may exist that this test cannot name.
+  worlds.set(keyOf(data), { root, createdAt: Date.now(), pids: new Set(), unknownStarts: 0 });
   // Removes only what is under this root, and only inside the system temp folder. All paths are judged before any is removed.
   // A failure to delete (a file the host still holds on Windows) is reported, not thrown: cleanup may run in a finally.
   const cleanup = (...paths) => {
@@ -85,8 +86,13 @@ export function recordHost(env) {
   if (!Number.isFinite(startedAt) || startedAt < world.createdAt - 2000) return null;
   world.pids.add(info.pid); return info.pid;
 }
-// Runs fn (the thing that starts a host) and records the host afterwards even when fn throws.
-export async function recordingHost(env, fn) { try { return await fn(); } finally { recordHost(env); } }
+// Runs fn (the thing that starts a host) and records the host afterwards even when fn throws. An attempt after which no pid can be
+// recorded leaves the world UNKNOWN_START: the host may have been spawned (detached, through WMI, so the test holds no handle) and
+// die or not answer yet; waiting is no proof, so teardown keeps the root for good.
+export async function recordingHost(env, fn) {
+  try { return await fn(); }
+  finally { if (recordHost(env) === null) { const world = worlds.get(keyOf(env?.PMA_DATA_DIR ?? '')); if (world) world.unknownStarts++; } }
+}
 
 // node:http with the bearer token, as src/client.ts post() does. Errors carry no token.
 function rpc(info, method, args, timeoutMs) {
@@ -138,22 +144,24 @@ export async function proveOwned(env) { await prove(env); }
 // Stops this world's host, if (and only if) it is proven ours, and waits until every pid this test recorded has EXITED (a closed port
 // or a missing daemon.json is not an exit). Never throws, so it is safe in finally / test.after after a failed assertion.
 //   {exited: [pids]}            every recorded host is gone (or none was ever recorded and no daemon.json exists)
-//   {pending: [pids], note}     asked to stop (or not provable) but still running after waitMs: the caller must keep the root
+//   {pending: [pids], note}     still running after waitMs, a daemon.json pid this test never recorded, or 'UNKNOWN_START' (a launch
+//                               attempt that left no recorded pid): the caller must keep the root
 //   {skipped: reason, pending}  not proven ours: nothing was sent but at most a ping
 export async function ownedShutdown(env, { waitMs = 15000 } = {}) {
   const world = worlds.get(keyOf(env?.PMA_DATA_DIR ?? '')); const pids = [...(world?.pids ?? [])];
+  const unknownStart = (world?.unknownStarts ?? 0) > 0;
   const { info } = readHost(env);
-  if (!pids.length && !info) return { exited: [] };
+  // The host daemon.json names now, when this test did not record it: never contacted, never waited out, always pending.
+  const foreign = info && !pids.includes(info.pid) ? [info.pid] : [];
+  if (!pids.length && !info && !unknownStart) return { exited: [] };
   let skipped = null;
-  try { await guardedCall(env)('shutdown', {}, 5000); } catch (error) { skipped = short(error).replace(/^HARNESS_REFUSED: /, ''); }
-  for (const until = Date.now() + waitMs; Date.now() < until;) {
-    const alive = pids.filter(exists);
-    if (!alive.length && (pids.length || !info)) return skipped ? { skipped, exited: pids } : { exited: pids };
+  if (!foreign.length) try { await guardedCall(env)('shutdown', {}, 5000); } catch (error) { skipped = short(error).replace(/^HARNESS_REFUSED: /, ''); }
+  const unresolved = () => [...pids.filter(exists), ...foreign, ...(unknownStart ? ['UNKNOWN_START'] : [])];
+  if (!foreign.length && !unknownStart) for (const until = Date.now() + waitMs; Date.now() < until;) {
+    if (!pids.some(exists)) return skipped ? { skipped, exited: pids } : { exited: pids };
     await sleep(150);
   }
-  const pending = pids.filter(exists);
-  const unknown = !pids.length && info ? [info.pid] : [];   // a daemon.json of a host this test never recorded: never touched, kept
-  return { ...(skipped ? { skipped } : {}), pending: [...pending, ...unknown], note: 'not proven exited after ' + waitMs + ' ms' };
+  return { ...(skipped ? { skipped } : {}), exited: pids.filter(pid => !exists(pid)), pending: unresolved(), note: foreign.length ? 'daemon.json names a host this test did not record' : unknownStart ? 'a launch attempt left no recorded pid (UNKNOWN_START)' : 'not proven exited after ' + waitMs + ' ms' };
 }
 
 // The usual ending: stop our own host, then remove the root ONLY when every host this test recorded has exited. Otherwise the root is
