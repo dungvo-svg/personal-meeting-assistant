@@ -118,3 +118,20 @@ function rowsOf<T extends Row>(rows: T[], group: { first: T; last: T; count: num
   const start = rows.indexOf(group.first);
   return rows.slice(start, start + group.count).map(row => ({ first: row, last: row, count: 1 }));
 }
+
+// Times an ASR segment says it covers, checked before they are trusted for the timeline, coverage, mic sharing or the ASR position
+// (0.12.1, ENG-39; an offline audit on 03/11 found segments reported past the end of their input). Returns why they cannot be
+// trusted, or null. A segment is a chunk range, never word timing. `maxSeconds`: the worker's longest chunk plus slack.
+export function segmentTimesProblem(event: { start?: unknown; end?: unknown; wall?: unknown }, nowMs: number, sessionStartMs: number, maxSeconds = 25): string | null {
+  const start = Number(event.start), end = Number(event.end);
+  if (typeof event.start !== 'number' || typeof event.end !== 'number' || !Number.isFinite(start) || !Number.isFinite(end)) return 'NOT_A_NUMBER';
+  if (start < 0 || end < 0) return 'NEGATIVE';
+  if (end < start) return 'END_BEFORE_START';
+  if (end - start > maxSeconds) return 'LONGER_THAN_A_CHUNK';
+  if (event.wall === undefined || event.wall === null || event.wall === '') return null;
+  const wall = Date.parse(String(event.wall));
+  if (!Number.isFinite(wall)) return 'BAD_WALL_TIME';
+  if (wall + (end - start) * 1000 > nowMs + 10000) return 'AFTER_NOW';
+  if (wall < sessionStartMs - 60000) return 'BEFORE_SESSION';
+  return null;
+}

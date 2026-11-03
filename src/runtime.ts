@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { applyGlossary, collapseLoops, foldRuns, isHallucination, micLabel, riskyVariants, shareable, type GlossaryEntry } from './text.js';
+import { applyGlossary, collapseLoops, foldRuns, isHallucination, micLabel, riskyVariants, segmentTimesProblem, shareable, type GlossaryEntry } from './text.js';
 import { canonicalOwner } from './participants.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, soundRanges, soundWindows, uncovered, type Range } from './timeline.js';
@@ -727,7 +727,17 @@ export class MeetingRuntime extends EventEmitter {
       this.notePosition(event);
     }
     // The stamp says where the text came from: the live follow worker of this very worker process, or a replay of a (mixed) file; `shareable` reads it.
-    if (event.type === 'source') { this.ingest(event.text, 'local_asr_unverified', event.start, event.end, withFlag(event.boundary || '', follow ? 'SOURCE_LIVE_FOLLOW' : 'SOURCE_REPLAY_MIXED'), this.captureId, event.language || '', event.wall, event.seg, event.alternatives); this.notePosition(event); }
+    if (event.type === 'source') {
+      // Times that cannot be trusted: the text is kept for RAW (with the raw values in its flag) but without times, out of the
+      // timeline and the ASR position, and a mic row loses MIC_SHARE_OK (the share decision rested on those times). Nothing is clamped.
+      const problem = segmentTimesProblem(event, Date.now(), Date.parse(this.session.created));
+      const source = withFlag(event.boundary || '', follow ? 'SOURCE_LIVE_FOLLOW' : 'SOURCE_REPLAY_MIXED');
+      if (problem) {
+        const kept = source.split('; ').filter(flag => flag !== 'MIC_SHARE_OK').join('; ');
+        const raw = JSON.stringify({ start: event.start, end: event.end, wall: event.wall ?? null }).replace(/;/g, ',');
+        this.ingest(event.text, 'local_asr_unverified', 0, 0, withFlag(kept, `TIMESTAMP_INVALID ${problem} ${raw}`), this.captureId, event.language || '', '', event.seg, event.alternatives);
+      } else { this.ingest(event.text, 'local_asr_unverified', event.start, event.end, source, this.captureId, event.language || '', event.wall, event.seg, event.alternatives); this.notePosition(event); }
+    }
     // A follow worker that fails exits, and the supervisor restarts it; only a replay stops on the first error.
     if (event.type === 'error') { this.lastError = event.message; if (!follow) { this.captureState = 'ERROR'; void this.stopCapture(); } }
     this.ping();

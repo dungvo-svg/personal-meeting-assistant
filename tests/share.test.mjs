@@ -301,3 +301,30 @@ test('a share role\'s unread counts only rows it may see, so the stop hook never
     ing(r, 'người dự nói tiếp', LIVE); assert.equal(r.compact().followers.dich.unread, 1);
   });
 });
+
+test('segment times are checked before they are trusted: bad ranges are kept as text without times, flagged with the raw values, out of the ASR position, and a mic row loses MIC_SHARE_OK; nothing is clamped', async () => {
+  const { segmentTimesProblem } = await import('../dist/text.js');
+  const now = Date.parse('2026-11-03T03:00:00Z'), began = Date.parse('2026-11-03T02:00:00Z'), at = '2026-11-03T02:30:00.000Z';
+  const check = (start, end, wall = at) => segmentTimesProblem({ start, end, wall }, now, began);
+  assert.equal(check(0, 15), null); assert.equal(check(3, 3), null); assert.equal(check(0, 15, ''), null, 'no real time is allowed (replay)');
+  assert.equal(check(NaN, 5), 'NOT_A_NUMBER'); assert.equal(check('1', 5), 'NOT_A_NUMBER'); assert.equal(check(undefined, 5), 'NOT_A_NUMBER');
+  assert.equal(check(-1, 5), 'NEGATIVE'); assert.equal(check(9, 4), 'END_BEFORE_START');
+  assert.equal(check(19.46, 49.44), 'LONGER_THAN_A_CHUNK', 'the 03/11 audit shape: a 30 s segment where a chunk is at most 20 s');
+  assert.equal(check(0, 5, 'not a time'), 'BAD_WALL_TIME'); assert.equal(check(0, 5, '2026-11-03T03:05:00Z'), 'AFTER_NOW'); assert.equal(check(0, 5, '2026-11-03T00:00:00Z'), 'BEFORE_SESSION');
+  await withRuntime(async r => {
+    r.prepare('Họp'); const id = r.session.id; const position = r.compact().asr.position;
+    const wall = new Date(Date.now() - 5000).toISOString();
+    r.onWorkerEvent({ type: 'source', text: 'đoạn tốt', start: 0, end: 4, boundary: 'B', language: 'vi', wall, seg: 1 }, true);
+    r.onWorkerEvent({ type: 'source', text: 'loa giờ hỏng', start: 19.46, end: 49.44, boundary: 'B', language: 'vi', wall, seg: 1 }, true);
+    r.onWorkerEvent({ type: 'source', text: 'mic giờ hỏng', start: 5, end: 2, boundary: 'B; CHANNEL_MIC; MIC_STATE_ON; MIC_SHARE_OK', language: 'vi', wall, seg: 1 }, true);
+    const [good, speaker, mic] = r.sources(id);
+    assert.equal(good.wall, wall); assert.doesNotMatch(good.boundary, /TIMESTAMP_INVALID/);
+    assert.equal(speaker.text, 'loa giờ hỏng'); assert.equal(speaker.wall, ''); assert.equal(speaker.start, 0); assert.equal(speaker.end, 0);
+    assert.match(speaker.boundary, /TIMESTAMP_INVALID LONGER_THAN_A_CHUNK \{"start":19\.46,"end":49\.44,"wall":"[^"]+"\}/);
+    assert.match(mic.boundary, /TIMESTAMP_INVALID END_BEFORE_START/); assert.doesNotMatch(mic.boundary, /MIC_SHARE_OK/);
+    const shared = (await r.next(id, 0, 0, 100, true, 'dich')).items.map(item => item.text);
+    assert.deepEqual(shared, ['đoạn tốt', 'loa giờ hỏng'], 'speaker text still reaches the role; the mic row with untrusted times does not');
+    assert.equal(r.compact().asr.position, new Date(Date.parse(wall) + 4000).toISOString(), 'only the good segment moved the ASR position');
+    assert.notEqual(position, r.compact().asr.position);
+  });
+});

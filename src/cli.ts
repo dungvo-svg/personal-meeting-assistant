@@ -56,7 +56,7 @@ function options(argv: string[]) {
 const list = (value?: string) => value ? value.split(',').map(v => Number(v.trim())).filter(Number.isInteger) : [];
 const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
-const FLAG_LABELS: Record<string, string> = { LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém' };
+const FLAG_LABELS: Record<string, string> = { LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được' };
 const MAIN = 'chinh';
 const NOTE_EVERY_MS = 10 * 60000; const LAG_WARN_SECONDS = 10;
 const micWhy = (by?: string) => !by ? '' : by.startsWith('meeting_app:') ? `micro ${by.slice(12)} đang dùng` : ({ windows_default: 'micro mặc định của Windows', selected: 'micro đã chọn', NO_MICROPHONE_FOUND: 'không thấy micro nào' } as Record<string, string>)[by] ?? by;
