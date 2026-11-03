@@ -42,8 +42,13 @@ test('a 30-minute picture longer than 8000 characters is saved; after stop and a
 // Review of ee528c1 (P1): an explicit end stops capture first; waiting for translation or analysis comes after `pma stop`, never before.
 test('the hop skill: on the owner\'s end, `pma stop` comes before any wait for translation or background analysis', async () => {
   const { readFileSync } = await import('node:fs');
-  const skill = readFileSync('.claude/skills/hop/SKILL.md', 'utf8'); const end = skill.slice(skill.indexOf('## 5. Kết thúc'), skill.indexOf('2. Đọc toàn bộ'));
+  // The end section by its title, whatever its number (cf90cc9 inserted section 4: "## 5. Kết thúc" became "## 6. Kết thúc và báo
+  // cáo" and the old selector cut nothing); its first step runs up to the section's step 2. A selector that finds nothing fails here.
+  const skill = readFileSync('.claude/skills/hop/SKILL.md', 'utf8'); const head = skill.search(/^## \d+\. Kết thúc/m);
+  assert.ok(head > 0, 'the skill has an end section'); const step2 = skill.indexOf('\n2. ', head); assert.ok(step2 > head, 'the end section has a step 2');
+  const end = skill.slice(head, step2);
   const stop = end.indexOf('`./pma stop` ngay'); assert.ok(stop > 0, 'the end step starts with pma stop');
+  assert.deepEqual(end.slice(0, stop).split('\n').filter(l => /^\d+\. /.test(l)).map(l => l.slice(0, 3)), ['1. '], 'pma stop is in step 1 of the end section');
   for (const later of ['TaskStop', 'dịch nền', 'KẾT THÚC']) assert.ok(end.indexOf(later) > stop, `${later} comes after pma stop`);
   assert.doesNotMatch(end, /rồi chạy `\.\/pma stop`/, 'no "wait, then stop"');
 });
