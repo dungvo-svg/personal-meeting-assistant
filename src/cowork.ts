@@ -30,7 +30,7 @@ import type { Bindings, ContextPack, RosterItem } from './context_pack.js';
 //     2  kind is not simulated_role | remote_claude                                                 INVALID_SEAT_KIND
 //     3  remote_claude without BOTH endpoint and consentRef                                         REMOTE_NOT_CONSENTED
 //     4  simulated_role that carries an endpoint or consentRef (would pretend to be remote)         INVALID_SEAT
-//     5  same consumer, older generation than the recorded one (a zombie of the previous process)   STALE_GENERATION
+//     5  older generation than the recorded one, whatever the consumer (a zombie of a previous one) STALE_GENERATION
 //     6  identical to the current seat                                                              the same seat, no new row
 //     7  otherwise                                                                                  new row (the latest row per person is the current seat)
 //   assign(...)
@@ -48,7 +48,8 @@ import type { Bindings, ContextPack, RosterItem } from './context_pack.js';
 //     7  caller generation newer than the seat's (it has not been bound again yet)                  NOT_BOUND
 //     8  reply only: opts has a key other than consumerId, generation, propose, context            INVALID_REPLY_OPTION
 //     9  assignment already declined (answered for decline), or the transition is not allowed      ASSIGNMENT_CLOSED
-//    10  reply only: `context` given and context_pack readiness() says the seat has not read the
+//    10  reply only: no `context` while the ledger was made with requireContext (the host)          CONTEXT_REQUIRED
+//    10b reply only: `context` given and context_pack readiness() says the seat has not read the
 //        current pack of this session (stale version, wrong consumer, other session, not bound)    CONTEXT_NOT_CURRENT
 //    11  otherwise                                                                                  recorded; a reply returns decided:false and, when asked, a proposal payload
 //   Seat provenance (kind, simulated) is stamped on every reply, decline and proposal at the moment it happens.
@@ -229,7 +230,9 @@ export function roleView(pack: ContextPack | null | undefined, person: string, g
 
 // ---- the ledger ----------------------------------------------------------------------------------------------------------
 export class CoworkLedger {
-  constructor(private db: DatabaseSync, private now: Clock = Date.now) {
+  // `requireContext` (the host sets it): a reply without the host's own pack and bindings is refused, so no caller can answer
+  // without having read the current context. Off in the pure tests that check other rules.
+  constructor(private db: DatabaseSync, private now: Clock = Date.now, private opts: { requireContext?: boolean } = {}) {
     // The owner's questions and the decisions live in the sibling modules' tables; creating them is idempotent (IF NOT EXISTS).
     db.exec(JOBS_TABLES_SQL); db.exec(DECISIONS_TABLES_SQL); db.exec(COWORK_TABLES_SQL);
   }
@@ -255,7 +258,8 @@ export class CoworkLedger {
       // Owner-given text is carried over when this call does not repeat it; it is replaced only by new owner text.
       const roleDescription = input.roleDescription === undefined ? prev?.roleDescription ?? null : opt(input.roleDescription, 1000, 'INVALID_ROLE_DESCRIPTION');
       const scope = input.scope === undefined ? prev?.scope ?? null : opt(input.scope, 500, 'INVALID_SCOPE');
-      if (prev && prev.consumerId === consumerId && prev.generation > generation) throw new Error('STALE_GENERATION: phiên của ' + person + ' đã ở thế hệ ' + prev.generation + ', không nhận thế hệ ' + generation);
+      // Compared whatever the consumer (Codex review of a3e1fb3): a zombie must not take the seat back by naming another consumer.
+      if (prev && prev.generation > generation) throw new Error('STALE_GENERATION: phiên của ' + person + ' đã ở thế hệ ' + prev.generation + ', không nhận thế hệ ' + generation);
       if (prev && prev.kind === input.kind && prev.endpoint === endpoint && prev.consentRef === consentRef && prev.role === role && prev.consumerId === consumerId && prev.generation === generation && prev.roleDescription === roleDescription && prev.scope === scope) return prev;
       this.db.prepare('INSERT INTO cowork_seats(session_id,person,person_key,kind,endpoint,consent_ref,role,consumer_id,generation,role_description,scope,bound_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)').run(sid, person, key, input.kind, endpoint, consentRef, role, consumerId, generation, roleDescription, scope, at);
       return this.latestSeat(sid, key)!;
@@ -349,6 +353,7 @@ export class CoworkLedger {
     return tx(this.db, () => {
       const a = this.assignmentRow(id), seat = this.authorize(a, person, opts);
       if (a.status === 'declined') throw new Error('ASSIGNMENT_CLOSED: việc #' + id + ' đã bị từ chối');
+      if (!opts.context && this.opts.requireContext) throw new Error('CONTEXT_REQUIRED: trả lời phải kèm context của host (phiên này đã đọc bản context hiện tại chưa)');
       if (opts.context) {
         const r = readiness({ pack: opts.context.pack, sessionId: a.session_id, asrListening: true, bindings: opts.context.bindings, role: seat.role, consumerId: seat.consumerId ?? opts.consumerId ?? a.person_key, generation: opts.generation });
         if (!(r.state === 'READY' || (r.state === 'DEGRADED' && r.reasons.every(x => x.startsWith('MISSING:'))))) throw new Error('CONTEXT_NOT_CURRENT: ' + r.state + ' ' + r.reasons.join(','));

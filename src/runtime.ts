@@ -13,6 +13,7 @@ import { claimMachine, machineHolder, releaseMachine } from './machine_lock.js';
 import { shareOk } from './mic_share.js';
 import { Ledger } from './jobs.js';
 import { DecisionLedger } from './decisions.js';
+import { CoworkLedger, seatStatus, type HandledKind } from './cowork.js';
 import { applyCorrections, bindingKey, bindRole, buildPack, CONTEXT_TABLES_SQL, readiness, type Bindings, type ContextPack } from './context_pack.js';
 
 // ownerBasis (0.12.1): how the owner of a task is known: said in the meeting, confirmed by the user afterwards, or only inferred.
@@ -164,6 +165,9 @@ export class MeetingRuntime extends EventEmitter {
   ledger!: Ledger;
   // Decisions -> actions -> results/rollback, with authority only as the owner granted it (decisions.ts, ENG-49).
   decisions!: DecisionLedger;
+  // Seats of the people's Claudes (today only simulated roles on this machine), their tasks and replies, converging into the
+  // central session (cowork.ts). The host names each seat's consumer and generation; replies need the host's own context.
+  cowork!: CoworkLedger;
   constructor(public root: string, public dataDir: string, public testMode = false, machine?: { port: number | null }) {
     super(); mkdirSync(dataDir, { recursive: true }); // A diagnostic host takes the real machine lock only when a lock folder is given (tests use their own).
     if (machine && !(testMode && !process.env.PMA_LOCK_DIR)) this.machine = { token: randomUUID(), port: machine.port };
@@ -179,6 +183,7 @@ export class MeetingRuntime extends EventEmitter {
       CREATE TABLE IF NOT EXISTS translation_history(id INTEGER PRIMARY KEY AUTOINCREMENT, source_id INTEGER NOT NULL, session_id TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL, replaced TEXT NOT NULL);`);
     // `committed` (0.12.1): how far a role's work is saved, not only printed (see committedOf).
     this.db.exec(CONTEXT_TABLES_SQL); this.ledger = new Ledger(this.db, () => this.now()); this.decisions = new DecisionLedger(this.db, () => this.now());
+    this.cowork = new CoworkLedger(this.db, () => this.now(), { requireContext: true });
     if (!(this.db.prepare('PRAGMA table_info(followers)').all() as any[]).some(c => c.name === 'committed')) this.db.exec('ALTER TABLE followers ADD COLUMN committed INTEGER NOT NULL DEFAULT 0');
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
     if (!columns.includes('capture_id')) this.db.exec("ALTER TABLE sources ADD COLUMN capture_id TEXT NOT NULL DEFAULT ''");
@@ -477,10 +482,71 @@ export class MeetingRuntime extends EventEmitter {
   // A role's consumer (one follow process: its lease) says it read the pack now; a restarted process is a new generation.
   bind(id: string, role: string, consumerId: string) {
     this.sessionRow(id); const pack = this.packOf(id, true)!;
-    const next = bindRole(this.bindingsOf(id), { sessionId: id, role, consumerId, generation: this.now(), version: pack.version, boundAt: new Date(this.now()).toISOString() });
+    this.storeBinding(id, role, consumerId, this.now(), pack.version);
+    return { version: pack.version, missing: pack.missing, readiness: this.readinessOf(id, role, consumerId) };
+  }
+  private storeBinding(id: string, role: string, consumerId: string, generation: number, version: string) {
+    const next = bindRole(this.bindingsOf(id), { sessionId: id, role, consumerId, generation, version, boundAt: new Date(this.now()).toISOString() });
     const b = next[bindingKey(id, role, consumerId)];
     this.db.prepare('INSERT INTO context_bindings(session_id,role,consumer_id,generation,version,bound_at) VALUES(?,?,?,?,?,?) ON CONFLICT(session_id,role,consumer_id) DO UPDATE SET generation=excluded.generation,version=excluded.version,bound_at=excluded.bound_at').run(id, role, consumerId, b.generation, b.version, b.boundAt);
-    return { version: pack.version, missing: pack.missing, readiness: this.readinessOf(id, role, consumerId) };
+  }
+  // ---- co-working seats (cowork.ts) ----
+  // Only simulated roles exist today: a role played on this machine for a person, never shown as that person's real Claude. The
+  // host, not the caller, makes the seat's consumer (a token handed out once, to give to the session playing the role) and its
+  // generation; seating the person again makes a new token and the old one stops working. A role then acts only with its token:
+  // who answers, which generation, and whether it read the current context all come from the host's records.
+  seatRole(id: string, input: { person: string; role?: string; roleDescription?: string; scope?: string }) {
+    this.sessionRow(id);
+    const prev = this.cowork.seatFor(id, input.person);
+    const seat = this.cowork.seat(id, { person: input.person, kind: 'simulated_role', role: input.role, roleDescription: input.roleDescription, scope: input.scope, consumerId: 'seat-' + randomUUID().replace(/-/g, '').slice(0, 20), generation: Math.max(this.now(), (prev?.generation ?? 0) + 1) });
+    this.ping(); return { seat: this.maskSeat(seatStatus(seat, this.packOf(id))), token: seat.consumerId! };
+  }
+  // The token is shown once, at seating; everywhere else only that the seat is bound. No seat is ever reported as connected.
+  maskSeat<T extends { consumerId: string | null; kind: string }>(seat: T) { return { ...seat, consumerId: seat.consumerId ? 'đã cấp' : null, connection: seat.kind === 'simulated_role' ? 'SIMULATED' : 'NOT_CONNECTED' }; }
+  seatList(id: string, expect: string[] = []) {
+    const status = this.cowork.status(id, { pack: this.packOf(id), expect });
+    return { ...status, seats: status.seats.map(s => this.maskSeat(s)) };
+  }
+  private seatOfToken(id: string, token: string) {
+    const seat = this.cowork.seats(id).find(s => s.consumerId === token);
+    if (!seat) throw new Error('SEAT_UNKNOWN: mã vai không đúng, của cuộc họp khác, hoặc đã được cấp lại (pma seat list)');
+    return seat;
+  }
+  // The role reads its view: that is its context receipt (the current pack version, bound at the seat's own generation).
+  seatView(id: string, token: string) {
+    const seat = this.seatOfToken(id, token); const pack = this.packOf(id, true)!;
+    this.storeBinding(id, seat.role, seat.consumerId!, seat.generation, pack.version);
+    const q = this.ledger.questions;
+    const view = this.cowork.view(pack, seat.person, this.decisions.grants(id), { decisions: this.decisions.list(id), actions: this.decisions.actions(id), questions: [...q.open(id), ...q.parked(id)] });
+    return { version: pack.version, view: { ...view, seat: view.seat ? this.maskSeat(view.seat) : null } };
+  }
+  seatAct(id: string, token: string, step: 'accept' | 'decline' | 'reply', assignmentId: number, input: { text?: string; sourceIds?: number[]; propose?: string } = {}) {
+    const seat = this.seatOfToken(id, token); const a = this.cowork.get(assignmentId);
+    if (!a) throw new Error('ASSIGNMENT_NOT_FOUND'); if (a.sessionId !== id) throw new Error('ASSIGNMENT_OF_ANOTHER_MEETING');
+    const from = { consumerId: seat.consumerId!, generation: seat.generation };
+    let out: unknown;
+    if (step === 'accept') out = { accepted: this.cowork.accept(assignmentId, seat.person, from) };
+    else if (step === 'decline') out = { declined: this.cowork.decline(assignmentId, seat.person, input.text ?? '', from) };
+    else out = this.cowork.reply(assignmentId, seat.person, input.text ?? '', input.sourceIds ?? [], { ...from, ...(input.propose ? { propose: input.propose } : {}), context: { pack: this.packOf(id), bindings: this.bindingsOf(id) } });
+    this.ping(); return out;
+  }
+  // A reply's proposal enters the decision ledger as a PROPOSAL (never decided here), its text saying whose it is; deciding
+  // stays with `decide` and the owner's grants. Same reply again: the same decision id.
+  promoteReply(id: string, replyId: number) {
+    const r = this.cowork.replies(id).find(x => x.id === replyId);
+    if (!r) throw new Error('REPLY_NOT_FOUND'); if (!r.proposal) throw new Error('NOT_A_PROPOSAL');
+    if (r.decisionId !== null) return { decisionId: r.decisionId, status: this.decisions.get(r.decisionId)?.status, already: true };
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const decisionId = this.decisions.propose(id, `${r.proposal} (đề xuất của ${r.simulated ? 'vai giả lập ' : ''}${r.person}, trả lời #${r.id})`, r.sourceIds);
+      this.cowork.linkProposal(r.id, decisionId); this.db.exec('COMMIT');
+      this.ping(); return { decisionId, status: 'proposed', already: false };
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+  }
+  handleCentral(id: string, refKind: HandledKind, refId: number, by: string, note: string) {
+    const of = refKind === 'reply' ? this.cowork.replies(id).find(x => x.id === refId)?.sessionId : refKind === 'assignment' ? this.cowork.get(refId)?.sessionId : this.ledger.questions.get(refId)?.sessionId;
+    if (!of) throw new Error('REF_NOT_FOUND'); if (of !== id) throw new Error('REF_OF_ANOTHER_MEETING');
+    return { handled: this.cowork.handle(refKind, refId, by, note) };
   }
   // Corrections and document pointers given in the meeting go into the session context, so into the pack (a new version) with their
   // provenance: what was heard, what it is, from which row, when, confirmed by the user or only inferred, for this meeting or the company.

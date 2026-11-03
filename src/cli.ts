@@ -36,6 +36,14 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma grant "<người>" [--scope "<chủ đề>"] --source "<lời chủ trong chat>"   CHỈ khi chủ giao thẩm quyền chốt
   pma propose "<đề xuất>" --sources 1,2 | decide <id> --by "<người>" --sources … | change <id> "<nội dung mới>" --by … --sources …
   pma withdraw <id> --by "<người>" --note "…" | act <idQĐ> "<việc>" | action done|fail|rollback <idViệc> "<kết quả/cách hoàn tác>" | decisions
+  pma seat "<người>" [--role vai] [--role-desc "…"] [--scope "…"] | seat list [--expect "Quân,Oanh"]
+                                   VAI GIẢ LẬP của một người trên máy này (không phải Claude thật của họ; Claude từ xa: chưa nối). Trả mã vai (seat-…) MỘT lần
+  pma assign "<người>" "<việc>" [--sources 1,2] [--decision idQĐ] [--due HH:MM]   giao việc cho người đã có vai (QĐ phải đã chốt)
+  pma role --seat MÃ               phần vai đó được thấy (việc, QĐ, câu hỏi của mình); đọc là ghi nhận đã đọc context hiện tại
+  pma accept <idViệc> --seat MÃ | decline <idViệc> --seat MÃ "<lý do>" | reply <idViệc> --seat MÃ "<trả lời>" [--propose "<đề xuất>"] [--sources 1,2]
+                                   trả lời KHÔNG chốt gì; đề xuất về phiên trung tâm
+  pma converge | converge promote <idTrảLời> | converge handle reply|assignment|question <id> --by "<ai>" --note "…"
+                                   việc phiên trung tâm phải xử lý; promote chỉ đưa đề xuất vào sổ QĐ (vẫn là đề xuất, chốt bằng pma decide)
   pma degraded <loại> "<chi tiết>" | degraded clear <loại>   ghi một tình trạng suy giảm (vd. save-denied); chỉ báo lần đầu
   pma say --text "…" [--session ID]   gõ tay một đoạn vào phiên đang mở (nguồn nhập tay, hiện "nhập tay" trong RAW; không phải lời nghe được)
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
@@ -304,6 +312,18 @@ async function main() {
     case 'act': return out(await call('action', { ...session, step: 'plan', id: Number(positional[0]), text: positional.slice(1).join(' ') || flags.text }));
     case 'action': return out(await call('action', { ...session, step: positional[0], id: Number(positional[1]), text: positional.slice(2).join(' ') || flags.text }));
     case 'decisions': return out(await call('decisions', session));
+    case 'seat': {
+      if (positional[0] === 'list') return out(await call('seats', { ...session, expect: flags.expect ? flags.expect.split(',').map(v => v.trim()).filter(Boolean) : [] }));
+      return out(await call('seat', { ...session, person: positional.join(' ') || flags.person, ...(flags.role ? { role: flags.role } : {}), ...(flags['role-desc'] ? { roleDescription: flags['role-desc'] } : {}), ...(flags.scope ? { scope: flags.scope } : {}), ...(flags.remote === 'true' ? { kind: 'remote_claude' } : {}) }));
+    }
+    case 'assign': return out(await call('assign', { ...session, person: positional[0] ?? flags.to, text: positional.slice(1).join(' ') || flags.text, sourceIds: list(flags.sources), ...(flags.decision ? { decisionId: Number(flags.decision) } : {}), ...(flags.due ? { due: flags.due } : {}) }));
+    case 'role': return out(await call('role', { ...session, seat: flags.seat }));
+    case 'accept': case 'decline': case 'reply': return out(await call('respond', { ...session, seat: flags.seat, step: command, id: Number(positional[0]), ...(positional.length > 1 || flags.text ? { text: positional.slice(1).join(' ') || flags.text } : {}), sourceIds: list(flags.sources), ...(flags.propose ? { propose: flags.propose } : {}) }));
+    case 'converge': {
+      if (positional[0] === 'promote') return out(await call('converge', { ...session, action: 'promote', id: Number(positional[1]) }));
+      if (positional[0] === 'handle') return out(await call('converge', { ...session, action: 'handle', kind: positional[1], id: Number(positional[2]), by: flags.by, note: flags.note }));
+      return out(await call('converge', session));
+    }
     case 'questions': return out(await call('questions', session));
     case 'degraded': {
       if (positional[0] === 'clear') return out(await call('degraded', { ...session, action: 'clear', kind: positional[1] }));

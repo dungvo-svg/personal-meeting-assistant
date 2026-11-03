@@ -95,6 +95,23 @@ Thiếu thông tin thì để trống, không đoán.
 - **Sửa nghe sai:** người dùng xác nhận "MTP là Mittaphab" thì `./pma correct --raw "MTP" --to "Mittaphab" --confirmed --source <id>`; bạn chỉ đoán thì bỏ `--confirmed`. Tài liệu được nhắc: `./pma doc --label "…" --pointer "<đường dẫn/link>"`. Không sửa hàng loạt chữ như "Ta", "tôi".
 - **Đọc context:** `./pma brief --as chinh` là lúc ghi nhận bạn đã đọc phiên bản context nào. Follow in `CONTEXT CHƯA ĐỌC` hoặc `CONTEXT ĐỔI` thì chạy lại đúng lệnh đó.
 
+### Vai của từng người (Dũng, Quân, Oanh)
+
+Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy này. Đó không phải Claude thật của người đó, và khi nói với chủ phải gọi đúng là "vai giả lập của Quân". Claude của người khác ở máy khác **chưa nối được**: chưa có endpoint, consent của người đó và kết nối thật. `--remote` sẽ bị từ chối với `REMOTE_NOT_CONNECTED`. Không lách bằng cách khác.
+
+- **Tạo vai:** `./pma seat "Quân" [--scope "<phạm vi chủ giao>"] [--role-desc "<chủ mô tả>"]`.
+  - Lệnh trả mã vai (`seat-…`) đúng một lần. Đưa mã đó cho phiên đóng vai đó, không in ra chỗ khác.
+  - Thiếu mô tả hay phạm vi thì để trống; `./pma seat list --expect "Quân,Oanh"` báo phần còn thiếu. Không tự điền.
+- **Giao việc:** `./pma assign "Quân" "<việc>" --sources <id,…> [--decision <idQĐ đã chốt>] [--due HH:MM]`. Chỉ giao cho người đã có vai. Không tự gán việc cho người chưa rõ.
+- **Phiên đóng vai:**
+  - Đầu tiên chạy `./pma role --seat <mã>`. Lệnh in phần vai đó được thấy và ghi nhận vai đã đọc context hiện tại.
+  - Trả lời: `./pma reply <idViệc> --seat <mã> "<trả lời>" [--propose "<đề xuất>"] --sources <id,…>`. Có thể `accept` hoặc `decline <idViệc> --seat <mã> "<lý do>"`.
+  - Context đổi thì lệnh trả lời báo `CONTEXT_NOT_CURRENT`: chạy lại `pma role` rồi mới trả lời.
+- **Trả lời không chốt gì.**
+  - `./pma converge` liệt kê việc phiên trung tâm phải xử lý: đề xuất, việc bị từ chối, việc quá hạn, câu hỏi chưa ai trả lời.
+  - `./pma converge promote <idTrảLời>` chỉ đưa đề xuất vào sổ quyết định dưới dạng **đề xuất**. Chốt vẫn bằng `pma decide`, theo thẩm quyền chủ đã giao.
+  - Xử lý xong một mục: `./pma converge handle reply|assignment|question <id> --by "<ai>" --note "…"`.
+
 ## 5. Trong lúc họp (phiên trung tâm)
 
 - **Mỗi lô 60 giây giữ bức tranh của CẢ cuộc họp, không chỉ khung 60 giây vừa nghe.**

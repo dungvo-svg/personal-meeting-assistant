@@ -113,6 +113,37 @@ const methods: Record<string, (input: any) => any> = {
     return { ok: a.step === 'done' ? ledger.done(a.id, a.text) : a.step === 'fail' ? ledger.fail(a.id, a.text) : ledger.rollback(a.id, a.text), action: ledger.getAction(a.id) };
   },
   decisions: input => { const s = afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId); const ledger = runtime.decisions; return { list: ledger.list(s), pending: ledger.pending(s), summary: ledger.summaryOf(s), report: ledger.reportLines(s) }; },
+  // Co-working seats (cowork.ts): Dũng / Quân / Oanh's Claudes as SIMULATED roles on this machine. This build has no transport to
+  // anyone else's Claude, so a remote seat is refused as not connected. The host makes each seat's token; a role acts only with it.
+  seat: input => {
+    const a = z.object({ sessionId: sid.optional(), person: z.string().trim().min(1).max(120), kind: z.enum(['simulated_role', 'remote_claude']).default('simulated_role'), role: z.string().regex(/^[a-z0-9-]{1,24}$/).optional(), roleDescription: z.string().max(1000).optional(), scope: z.string().max(500).optional() }).parse(input);
+    if (a.kind === 'remote_claude') throw new Error('REMOTE_NOT_CONNECTED: bản này chưa nối được Claude của người khác (chưa có endpoint, consent của người đó, kết nối thật và quyết định của owner). Dùng vai giả lập (simulated_role)');
+    return runtime.seatRole(current(a.sessionId), a);
+  },
+  seats: input => { const a = z.object({ sessionId: sid.optional(), expect: z.array(z.string().max(120)).max(50).default([]) }).parse(input); return runtime.seatList(afterwards(a.sessionId), a.expect); },
+  // The central session gives a task to a seated person; `decisionId` must be decided (a proposal is no reason for a task).
+  assign: input => {
+    const a = z.object({ sessionId: sid.optional(), person: z.string().trim().min(1).max(120), text: z.string().trim().min(1).max(2000), sourceIds: ids.max(50).default([]), decisionId: z.number().int().positive().optional(), due: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional() }).parse(input);
+    const s = current(a.sessionId); let dueAt: number | undefined;
+    if (a.due) { const [h, m] = a.due.split(':').map(Number); const d = new Date(); d.setHours(h, m, 0, 0); dueAt = d.getTime(); }
+    const id = runtime.cowork.assign(s, a.person, a.text, a.sourceIds, a.decisionId, dueAt === undefined ? {} : { dueAt }); return { id, assignment: runtime.cowork.get(id) };
+  },
+  // What one role sees; reading it is the role's context receipt.
+  role: input => { const a = z.object({ sessionId: sid.optional(), seat: z.string().regex(/^seat-[a-f0-9]{20}$/) }).parse(input); return runtime.seatView(current(a.sessionId), a.seat); },
+  respond: input => {
+    const a = z.object({ sessionId: sid.optional(), seat: z.string().regex(/^seat-[a-f0-9]{20}$/), step: z.enum(['accept', 'decline', 'reply']), id: z.number().int().positive(), text: z.string().trim().min(1).max(4000).optional(), sourceIds: ids.max(50).default([]), propose: z.string().trim().min(1).max(2000).optional() }).parse(input);
+    return runtime.seatAct(current(a.sessionId), a.seat, a.step, a.id, a);
+  },
+  // What the central session must handle; `promote` puts a reply's proposal into the decision ledger as a proposal only.
+  converge: input => {
+    const a = z.object({ sessionId: sid.optional(), action: z.enum(['list', 'promote', 'handle']).default('list'), kind: z.enum(['reply', 'assignment', 'question']).optional(), id: z.number().int().positive().optional(), by: z.string().trim().min(1).max(120).optional(), note: z.string().trim().min(1).max(1000).optional() }).parse(input);
+    const s = afterwards(a.sessionId);
+    if (a.action === 'list') return { items: runtime.cowork.convergeToCentral(s) };
+    if (!a.id) throw new Error('CONVERGE_NEEDS_ID');
+    if (a.action === 'promote') return runtime.promoteReply(s, a.id);
+    if (!a.kind || !a.by || !a.note) throw new Error('CONVERGE_HANDLE_NEEDS: --kind reply|assignment|question --by "<ai xử lý>" --note "…"');
+    return runtime.handleCentral(s, a.kind, a.id, a.by, a.note);
+  },
   // Context binding (ENG-45): a follow process says it read the context pack.
   bind: input => { const a = z.object({ sessionId: sid.optional(), as: z.string().regex(/^[a-z0-9-]{1,24}$/), consumer: z.string().regex(/^[a-z0-9-]{1,80}$/) }).parse(input); return runtime.bind(current(a.sessionId), a.as, a.consumer); },
   // Background jobs, owner questions, degraded conditions (jobs.ts, ENG-46). Recorded by the host; nothing here waits for anything.

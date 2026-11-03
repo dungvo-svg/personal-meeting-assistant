@@ -284,3 +284,23 @@ test('a wrong consumer, a missing or stale generation, or a pack the seat has no
   const ok = cw.reply(a, 'Quân', 'Đã gửi', [2], { ...at2, context: { pack, bindings: current } });
   assert.equal(ok.decided, false); assert.equal(cw.replies('s1').length, 1);
 });
+
+// Codex review of a3e1fb3: a seat's generation is compared whatever the consumer, and the host's ledger refuses a reply that
+// brings no context at all (optional context let a caller skip the check by leaving it out).
+test('a lower generation cannot take a seat back by naming another consumer', () => {
+  const { cw } = make();
+  cw.seat('s1', { person: 'Quân', kind: 'simulated_role', consumerId: 'q1', generation: 5 });
+  assert.throws(() => cw.seat('s1', { person: 'Quân', kind: 'simulated_role', consumerId: 'q2', generation: 3 }), /STALE_GENERATION/);
+  assert.equal(cw.seatFor('s1', 'Quân').consumerId, 'q1');
+  assert.equal(cw.seat('s1', { person: 'Quân', kind: 'simulated_role', consumerId: 'q2', generation: 6 }).consumerId, 'q2', 'a newer generation may move the seat');
+});
+
+test('with requireContext (the host) a reply without context is refused and leaves nothing', () => {
+  let t = 1_000_000; const db = new DatabaseSync(':memory:'); const cw = new CoworkLedger(db, () => t, { requireContext: true });
+  cw.seat('s1', { person: 'Quân', kind: 'simulated_role', consumerId: 'q1', generation: 2 });
+  const a = cw.assign('s1', 'Quân', 'Gửi bảng giá', [1]);
+  assert.throws(() => cw.reply(a, 'Quân', 'x', [], { consumerId: 'q1', generation: 2 }), /CONTEXT_REQUIRED/);
+  assert.equal(cw.replies('s1').length, 0); assert.equal(cw.get(a).status, 'open');
+  const bindings = bindRole({}, { sessionId: 's1', role: 'participant', consumerId: 'q1', generation: 2, version: pack.version });
+  assert.equal(cw.reply(a, 'Quân', 'Đã gửi', [2], { consumerId: 'q1', generation: 2, context: { pack, bindings } }).decided, false);
+});

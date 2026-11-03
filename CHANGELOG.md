@@ -4,6 +4,7 @@
 
 Nhánh `pma/v5-cursor`, nền `pma/v5-int` `55a0394` (0.12.0 chưa tích hợp).
 
+- **Vai của từng người qua host** (cowork, docs/COWORK_3CLAUDE.md): `pma seat` tạo vai giả lập cho Dũng / Quân / Oanh trên máy này (nhãn "vai giả lập", không bao giờ báo là đã nối); host tự tạo mã vai và thế hệ, mã chỉ hiện một lần, tạo lại vai thì mã cũ hết dùng. `pma role --seat` là biên nhận đọc context; `pma reply/accept/decline --seat` chỉ nhận khi vai đã đọc bản context hiện tại (CONTEXT_NOT_CURRENT), ai trả lời và thế hệ nào lấy từ sổ của host, không từ lời người gọi. Trả lời không chốt gì: `pma converge` gom đề xuất, việc bị từ chối, quá hạn, câu hỏi treo về phiên trung tâm; `converge promote` chỉ đưa vào sổ quyết định dưới dạng đề xuất, ghi rõ của vai giả lập nào. Claude từ xa: `REMOTE_NOT_CONNECTED` (chưa có endpoint, consent, kết nối thật). Theo review Codex a3e1fb3: thế hệ vai so với mọi consumer; host bắt buộc kèm context khi trả lời.
 - **Tiến độ từng vai bền qua host restart** (ENG-31):
   - con trỏ đã ack và giờ của mỗi vai ghi thêm vào bảng SQLite `followers`;
   - host mới nhận lại cuộc họp còn ghi thì `chinh` và `dich` đọc tiếp đúng chỗ, không chiếu lại 40 dòng;
