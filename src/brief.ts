@@ -45,7 +45,7 @@ export function buildBrief(input: BriefInput, maxBytes = BRIEF_MAX_BYTES) {
     const who = [me, owner?.role, owner?.company].filter(Boolean).join(' · ');
     const extra = [owner?.languages?.length ? 'nói ' + owner.languages.join(', ') : '', owner?.addressedAs?.length ? 'mọi người gọi: ' + owner.addressedAs.join(', ') : ''].filter(Boolean);
     head.push(`**Tôi:** ${[who, ...extra].filter(Boolean).join(' · ')}`);
-  } else head.push('**Tôi:** chưa biết (tạo .local/context/owner.json từ config/owner.example.json, hoặc pma start --me "Tên")');
+  } else head.push('**Tôi:** chưa biết (pma start --me "Tên")');
   if (session) {
     const meeting = context.meeting?.meetingId ? (context.meeting.platform === 'meet' ? 'Google Meet ' : 'Zoom ') + context.meeting.meetingId : undefined;
     head.push('**Họp:** ' + [clipBytes(oneLine(session.title), 110), meeting, context.scheduledStart ? 'lịch ' + clock(context.scheduledStart) : undefined, session.languages?.length ? 'ngôn ngữ ' + session.languages.join('/') : undefined].filter(Boolean).join(' · '));

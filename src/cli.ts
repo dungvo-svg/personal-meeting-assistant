@@ -72,6 +72,9 @@ function options(argv: string[]) {
   return { positional, flags };
 }
 const list = (value?: string) => value ? value.split(',').map(v => Number(v.trim())).filter(Number.isInteger) : [];
+// `--file -` reads the text from stdin (0.12.1): the agent hands drafts (picture, translations, summary, tasks, participants) straight to
+// the host through a pipe, so it writes no draft file of its own anywhere; the host stores them as before.
+const input = (file?: string) => { if (!file) throw new Error('--file <đường dẫn> hoặc --file - (đọc từ stdin)'); return file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8'); };
 const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
 const FLAG_LABELS: Record<string, string> = { LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được' };
@@ -252,7 +255,7 @@ async function main() {
   switch (command) {
     case 'start': {
       // The participants file is read first: a bad file stops here, before any session exists.
-      const listed = flags.participants ? JSON.parse(readFileSync(flags.participants, 'utf8')) : undefined;
+      const listed = flags.participants ? JSON.parse(input(flags.participants)) : undefined;
       const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}) });
       // Right after the session exists; a list the runtime refuses is reported, the session stays open.
       const people = listed ? await call('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
@@ -264,12 +267,12 @@ async function main() {
     }
     case 'participants': {
       if (!flags.file) throw new Error('pma participants --file p.json');
-      return out(await call('participants', { participants: JSON.parse(readFileSync(flags.file, 'utf8')) }));
+      return out(await call('participants', { participants: JSON.parse(input(flags.file)) }));
     }
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
     case 'picture': {
-      if (flags.file) return out(await call('picture', { ...session, text: readFileSync(flags.file, 'utf8'), sourceIds: list(flags.sources) }));
+      if (flags.file) return out(await call('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources) }));
       const p = await call('picture', session);
       return console.log(p ? `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n${p.text}` : 'Chưa có bức tranh cuộc họp (pma picture --file f.md --sources <id,…>)');
     }
@@ -295,7 +298,7 @@ async function main() {
     case 'job': {
       const action = positional[0];
       if (action === 'start') return out(await call('job', { ...session, action, title: positional.slice(1).join(' ') || flags.title, kind: flags.kind || 'analysis' }));
-      if (action === 'done') return out(await call('job', { ...session, action, id: Number(positional[1]), result: flags.file ? readFileSync(flags.file, 'utf8') : flags.text, sourceIds: list(flags.sources) }));
+      if (action === 'done') return out(await call('job', { ...session, action, id: Number(positional[1]), result: flags.file ? input(flags.file) : flags.text, sourceIds: list(flags.sources) }));
       if (action === 'fail') return out(await call('job', { ...session, action, id: Number(positional[1]), note: positional.slice(2).join(' ') || flags.note }));
       if (action === 'list' || !action) return out(await call('job', { ...session, action: 'list', ...(flags.status ? { status: flags.status } : {}) }));
       throw new Error('pma job start|done|fail|list');
@@ -333,7 +336,7 @@ async function main() {
     }
     case 'say': return out(await call('manual', { ...session, text: flags.text === 'true' ? undefined : flags.text ?? (positional.join(' ') || undefined) }));
     case 'translate': {
-      const items = flags.file ? JSON.parse(readFileSync(flags.file, 'utf8')) : [{ sourceId: Number(flags.source), text: flags.text }];
+      const items = flags.file ? JSON.parse(input(flags.file)) : [{ sourceId: Number(flags.source), text: flags.text }];
       return out(await call('translate', { ...session, items }));
     }
     case 'status': return out(await inspect());
@@ -372,8 +375,8 @@ async function main() {
       return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}${flags.as ? ' --as ' + flags.as : ''}`);
     }
     case 'note': return out(await call('note', { ...session, key: flags.key || 'note-' + Date.now(), revision: Number(flags.revision || 1), kind: flags.kind || 'observation', text: flags.text, sourceIds: list(flags.sources) }));
-    case 'summary': return out(await call('summary', { ...session, markdown: readFileSync(flags.file, 'utf8'), sourceIds: list(flags.sources) }));
-    case 'tasks': return out(await call('tasks', { ...session, tasks: JSON.parse(readFileSync(flags.file, 'utf8')) }));
+    case 'summary': return out(await call('summary', { ...session, markdown: input(flags.file), sourceIds: list(flags.sources) }));
+    case 'tasks': return out(await call('tasks', { ...session, tasks: JSON.parse(input(flags.file)) }));
     case 'raw': return out(await call('raw', session));
     case 'history': return out(await call('history'));
     case 'glossary': {
