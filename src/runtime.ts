@@ -8,7 +8,7 @@ import { createInterface } from 'node:readline';
 import { applyGlossary, collapseLoops, foldRuns, isHallucination, micLabel, riskyVariants, segmentTimesProblem, shareable, type GlossaryEntry } from './text.js';
 import { canonicalOwner } from './participants.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
-import { readTimeline, soundRanges, soundWindows, uncovered, type Range } from './timeline.js';
+import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
 import { claimMachine, machineHolder, releaseMachine } from './machine_lock.js';
 
 // ownerBasis (0.12.1): how the owner of a task is known: said in the meeting, confirmed by the user afterwards, or only inferred.
@@ -317,6 +317,7 @@ export class MeetingRuntime extends EventEmitter {
         if (follower || lease) { this.lastFollowAt = stamp; this.track(id, name, { cursor: ack, at: stamp, ...token }); }
         else if (role) this.track(id, name, { ...role, cursor: ack });
       } else this.track(id, name, { cursor: ack, at: stamp, ...token });
+      this.committedOf(id, name);
     }
     const until = Date.now() + Math.max(0, Math.min(waitMs, 25000));
     while (!this.sources(id, after, 1).length && !this.session.ended && !this.closing && Date.now() < until) {
@@ -337,7 +338,7 @@ export class MeetingRuntime extends EventEmitter {
     // The meeting may have just ended (follow prints its last batch, then releases): the same meeting, role and lease may still
     // record the final ack. Nothing reopens the session; another meeting, role or lease changes nothing.
     if (!this.session || this.session.id !== id || !role?.lease || role.lease !== lease) return { released: false };
-    this.track(id, name, { cursor: ack, at: null });
+    this.track(id, name, { cursor: ack, at: null }); this.committedOf(id, name);
     if (name === MAIN_FOLLOWER) this.agentCursor = ack;
     return { released: true };
   }
@@ -368,7 +369,10 @@ export class MeetingRuntime extends EventEmitter {
     const ids = this.sessionSourceIds(id, sourceIds).sort((a, b) => a - b); const latest = this.picture(id);
     if (latest && latest.text === text && latest.sourceIds.length === ids.length && [...latest.sourceIds].sort((a, b) => a - b).every((v, i) => v === ids[i])) return { saved: true, revision: latest.revision, duplicate: true };
     const revision = (latest?.revision ?? 0) + 1;
-    this.publish(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS); return { saved: true, revision };
+    // How far this picture covers the meeting: its highest cited source, but never past what chinh had been handed when it was saved
+    // (citing a row chinh has not been handed yet covers nothing).
+    const coversUpTo = Math.min(Math.max(...ids), this.followers[MAIN_FOLLOWER]?.cursor ?? 0);
+    this.publish(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS, { coversUpTo }); return { saved: true, revision };
   }
   // Distinct IDs, each a source of this session.
   private sessionSourceIds(id: string, sourceIds: number[]) {
@@ -376,11 +380,11 @@ export class MeetingRuntime extends EventEmitter {
     for (const sourceId of ids) if (!Number.isSafeInteger(sourceId) || !this.db.prepare('SELECT id FROM sources WHERE session_id=? AND id=?').get(id, sourceId)) throw new Error('SOURCE_OUTSIDE_SESSION');
     return ids;
   }
-  publish(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], maxChars = 8000) {
+  publish(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], maxChars = 8000, extra: Record<string, unknown> = {}) {
     this.requireSession(id);
     if (!/^[\w-]{1,80}$/.test(key) || !Number.isSafeInteger(revision) || revision < 1 || text.length < 1 || text.length > maxChars || !['observation', 'decision', 'action', 'question', 'correction'].includes(kind) || !sourceIds.length || sourceIds.length > 50) throw new Error('INVALID_NOTE');
     const ids = this.sessionSourceIds(id, sourceIds);
-    const payload = JSON.stringify({ text, sourceIds: ids, author: 'assistant', semanticStatus: 'UNVERIFIED_AGENT_NOTE' });
+    const payload = JSON.stringify({ text, sourceIds: ids, author: 'assistant', semanticStatus: 'UNVERIFIED_AGENT_NOTE', ...extra });
     const existing: any = this.db.prepare('SELECT payload,kind FROM notes WHERE session_id=? AND item_key=? AND revision=?').get(id, key, revision);
     if (existing) { if (existing.payload !== payload || existing.kind !== kind) throw new Error('REVISION_CONFLICT'); return { saved: true, duplicate: true }; }
     const previous: any = this.db.prepare('SELECT MAX(revision) AS revision FROM notes WHERE session_id=? AND item_key=?').get(id, key);
@@ -410,21 +414,25 @@ export class MeetingRuntime extends EventEmitter {
     if (this.captureState === 'LISTENING' && this.lastWorkerEventAt && silent >= ASR_STALL_SECONDS) captureInfo.asrStalledSeconds = silent;
     return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
   }
-  // How far a role's work is saved. Never past what it was handed (its cursor), and only over a gap-free run of rows:
-  // - chinh: the picture is the work; a saved picture covers every row up to the highest source it cites;
+  // How far a role's work is saved. Never past what it was handed (its cursor).
+  // - chinh, a high-water contract, not row-by-row coverage: the picture is rewritten as the WHOLE meeting (OWN-029), so a picture saved
+  //   when chinh had been handed rows up to N, citing up to M, covers the meeting up to min(M, N) (`coversUpTo`, fixed at save time).
+  //   Rows below that it does not cite are covered by that contract, not by a citation.
+  // - a share role, gap-free row by row:
   // - a share role: a row is done when it needs nothing (hidden from the role, not Lao/Thai, an ASR hallucination) or its
   //   translation is stored. A save that failed stored nothing, so the run stops there and a role that comes back re-reads from it.
-  committedOf(id: string, name: string) {
+  // `persist` false (status): worked out and returned, nothing written; next() and release() store it.
+  committedOf(id: string, name: string, persist = true) {
     const limit = this.followers[name]?.cursor ?? 0; let done = Math.min(this.committed[name] ?? 0, limit);
     if (name === MAIN_FOLLOWER) {
-      const cited = (this.db.prepare('SELECT payload FROM notes WHERE session_id=? AND item_key=?').all(id, PICTURE_KEY) as any[]).flatMap(n => JSON.parse(n.payload).sourceIds as number[]);
-      done = Math.min(limit, Math.max(done, ...cited));
+      const covered = (this.db.prepare('SELECT payload FROM notes WHERE session_id=? AND item_key=?').all(id, PICTURE_KEY) as any[]).map(n => { const p = JSON.parse(n.payload); return Number.isInteger(p.coversUpTo) ? p.coversUpTo : 0; });
+      done = Math.min(limit, Math.max(done, ...covered));
     } else {
       const rows = this.db.prepare('SELECT id,origin,boundary,language,text FROM sources WHERE session_id=? AND id>? AND id<=? ORDER BY id').all(id, done, limit) as any[];
       const saved = new Set((this.db.prepare('SELECT source_id FROM translations WHERE session_id=? AND source_id>? AND source_id<=?').all(id, done, limit) as any[]).map(t => t.source_id));
       for (const row of rows) { if (shareable(row) && (row.language === 'lo' || row.language === 'th') && !saved.has(row.id) && !isHallucination(row)) break; done = row.id; }
     }
-    if (done !== (this.committed[name] ?? 0)) { this.committed[name] = done; this.db.prepare('UPDATE followers SET committed=? WHERE session_id=? AND name=?').run(done, id, name); }
+    if (persist && done !== (this.committed[name] ?? 0)) { this.committed[name] = done; this.db.prepare('UPDATE followers SET committed=? WHERE session_id=? AND name=?').run(done, id, name); }
     return done;
   }
   followersState(id?: string) {
@@ -433,7 +441,7 @@ export class MeetingRuntime extends EventEmitter {
       const unread = !id ? 0 : name === MAIN_FOLLOWER
         ? (this.db.prepare('SELECT COUNT(*) AS count FROM sources WHERE session_id=? AND id>?').get(id, f.cursor) as any).count
         : (this.db.prepare('SELECT origin,boundary FROM sources WHERE session_id=? AND id>?').all(id, f.cursor) as any[]).filter(shareable).length;
-      return [name, { cursor: f.cursor, committed: id ? this.committedOf(id, name) : 0, at: f.at, unread }];
+      return [name, { cursor: f.cursor, committed: id ? this.committedOf(id, name, false) : 0, at: f.at, unread }];
     }));
   }
   // Saved audio of a session: where it is, how big, which mix file. Null when no WAV exists (nothing recorded yet).
@@ -627,6 +635,9 @@ export class MeetingRuntime extends EventEmitter {
     }
     rmSync(stopFile, { force: true });
     if (rec.watch) { clearInterval(rec.watch); rec.watch = null; }
+    // A recorder that is still alive after STOP and kill keeps its PID and its state (review of 1def228, finding 2): releaseWhenIdle
+    // then keeps the machine lock, and the host's idle check gives it back once that process is really gone.
+    if (this.recorderAlive()) { rec.state = 'STOP_UNCONFIRMED'; this.ping(); return; }
     if (!rec.child) { rec.attached = false; rec.pid = null; }
     rec.state = 'OFF'; this.ping();
   }
@@ -733,10 +744,12 @@ export class MeetingRuntime extends EventEmitter {
     if (event.type === 'source') {
       // Times that cannot be trusted: the text is kept for RAW (with the raw values in its flag) but without times, out of the
       // timeline and the ASR position, and a mic row loses MIC_SHARE_OK (the share decision rested on those times). Nothing is clamped.
-      const problem = segmentTimesProblem(event, Date.now(), Date.parse(this.session.created));
+      const problem = segmentTimesProblem(event, Date.now(), Date.parse(this.session.created)) ?? (follow ? this.outsideItsSegment(event) : null);
       const source = withFlag(event.boundary || '', follow ? 'SOURCE_LIVE_FOLLOW' : 'SOURCE_REPLAY_MIXED');
       if (problem) {
-        const kept = source.split('; ').filter(flag => flag !== 'MIC_SHARE_OK').join('; ');
+        // Kept for the owner (RAW, chinh) as degraded text only: no times, no MIC_SHARE_OK and no live stamp, so no share role gets it
+        // and nothing aligns or covers by it (review of 1def228, finding 4).
+        const kept = source.split('; ').filter(flag => flag !== 'MIC_SHARE_OK' && flag !== 'SOURCE_LIVE_FOLLOW').concat(follow ? ['SOURCE_TIME_UNTRUSTED'] : []).join('; ');
         const raw = JSON.stringify({ start: event.start, end: event.end, wall: event.wall ?? null }).replace(/;/g, ',');
         this.ingest(event.text, 'local_asr_unverified', 0, 0, withFlag(kept, `TIMESTAMP_INVALID ${problem} ${raw}`), this.captureId, event.language || '', '', event.seg, event.alternatives);
       } else { this.ingest(event.text, 'local_asr_unverified', event.start, event.end, source, this.captureId, event.language || '', event.wall, event.seg, event.alternatives); this.notePosition(event); }
@@ -744,6 +757,28 @@ export class MeetingRuntime extends EventEmitter {
     // A follow worker that fails exits, and the supervisor restarts it; only a replay stops on the first error.
     if (event.type === 'error') { this.lastError = event.message; if (!follow) { this.captureState = 'ERROR'; void this.stopCapture(); } }
     this.ping();
+  }
+  // The recorder's own record of a segment (timeline.jsonl: open, then a tick about every second with the samples written so far)
+  // is the actual input: its identity (seg, channel), start, rate and length. A row the worker places outside the audio of the
+  // segment it names is not trusted. Unknown segment: nothing to check against (no evidence either way, not a pass).
+  private segmentCache: { at: number; list: Segment[] } = { at: 0, list: [] };
+  private outsideItsSegment(event: any): string | null {
+    if (!this.session || !event.wall || !Number.isInteger(event.seg)) return null;
+    const channel = event.channel === 'mic' ? 'mic' : 'speaker';
+    const find = () => this.segmentCache.list.find(s => s.seg === event.seg && s.channel === channel);
+    const reload = () => { this.segmentCache = { at: Date.now(), list: segmentsOf(readTimeline(audioDir(this.dataDir, this.session.id))) }; };
+    if (!find() || Date.now() - this.segmentCache.at > 2000) reload();
+    const begin = Date.parse(event.wall), end = begin + (Number(event.end) - Number(event.start)) * 1000;
+    // The cached record may be a few seconds behind the files the worker read: a row that looks outside is judged on a fresh read.
+    const judge = (segment: Segment | undefined) => {
+      if (!segment) return null;
+      if (begin < segment.openMs - 3000) return 'BEFORE_ITS_SEGMENT';
+      // Without ticks the recorded length is not known: no check of the end (no evidence either way).
+      const last = segment.ticks.at(-1);
+      return last && end > last.ms + 5000 ? 'PAST_ITS_SEGMENT' : null;
+    };
+    if (!judge(find())) return null;
+    reload(); return judge(find());
   }
   // Where the ASR has got to: the furthest end of audio it handled (either channel). A restarted worker continues from here.
   private notePosition(event: any) {

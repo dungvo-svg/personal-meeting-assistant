@@ -104,7 +104,11 @@ Thiếu thông tin thì để trống, không đoán.
 
 ## 5. Kết thúc và báo cáo
 
-1. Người dùng gõ kết thúc. Agent nền đang phân tích dở: dừng nó (TaskStop) hoặc để nó xong nếu chỉ còn vài giây; việc nào bỏ dở thì ghi vào SUMMARY mục "Chưa làm xong". Nếu đang dịch nền, chờ lô cuối được dịch (15–30 giây; `./pma status` → `followers.dich.committed`) rồi chạy `./pma stop`; agent nền tự dừng khi follow in `KẾT THÚC`. Lệnh `stop`:
+1. Người dùng gõ kết thúc: chạy **`./pma stop` ngay**, trước mọi việc chờ khác. Không chờ dịch hay phân tích xong rồi mới dừng: ghi âm phải dừng đúng lúc người dùng nói.
+   - Trong lúc `stop` cho bộ nghe nhận dạng nốt, các vai vẫn nhận phần chữ còn lại, nên dịch nền vẫn dịch được lô cuối. Agent dịch nền tự dừng khi follow in `KẾT THÚC`.
+   - Agent phân tích nền đang chạy dở: dừng nó (TaskStop), hoặc để nó xong nếu chỉ còn vài giây. Việc nào bỏ dở thì ghi vào SUMMARY mục "Chưa làm xong".
+
+   Lệnh `stop`:
    - dừng bộ ghi;
    - để bộ nghe nhận dạng nốt phần còn lại;
    - ghép `meeting-mix.wav` cả buổi;

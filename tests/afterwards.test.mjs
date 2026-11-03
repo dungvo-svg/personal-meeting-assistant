@@ -40,3 +40,12 @@ test('a 30-minute picture longer than 8000 characters is saved; after stop and a
     rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });   // the host may still hold its database for a moment
   }
 });
+
+// Review of ee528c1 (P1): an explicit end stops capture first; waiting for translation or analysis comes after `pma stop`, never before.
+test('the hop skill: on the owner\'s end, `pma stop` comes before any wait for translation or background analysis', async () => {
+  const { readFileSync } = await import('node:fs');
+  const skill = readFileSync('.claude/skills/hop/SKILL.md', 'utf8'); const end = skill.slice(skill.indexOf('## 5. Kết thúc'), skill.indexOf('2. Đọc toàn bộ'));
+  const stop = end.indexOf('`./pma stop` ngay'); assert.ok(stop > 0, 'the end step starts with pma stop');
+  for (const later of ['TaskStop', 'dịch nền', 'KẾT THÚC']) assert.ok(end.indexOf(later) > stop, `${later} comes after pma stop`);
+  assert.doesNotMatch(end, /rồi chạy `\.\/pma stop`/, 'no "wait, then stop"');
+});

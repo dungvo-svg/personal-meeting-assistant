@@ -324,7 +324,8 @@ test('segment times are checked before they are trusted: bad ranges are kept as 
     assert.match(speaker.boundary, /TIMESTAMP_INVALID LONGER_THAN_A_CHUNK \{"start":19\.46,"end":49\.44,"wall":"[^"]+"\}/);
     assert.match(mic.boundary, /TIMESTAMP_INVALID END_BEFORE_START/); assert.doesNotMatch(mic.boundary, /MIC_SHARE_OK/);
     const shared = (await r.next(id, 0, 0, 100, true, 'dich')).items.map(item => item.text);
-    assert.deepEqual(shared, ['đoạn tốt', 'loa giờ hỏng'], 'speaker text still reaches the role; the mic row with untrusted times does not');
+    assert.deepEqual(shared, ['đoạn tốt'], 'rows with untrusted times are degraded text for the owner only (review of 1def228, finding 4)');
+    assert.match(speaker.boundary, /SOURCE_TIME_UNTRUSTED/); assert.doesNotMatch(speaker.boundary, /SOURCE_LIVE_FOLLOW/);
     assert.equal(r.compact().asr.position, new Date(Date.parse(wall) + 4000).toISOString(), 'only the good segment moved the ASR position');
     assert.notEqual(position, r.compact().asr.position);
   });
@@ -342,5 +343,24 @@ test('a translation saved again keeps what it replaced; the same text again chan
     assert.equal(r.read(id).items.find(item => item.id === lo).translation, 'chào anh');
     const kept = r.db.prepare('SELECT source_id,text,created FROM translation_history').all();
     assert.deepEqual(kept.map(row => ({ ...row })), [{ source_id: lo, text: 'xin chào', created: first }]);
+  });
+});
+
+test('a row is checked against the segment the recorder actually wrote: placed past what was recorded, or before the segment opened, it is not trusted', async () => {
+  const { writeFileSync: wf, mkdirSync: md } = await import('node:fs');
+  await withRuntime(async (r, directory) => {
+    r.prepare('Họp'); const id = r.session.id; const dir = join(directory, 'audio', id); md(dir, { recursive: true });
+    const open = Date.now() - 30000;
+    const lines = [{ t: new Date(open).toISOString(), type: 'open', seg: 1, channel: 'speaker', rate: 16000 }, { t: new Date(open + 20000).toISOString(), type: 'tick', seg: 1, channel: 'speaker', samples: 320000 }];
+    wf(join(dir, 'timeline.jsonl'), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
+    const at = ms => new Date(open + ms).toISOString();
+    r.onWorkerEvent({ type: 'source', text: 'trong khúc', start: 0, end: 4, boundary: 'B', language: 'vi', wall: at(15000), seg: 1, channel: 'speaker' }, true);
+    r.onWorkerEvent({ type: 'source', text: 'quá khúc', start: 0, end: 10, boundary: 'B', language: 'vi', wall: at(19000), seg: 1, channel: 'speaker' }, true);
+    r.onWorkerEvent({ type: 'source', text: 'trước khúc', start: 0, end: 3, boundary: 'B', language: 'vi', wall: at(-9000), seg: 1, channel: 'speaker' }, true);
+    r.onWorkerEvent({ type: 'source', text: 'khúc lạ', start: 0, end: 3, boundary: 'B', language: 'vi', wall: at(5000), seg: 9, channel: 'speaker' }, true);
+    const rows = Object.fromEntries(r.sources(id).map(row => [row.text, row.boundary]));
+    assert.doesNotMatch(rows['trong khúc'], /TIMESTAMP_INVALID/);
+    assert.match(rows['quá khúc'], /TIMESTAMP_INVALID PAST_ITS_SEGMENT/); assert.match(rows['trước khúc'], /TIMESTAMP_INVALID BEFORE_ITS_SEGMENT/);
+    assert.doesNotMatch(rows['khúc lạ'], /TIMESTAMP_INVALID/, 'a segment the timeline does not know: no evidence either way');
   });
 });

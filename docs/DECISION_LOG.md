@@ -121,6 +121,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-39 | 0.12.1: mốc thời gian của đoạn nhận dạng được kiểm trước khi dùng cho timeline, vị trí nhận dạng và chia sẻ micro; mốc không tin được thì giữ chữ, bỏ mốc, ghi giá trị thô và lý do, không kẹp | Đợt kiểm âm thanh offline 03/11: đoạn báo 19,46–49,44 s cho file vào 20 s |
 | ENG-40 | 0.12.1: lưu lại bản dịch khác chữ thì giữ bản bị thay trong `translation_history`; cùng chữ thì không đổi | Phản biện Astra C: thay thế xoá mất nguồn gốc bản dịch đầu |
 | ENG-41 | 0.12.1: việc có `ownerBasis` (nói rõ / người dùng xác nhận / suy luận); suy luận được đánh dấu và không vào "Việc của tôi" | Phản biện Astra B: suy luận không được thành người chịu trách nhiệm |
+| ENG-42 | 0.12.1: khoá phụ nguyên vẹn, không lấy từ người giữ còn sống; bộ ghi không chịu dừng giữ PID và khoá; `committed` của `chinh` là mốc cao chốt lúc lưu bức tranh; `status` không ghi; đoạn nhận dạng đối chiếu khúc ghi thật, không tin được thì không chia sẻ; skill dừng ghi ngay khi owner kết thúc | Review Codex 1def228 (điểm 1–4) và ee528c1 (thứ tự dừng) |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

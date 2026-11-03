@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer as createNet } from 'node:net';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -92,4 +92,25 @@ test('two hosts that judge the same lock stale at once: the second does not move
   // A guard left by a host that died is cleared, and the claim goes on.
   writeFileSync(lockFile, JSON.stringify(owner({ pid: deadPid(), token: 'old1' }))); writeFileSync(lockFile + '.takeover', JSON.stringify({ pid: deadPid(), at: Date.now() }));
   assert.equal(lock.claimMachine({ token: 'cccc', dataDir: 'dataC', root: '.', port: 3 }).token, 'cccc'); lock.releaseMachine('cccc');
+});
+
+test('the takeover guard: a contender inside another host\'s critical section changes nothing; a live holder\'s guard is never taken however old; a gone holder\'s is', () => {
+  // Inside A's guard (lock read again, about to be moved), B tries: B must not enter, and A's take-over completes alone.
+  writeFileSync(lockFile, JSON.stringify(owner({ pid: deadPid(), token: 'old2' })));
+  let inside = null;
+  const a = lock.claimMachine({ token: 'aaa2', dataDir: 'dataA', root: '.', port: 1 }, { inGuard: () => {
+    const guard = JSON.parse(readFileSync(lockFile + '.takeover', 'utf8')); assert.equal(guard.pid, process.pid, 'the guard is whole while held');
+    try { lock.claimMachine({ token: 'bbb2', dataDir: 'dataB', root: '.', port: 2 }); inside = 'entered'; } catch (error) { inside = String(error.message); }
+  } });
+  assert.equal(a.token, 'aaa2'); assert.match(inside, /RUNTIME_BUSY/); assert.equal(lock.readLock().token, 'aaa2'); assert.ok(!existsSync(lockFile + '.takeover'));
+  lock.releaseMachine('aaa2');
+  // A guard of a live process (this one) from long ago: not removed, so the claim does not get through.
+  writeFileSync(lockFile, JSON.stringify(owner({ pid: deadPid(), token: 'old3' })));
+  writeFileSync(lockFile + '.takeover', JSON.stringify(owner({ token: 'liveguard', since: new Date(0).toISOString() })));
+  assert.throws(() => lock.claimMachine({ token: 'ccc2', dataDir: 'dataC', root: '.', port: 3 }), /RUNTIME_BUSY/);
+  assert.equal(JSON.parse(readFileSync(lockFile + '.takeover', 'utf8')).token, 'liveguard', 'a live holder keeps its guard');
+  // The same guard once its holder is gone: cleared, and the claim goes through.
+  writeFileSync(lockFile + '.takeover', JSON.stringify(owner({ pid: deadPid(), token: 'deadguard' })));
+  assert.equal(lock.claimMachine({ token: 'ccc2', dataDir: 'dataC', root: '.', port: 3 }).token, 'ccc2'); lock.releaseMachine('ccc2');
+  rmSync(lockFile + '.takeover', { force: true });
 });

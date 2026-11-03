@@ -215,7 +215,12 @@ test('committed: a role is done with a row only when its work is saved, over a g
     assert.equal(r.committedOf(id, 'chinh'), 0, 'no picture yet');
     r.savePicture(id, 'Bức tranh', [b]); assert.equal(r.committedOf(id, 'chinh'), b);
     r.savePicture(id, 'Bức tranh 2', [e]); assert.equal(r.committedOf(id, 'chinh'), c, 'capped at what chinh was handed');
-    const roles = r.compact().followers; assert.equal(roles.dich.committed, e); assert.equal(roles.dich.cursor, e); assert.equal(roles.chinh.committed, c);
+    // That cap is fixed when the picture is saved: handing chinh more later does not make an old picture cover it.
+    await r.next(id, e, 0, 12, true, 'chinh', { lease: 'chinhcommit1' }); assert.equal(r.committedOf(id, 'chinh'), c, 'a future citation covers nothing');
+    const before = r.db.prepare('SELECT committed FROM followers WHERE session_id=? AND name=?').get(id, 'dich').committed;
+    r.translate(id, [{ sourceId: b, text: 'sửa bản dịch' }]); r.compact(); r.compact();
+    assert.equal(r.db.prepare('SELECT committed FROM followers WHERE session_id=? AND name=?').get(id, 'dich').committed, before, 'status works it out but writes nothing');
+    const roles = r.compact().followers; assert.equal(roles.dich.committed, e); assert.equal(roles.dich.cursor, e); assert.equal(roles.chinh.committed, c); assert.equal(roles.chinh.cursor, e);
     assert.equal(r.db.prepare('SELECT committed FROM followers WHERE session_id=? AND name=?').get(id, 'dich').committed, e, 'stored for a host that takes over');
   });
 });
@@ -234,6 +239,16 @@ test('the machine lock is kept while anything of the host still runs: recorder, 
       r.captureState = 'OFF'; r.recorder.attached = true; r.recorder.pid = process.pid; assert.equal(r.releaseWhenIdle(), false, 'kept while the recorder is alive');
       r.recorder.attached = false; r.recorder.pid = null; r.rechecking = 1; assert.equal(r.releaseWhenIdle(), false, 'kept while a recheck runs'); r.rechecking = 0;
       assert.equal(r.releaseWhenIdle(), true); assert.equal(lock.readLock(), null);
+      // The real stop path with a recorder that will not go (review of 1def228, finding 2): an attached recorder whose process cannot
+      // be stopped (a system PID here: kill is refused) keeps its PID and the lock; another host is refused until it is really gone.
+      const stubborn = process.platform === 'win32' ? 4 : 1;
+      const again = await openSession(r, dir); r.claim(again.id); r.recorderStopMs = 50;
+      await r.stopRecorder(); await until(() => !r.recorder.child, 'the fake recorder of openSession has gone');   // the attached one stands in
+      r.recorder.stopping = false; r.recorder.attached = true; r.recorder.pid = stubborn; r.recorder.state = 'RECORDING';
+      await r.finish(again.id);
+      assert.equal(r.recorder.pid, stubborn); assert.equal(r.recorder.state, 'STOP_UNCONFIRMED'); assert.equal(lock.readLock().token, 'tokn');
+      assert.throws(() => lock.claimMachine({ token: 'late', dataDir: join(dir, 'other'), root: '.', port: 8 }), /RUNTIME_BUSY/);
+      r.recorder.attached = false; r.recorder.pid = null; assert.equal(r.releaseWhenIdle(), true, 'given back once it is gone');
       // Two rechecks asked together after the meeting: each takes the machine and gives it back before the next one starts.
       const events = []; const claim = r.claim.bind(r), unclaim = r.unclaim.bind(r);
       r.claim = sid => { events.push('claim'); return claim(sid); }; r.unclaim = () => { events.push('give back'); return unclaim(); };

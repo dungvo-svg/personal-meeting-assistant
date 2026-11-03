@@ -6,7 +6,7 @@
 // The lock has no time limit: it is stale only when its holder is gone. "Gone" is checked by PID and by the process's start time
 // (a reused PID is another process). A host that died while its recorder or ASR worker goes on still holds the machine; only a host
 // of the same data folder may take that meeting over (reattach), as the recorder belongs to it.
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -38,8 +38,9 @@ const mine = (owner: LockOwner | null, token: string) => !!owner && owner.pid ==
 const describe = (o: LockOwner) => `pid ${o.pid}${o.port ? `, cổng ${o.port}` : ''}, dữ liệu ${o.dataDir}, từ ${o.since}${o.sessionId ? `, cuộc họp ${o.sessionId}` : ''}`;
 
 // Takes the machine for this host, or throws RUNTIME_BUSY. Calling it again while holding it changes nothing.
-// `hooks.onStale` (tests only): runs after this host has judged the lock stale and before it takes it, to replay a racing host.
-export function claimMachine(me: { token: string; dataDir: string; root: string; port: number | null; sessionId?: string | null }, hooks: { onStale?: () => void } = {}) {
+// `hooks` (tests only) replay a racing host: `onStale` after the lock is judged stale, before the guard; `inGuard` inside the guard,
+// between reading the lock again and moving it.
+export function claimMachine(me: { token: string; dataDir: string; root: string; port: number | null; sessionId?: string | null }, hooks: { onStale?: () => void; inGuard?: () => void } = {}) {
   mkdirSync(lockDir(), { recursive: true });
   const record: LockOwner = { pid: process.pid, pidStartedAt: ownStart, token: me.token, dataDir: resolve(me.dataDir), root: resolve(me.root), port: me.port, since: new Date().toISOString(), sessionId: me.sessionId ?? null, recorderPid: null, workerPid: null };
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -54,29 +55,40 @@ export function claimMachine(me: { token: string; dataDir: string; root: string;
     const orphans = [owner.recorderPid, owner.workerPid].filter(pid => pidAlive(pid));
     if (orphans.length && resolve(owner.dataDir) !== record.dataDir) throw new Error(`RUNTIME_BUSY: host cũ đã dừng nhưng bộ ghi/bộ nghe của nó còn chạy (pid ${orphans.join(', ')}, dữ liệu ${owner.dataDir}). Chỉ host của thư mục dữ liệu đó được nhận lại.`);
     hooks.onStale?.();
-    takeOver(owner);
+    takeOver(owner, hooks);
   }
   throw new Error('RUNTIME_BUSY: không giành được khoá máy (có host khác đang giành cùng lúc)');
 }
 // Moves a stale lock aside, one host at a time. Without this, two hosts that both judged the same lock stale could each move a lock
 // away, and the second would move the FIRST host's fresh lock (review of 5e903de, finding a). Under the takeover guard the lock is
 // read again and moved only if it is still the very record judged stale; a lock someone took meanwhile is left alone.
-function takeOver(stale: LockOwner) {
-  const guard = `${lockFile()}.takeover`; let fd: number;
-  try { fd = openSync(guard, 'wx'); }
+// The guard (review of 1def228, finding 1):
+// - appears whole: a complete temp file is hard-linked to its name, so no reader ever sees an empty guard;
+// - is never taken from a live holder, however old: only a holder that is gone (dead PID, or a reused one) loses it;
+// - a gone holder's guard is moved to a unique name and checked; if it turns out to be someone else's, it is linked back;
+// - its holder removes it only while it is still its own.
+function takeOver(stale: LockOwner, hooks: { inGuard?: () => void }) {
+  const guard = `${lockFile()}.takeover`;
+  const mine: LockOwner = { pid: process.pid, pidStartedAt: ownStart, token: `guard-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`, dataDir: '', root: '', port: null, since: new Date().toISOString(), sessionId: null, recorderPid: null, workerPid: null };
+  const temp = `${guard}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temp, JSON.stringify(mine));
+  try { linkSync(temp, guard); }
   catch (error: any) {
     if (error?.code !== 'EEXIST') throw error;
-    // A guard is held for milliseconds; one left by a host that died, or older than 10 s, is removed and the claim tries again.
-    let held: any = null; try { held = JSON.parse(readFileSync(guard, 'utf8')); } catch {}
-    if (!held || !pidAlive(held.pid) || Date.now() - Number(held.at) > 10000) { try { rmSync(guard, { force: true }); } catch {} }
+    const held = readJson(guard);
+    if (held && !holderAlive(held)) {
+      const moved = `${guard}.gone-${held.pid}-${Date.now()}`;
+      try { renameSync(guard, moved); const was = readJson(moved); if (was?.token === held.token) rmSync(moved, { force: true }); else try { linkSync(moved, guard); rmSync(moved, { force: true }); } catch {} } catch {}
+    }
     return;
-  }
+  } finally { rmSync(temp, { force: true }); }
   try {
-    writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() })); closeSync(fd);
     const now = readLock();
-    if (now && now.token === stale.token && now.pid === stale.pid) renameSync(lockFile(), `${lockFile()}.stale-${stale.pid}-${Date.now()}`);
-  } finally { try { rmSync(guard, { force: true }); } catch {} }
+    hooks.inGuard?.();
+    if (now && now.token === stale.token && now.pid === stale.pid && readLock()?.token === stale.token) renameSync(lockFile(), `${lockFile()}.stale-${stale.pid}-${Date.now()}`);
+  } finally { if (readJson(guard)?.token === mine.token) rmSync(guard, { force: true }); }
 }
+const readJson = (path: string): LockOwner | null => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return null; } };
 // What daemon.json also says (session, recorder, worker), kept in the lock so a later host can judge it. Only by the holder.
 export function updateMachine(token: string, change: Partial<Pick<LockOwner, 'sessionId' | 'recorderPid' | 'workerPid' | 'port'>>) {
   const owner = readLock(); if (!mine(owner, token)) return false;

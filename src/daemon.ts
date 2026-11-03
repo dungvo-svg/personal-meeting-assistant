@@ -134,7 +134,7 @@ let lastRegistry = '';
 function writeRegistry() {
   const registry = runtime.registry(); const text = JSON.stringify(registry); if (text === lastRegistry) return; lastRegistry = text;
   try { writeFileSync(join(dataDir, 'daemon.json'), JSON.stringify({ url: origin, pid: process.pid, token, version: VERSION, startedAt, ...registry })); } catch (error) { console.error('daemon.json not written:', error); }
-  if (runtime.machine) try { updateMachine(runtime.machine.token, { sessionId: registry.sessionId, recorderPid: registry.recorderPid, workerPid: registry.workerPid }); } catch {}
+  if (runtime.machine) try { updateMachine(runtime.machine.token, { sessionId: registry.sessionId, recorderPid: runtime.recorderAlive() ? runtime.recorder.pid : null, workerPid: runtime.capture?.pid ?? null }); } catch {}
 }
 writeRegistry();
 console.error(`Meeting runtime ${VERSION}: ${origin} (capture OFF)`);
