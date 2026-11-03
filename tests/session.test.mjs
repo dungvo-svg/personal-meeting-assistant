@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { MeetingRuntime } from '../dist/runtime.js';
 import { markAudioDir } from '../dist/audio.js';
 import { test, withFakes, openSession, until, sleep, readLog } from './fakes.mjs';
+import { isolatedEnv, recordingHost, teardown } from './harness.mjs';
 
 const spawns = (audio, file) => readLog(audio, file).filter(entry => entry.what === 'spawn');
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -306,20 +307,21 @@ test('stop without ever listening does not wait for the idle worker to read the 
 
 test('the session host exits after stop (once nothing is left to do), a later command starts one only for history, and that one leaves when idle; default idle is 2 minutes', async () => {
   assert.match(readFileSync('src/daemon.ts', 'utf8'), /PMA_IDLE_MINUTES \|\| 2\)/);
-  const run = promisify(execFile); const dir = mkdtempSync(join(tmpdir(), 'pma-host-test-'));
-  const env = { ...process.env, PMA_PORT: process.env.PMA_SESSION_TEST_PORT || '8815', PMA_TEST_MODE: '1', PMA_DATA_DIR: dir, PMA_STOP_HOOK: 'off', PMA_EXIT_AFTER_FINISH: '1', PMA_IDLE_MINUTES: '0.03' };
+  // A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*): the host this starts can never be the user's.
+  const run = promisify(execFile); const world = await isolatedEnv('session-host'); const dir = world.env.PMA_DATA_DIR;
+  const env = { ...world.env, PMA_EXIT_AFTER_FINISH: '1', PMA_IDLE_MINUTES: '0.03' };
   const pma = async (...args) => JSON.parse((await run(process.execPath, [resolve('dist/cli.js'), ...args], { env })).stdout);
   const info = () => JSON.parse(readFileSync(join(dir, 'daemon.json'), 'utf8'));
   try {
-    const started = await pma('start', '--title', 'Họp thử'); const first = info();
+    const started = await recordingHost(env, () => pma('start', '--title', 'Họp thử')); const first = info();   // starts a host: its pid is recorded as this test's
     assert.equal(first.sessionId, started.session.id); assert.equal(first.recorderPid, null); assert.equal(first.asr, 'paused'); assert.equal(started.rememberedSpeaker, null);
     await sleep(2500); assert.ok(alive(first.pid), 'an open session keeps its host alive past the idle time');
     const stopped = await pma('stop'); assert.ok(stopped.raw.path);
     await until(() => !alive(first.pid), 'host exit after stop', 12000); assert.ok(!existsSync(join(dir, 'daemon.json')), 'gone from daemon.json before the port is freed');
-    const history = await pma('history'); assert.equal(history.length, 1); const second = info();
+    const history = await recordingHost(env, () => pma('history')); assert.equal(history.length, 1); const second = info();   // the second host, recorded too
     assert.notEqual(second.pid, first.pid); assert.equal(second.sessionId, null, 'a history-only host has no session');
     await until(() => !alive(second.pid), 'idle host exit', 15000);
-  } finally { await pma('shutdown').catch(() => {}); await sleep(600); rmSync(dir, { recursive: true, force: true }); }
+  } finally { await teardown(world); }   // stops a host only if it is proven this test's own (the exited ones are simply gone), then removes the root
 });
 
 test('recheck: the worker is asked for the stretch around a source (or a clock range), the answer is stored, the source tagged RECHECKED and RAW shows it', async () => {

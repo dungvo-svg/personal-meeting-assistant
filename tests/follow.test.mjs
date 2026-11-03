@@ -3,12 +3,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { createServer as createNet } from 'node:net';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { ackOf } from '../dist/text.js';
+import { applyEnv, isolatedEnv, recordingHost, teardown } from './harness.mjs';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const LIVE = 'SOURCE_LIVE_FOLLOW'; const MIC = 'CHANNEL_MIC';
@@ -183,7 +183,6 @@ test('pma read --as sends the role and prints only what it got; an all-hidden pa
 });
 
 // ---- once against a real test host: schema of the new RPC fields and two real followers of one role ----
-const freePort = () => new Promise(res => { const s = createNet().listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => res(port)); }); });
 test('follow is pinned to its meeting: when A ends and B opens between two calls, the A process never reads, claims or acknowledges B; it prints what it holds, releases A and ends', async () => {
   let current = 's'; let nexts = 0;
   await withHost((method, args) => {
@@ -211,13 +210,14 @@ test('follow is pinned to its meeting: when A ends and B opens between two calls
 });
 
 test('a real host: lease, ack, release and read --as through /rpc; a second follow --as dich waits and gives up; release frees the role at once', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'pma-follow-real-')); const port = String(await freePort());
-  const env = { ...process.env, PMA_PORT: port, PMA_TEST_MODE: '1', PMA_DATA_DIR: directory, PMA_STOP_HOOK: 'off', PMA_FOLLOW_RETRY_MS: '100', PMA_FOLLOW_BUSY_MAX_MS: '700' };
-  const saved = { ...process.env }; Object.assign(process.env, env);
+  // A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*); process.env is set from it only, before the import.
+  const world = await isolatedEnv('follow-real');
+  const env = { ...world.env, PMA_FOLLOW_RETRY_MS: '100', PMA_FOLLOW_BUSY_MAX_MS: '700' };
+  const restoreEnv = applyEnv(env);
   const { call } = await import('../dist/client.js');
   const run = (...args) => new Promise(res => { const child = spawn(process.execPath, [resolve('dist/cli.js'), ...args], { env }); let out = ''; child.stdout.on('data', d => { out += d; }); child.on('exit', code => res({ out, code })); });
   try {
-    await call('prepare', { title: 'Phiên khoá', fixture: true }); const first = (await call('fixture', { text: 'Đoạn một.' })).id;
+    await recordingHost(world.env, () => call('prepare', { title: 'Phiên khoá', fixture: true })); const first = (await call('fixture', { text: 'Đoạn một.' })).id;
     // chinh follows for a moment and releases at the end of its time: the role is free again at once
     const brief = await run('follow', '--no-notes', '--minutes', '0.00001'); assert.match(brief.out, /LÔ #1–#1 \(1 đoạn\):\n#1 .*Đoạn một\.\nBẬT LẠI/);
     const freed = (await call('status')).followers.chinh; assert.equal(freed.at, null); assert.equal(freed.cursor, first);
@@ -242,7 +242,7 @@ test('a real host: lease, ack, release and read --as through /rpc; a second foll
     // a new meeting: a follower of it works as usual
     await call('prepare', { title: 'Phiên sau', fixture: true }); const b1 = (await call('fixture', { text: 'Cuộc họp B.' })).id;
     const next = await run('follow', '--as', 'dich', '--no-notes', '--minutes', '0.00002'); assert.match(next.out, new RegExp(`#${b1} .*Cuộc họp B\\.`));
-  } finally { await call('shutdown').catch(() => {}); await sleep(500); for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 }); }
+  } finally { await teardown(world); restoreEnv(); }   // stops the host only if it is proven this test's own, then removes the root
 });
 
 // 03/11 meeting: `pma recheck` failed with "fetch failed" while the host was still working on it (fetch stops waiting for headers after

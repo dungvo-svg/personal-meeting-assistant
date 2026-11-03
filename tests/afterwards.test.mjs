@@ -2,21 +2,14 @@
 // reports written after `pma stop` reach the meeting even when the host that ran it has gone. Synthetic rows; no audio, no ASR.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer as createNet } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-const freePort = () => new Promise(r => { const s = createNet(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => r(port)); }); });
+import { applyEnv, isolatedEnv, ownedShutdown, recordingHost, teardown } from './harness.mjs';
 
 test('a 30-minute picture longer than 8000 characters is saved; after stop and a new host, summary and tasks go to the latest meeting; with no meeting open the error says so', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'pma-afterwards-')); const port = String(await freePort());
-  const env = { PMA_PORT: port, PMA_TEST_MODE: '1', PMA_DATA_DIR: directory, PMA_STOP_HOOK: 'off' };
-  const saved = { ...process.env }; Object.assign(process.env, env);
+  // A world of its own (temp root, data dir, lock dir, free port, no inherited PMA_*); process.env is set from it only, before the import.
+  const world = await isolatedEnv('afterwards'); const restoreEnv = applyEnv(world.env);
   const { call } = await import('../dist/client.js');
   try {
-    const opened = await call('prepare', { title: 'Họp thầu thử', fixture: true }); const id = opened.session.id;
+    const opened = await recordingHost(world.env, () => call('prepare', { title: 'Họp thầu thử', fixture: true })); const id = opened.session.id;   // starts the host: its pid is recorded as this test's
     const first = (await call('fixture', { text: 'Đoạn một.' })).id;
     const long = 'Bức tranh. '.repeat(1800);   // ~19800 characters
     assert.ok(long.length > 8000);
@@ -25,19 +18,16 @@ test('a 30-minute picture longer than 8000 characters is saved; after stop and a
     await assert.rejects(call('picture', { text: 'x'.repeat(30001), sourceIds: [first] }), /INVALID_INPUT/);
     await call('finish', {});
     // The host that ran the meeting leaves; the next command starts a new one with no meeting open.
-    await call('shutdown'); await sleep(800);
-    await assert.rejects(call('manual', { text: 'nhập tay' }), /NO_OPEN_SESSION: không có cuộc họp nào đang mở; thêm --session/);
+    const left = await ownedShutdown(world.env); assert.equal(left.skipped, undefined, 'the first host is ours and leaves: ' + left.skipped);
+    await assert.rejects(recordingHost(world.env, () => call('manual', { text: 'nhập tay' })), /NO_OPEN_SESSION: không có cuộc họp nào đang mở; thêm --session/);   // starts the second host
     // The reports folder is named after the meeting (date_first-8-of-id): both land in the meeting that just ended.
     const summary = await call('summary', { markdown: '# Tóm tắt\n\nĐoạn một [#1].', sourceIds: [first] });
     const tasks = await call('tasks', { tasks: [{ task: 'Gửi giá thuốc', sourceIds: [first] }] });
     for (const saved of [summary, tasks]) assert.ok(JSON.stringify(saved).includes(id.slice(0, 8)), JSON.stringify(saved));
   } finally {
-    // Wait for the host to be gone (Windows keeps its files locked until the process exits), then remove the folder.
-    const { daemonInfo } = await import('../dist/client.js'); const pid = daemonInfo()?.pid;
-    await call('shutdown').catch(() => {});
-    for (let i = 0; i < 100 && pid; i++) { try { process.kill(pid, 0); } catch { break; } await sleep(100); }
-    for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key];
-    rmSync(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 250 });   // the host may still hold its database for a moment
+    // Stop the host only if it is proven ours (and wait until it is gone: Windows keeps its files locked until the process exits),
+    // whatever failed above; then remove the root (the host may still hold its database for a moment: cleanup retries).
+    await teardown(world); restoreEnv();
   }
 });
 
