@@ -104,3 +104,25 @@ test('prepare with mic:false is refused by an old host before it is sent, and se
   assert.deepEqual(await client.call('prepare', { title: 'Họp', mic: false }), { accepted: 'prepare' });
   assert.deepEqual(received.filter(r => r.method === 'prepare').map(r => r.args), [{ title: 'Họp', mic: false }]);
 });
+
+// Codex review of b960b8a: PMA_MIC=0 in the client is an explicit no-microphone choice too. A running host never sees the client's
+// environment, so the client puts mic:false into the request (prepare, select, listen) and checks it like --no-mic, before any payload.
+test('PMA_MIC=0 without --no-mic: an old host gets zero prepare payloads; a current host gets mic:false; select and listen carry it', async () => {
+  const before = process.env.PMA_MIC; process.env.PMA_MIC = '0';
+  try {
+    mode = 'legacy'; received.length = 0;
+    await assert.rejects(client.call('prepare', { title: 'Họp' }), /HOST_PROTOCOL_OLD: .*mic-session\/1/);
+    assert.ok(received.every(r => r.method === 'ping'), 'no prepare reached the old host');
+    // select and listen take a mic flag on an 0.11 host too: they are sent, with the choice in them.
+    assert.deepEqual(await client.call('select', { deviceIndex: 13 }), { accepted: 'select' });
+    assert.deepEqual(await client.call('listen', {}), { accepted: 'listen' });
+    assert.deepEqual(received.filter(r => r.method === 'select' || r.method === 'listen').map(r => r.args.mic), [false, false]);
+    mode = 'current'; received.length = 0;
+    assert.deepEqual(await client.call('prepare', { title: 'Họp', mic: true }), { accepted: 'prepare' });
+    assert.deepEqual(received.filter(r => r.method === 'prepare').map(r => r.args), [{ title: 'Họp', mic: false }], 'PMA_MIC=0 wins over an explicit mic:true');
+  } finally { if (before === undefined) delete process.env.PMA_MIC; else process.env.PMA_MIC = before; }
+  // Without PMA_MIC=0 nothing is added: the OWN-027 default (microphone recorded) is unchanged.
+  mode = 'current'; received.length = 0;
+  await client.call('prepare', { title: 'Họp' });
+  assert.deepEqual(received.filter(r => r.method === 'prepare').map(r => r.args), [{ title: 'Họp' }]);
+});

@@ -138,8 +138,16 @@ export async function inspect() {
   return { host: 'NOT_RUNNING', dataDir, machine, attached: null, note };
 }
 
+// The request as it will take effect: PMA_MIC=0 in THIS client's environment is an explicit no-microphone choice for the requests that
+// carry one (prepare, select, listen), whatever flag was given. A host that is already running never sees the client's environment
+// (DAEMON_ENV only reaches a host this client launches), so the choice travels in the request, and is checked like --no-mic.
+const MIC_METHODS = ['prepare', 'select', 'listen'];
+function effective(method: string, args: unknown) {
+  if (process.env.PMA_MIC === '0' && MIC_METHODS.includes(method) && args && typeof args === 'object') return { ...(args as object), mic: false };
+  return args;
+}
 export async function call(method: string, args: unknown = {}, timeoutMs = 60000) {
-  const a: any = args;
+  args = effective(method, args); const a: any = args;
   if (method === 'note' && a?.key === PICTURE_KEY) throw new Error('PICTURE_KEY_RESERVED: bức tranh chỉ lưu bằng pma picture (--receipt, --base); ghi chú dùng khoá khác');
   const info = await ensureDaemon();
   // A request that relies on a newer host's guarantee is refused before it is sent when the host does not say it gives it.

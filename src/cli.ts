@@ -265,7 +265,7 @@ async function main() {
       const listed = flags.participants ? JSON.parse(input(flags.participants)) : undefined;
       const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}) });
       // Right after the session exists; a list the runtime refuses is reported, the session stays open.
-      const people = listed ? await call('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
+      const people = listed ? await attach('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
       const opened = flags.link ? await call('open', { url: flags.link }) : undefined;
       const load = status.expectedLoadSeconds ? `, lần trước mất khoảng ${Math.round(status.expectedLoadSeconds)} giây` : '';
       // The recorder starts by itself when the speaker of the last session is still there (profile.json): pma status shows recorder.state.
