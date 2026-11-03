@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
-export const DAEMON_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH', 'PMA_LOCK_DIR'];
+export const DAEMON_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH', 'PMA_LOCK_DIR', 'PMA_MIC'];
 type Info ={ url: string; pid: number; token: string; version: string; startedAt: string };
 type Holder = NonNullable<ReturnType<typeof machineHolder>>;
 // How the host was reached: 'local' = this data dir's daemon.json; 'machine' = the machine-lock holder's, from another data dir.

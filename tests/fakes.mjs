@@ -80,18 +80,31 @@ export const readLog = (dir, name) => { try { return readFileSync(join(dir, name
 
 // A MeetingRuntime over a temp root that holds the fakes (not a test runtime: warm-up and the remembered source are on).
 // Short timings so supervision and drain tests run in well under a second each.
+// Isolation (Codex review of f948faf): every PMA_* the parent had is removed for the test and restored after; the lock folder and
+// the data folder are this test's own temp folders, so nothing can reach the user's %LOCALAPPDATA%\pma lock or .local/runtime. The
+// runtime is made without a `machine` (it takes no machine lock at all); PMA_LOCK_DIR is set anyway as a second wall. Cleanup fails
+// closed: the temp folders are removed only once the runtime reports no worker and no recorder of its own still alive; otherwise they
+// are left and the test fails, naming the PIDs, so nothing outside the test is touched to clean up.
 export async function withFakes(fn, options = {}) {
-  const root = mkdtempSync(join(tmpdir(), 'pma-fake-root-')); const dir = mkdtempSync(join(tmpdir(), 'pma-session-test-'));
-  mkdirSync(join(root, 'tools')); writeFileSync(join(root, 'tools', 'audio_worker.py'), FAKE_WORKER); writeFileSync(join(root, 'tools', 'recorder.py'), FAKE_RECORDER);
+  const base = mkdtempSync(join(tmpdir(), 'pma-fakes-')); const root = join(base, 'root'); const dir = join(base, 'data'); const lock = join(base, 'lock');
+  for (const d of [root, dir, lock, join(root, 'tools')]) mkdirSync(d, { recursive: true });
+  writeFileSync(join(root, 'tools', 'audio_worker.py'), FAKE_WORKER); writeFileSync(join(root, 'tools', 'recorder.py'), FAKE_RECORDER);
   for (const [name, value] of Object.entries(options.profile ? { 'profile.json': JSON.stringify(options.profile) } : {})) writeFileSync(join(dir, name), value);
-  const before = { PMA_PYTHON: process.env.PMA_PYTHON, PMA_WARM: process.env.PMA_WARM, PMA_MIC: process.env.PMA_MIC };
-  process.env.PMA_PYTHON = process.execPath; delete process.env.PMA_WARM; delete process.env.PMA_MIC;
+  const saved = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('PMA_')));
+  for (const key of Object.keys(saved)) delete process.env[key];
+  Object.assign(process.env, { PMA_PYTHON: process.execPath, PMA_LOCK_DIR: lock, PMA_DATA_DIR: dir, PMA_STOP_HOOK: 'off' });
   const r = new MeetingRuntime(root, dir, false);
   r.restartDelayMs = 30; r.mixer = () => {};
+  let leftover = null;
   try { await fn(r, dir, root); } finally {
-    await r.close(); for (const [key, value] of Object.entries(before)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
-    rmSync(root, { recursive: true, force: true }); rmSync(dir, { recursive: true, force: true });
+    await r.close();
+    const alive = [r.capture?.pid, r.recorderAlive() ? r.recorder.pid : null].filter(pid => pid);
+    if (alive.length) leftover = alive;
+    for (const key of Object.keys(process.env)) if (key.startsWith('PMA_')) delete process.env[key];
+    Object.assign(process.env, saved);
+    if (!leftover) rmSync(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
+  if (leftover) throw new Error(`FAKES_CLEANUP_REFUSED: test-owned children still alive (pid ${leftover.join(', ')}); ${base} left in place`);
 }
 // Opens a session on the fake worker and recorder: prepared, speaker armed (recorder spawned), models "loaded".
 export async function openSession(r, dir, title = 'Họp') {

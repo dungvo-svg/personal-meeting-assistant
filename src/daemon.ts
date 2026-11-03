@@ -18,7 +18,7 @@ import { setMicState } from './mic.js';
 
 export const VERSION = '0.12.1';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
-const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH', 'PMA_LOCK_DIR'];
+const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH', 'PMA_LOCK_DIR', 'PMA_MIC'];
 for (let i = 2; i < process.argv.length - 1; i++) {
   if (process.argv[i] !== '--env') continue;
   const [key, ...value] = process.argv[++i].split('=');
@@ -49,7 +49,7 @@ const owned = (item: { sessionId: string } | null, sessionId: string, what: stri
 const methods: Record<string, (input: any) => any> = {
   ping: () => ({ ok: true, version: VERSION, pid: process.pid, testMode: runtime.testMode }),
   status: () => runtime.compact(),
-  prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional(), me: z.string().max(80).optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(), warm: z.boolean().optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages, { me: a.me, at: a.at, warm: a.warm }); return { ...runtime.compact(), me: runtime.profile.me ?? null, expectedLoadSeconds: runtime.profile.lastModelLoadSeconds ?? null, rememberedSpeaker: runtime.profile.speaker?.name ?? null }; },
+  prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional(), me: z.string().max(80).optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(), warm: z.boolean().optional(), mic: z.boolean().optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages, { me: a.me, at: a.at, warm: a.warm, mic: a.mic }); return { ...runtime.compact(), me: runtime.profile.me ?? null, expectedLoadSeconds: runtime.profile.lastModelLoadSeconds ?? null, rememberedSpeaker: runtime.profile.speaker?.name ?? null }; },
   open: input => runtime.openMeeting(z.object({ url: z.string().min(10).max(2000) }).parse(input).url),
   schedule: input => { const a = z.object({ sessionId: sid.optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/) }).parse(input); return runtime.setSchedule(current(a.sessionId), a.at); },
   sources: async input => { const devices = await runtime.listDevices(z.object({ levels: z.boolean().default(true) }).parse(input).levels); return { devices, suggested: runtime.suggest(devices) }; },
