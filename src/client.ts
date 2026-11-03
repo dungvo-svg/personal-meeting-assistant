@@ -159,6 +159,14 @@ export async function call(method: string, args: unknown = {}, timeoutMs = 60000
   return post(info, method, args, timeoutMs);
 }
 
+// Ending a meeting (stop): only to a host that is already running, never a reason to start one (a stop with no host had launched a
+// fresh host only to answer SESSION_NOT_FOUND). Not gated by capabilities: an explicit stop must reach an older host too.
+export async function reach(method: string, args: unknown = {}, timeoutMs = 60000) {
+  const { found, holder, why } = await locate();
+  if (!found) throw new Error(holder?.alive ? busy(holder, why) : 'HOST_NOT_RUNNING: không có host nào đang chạy, nên không có cuộc họp nào đang mở để dừng; không mở host mới');
+  return post(found.info, method, args, timeoutMs);
+}
+
 // Drafts (picture, translations, participants, summary, tasks, job results) only go to a host that is already running and answers
 // as this checkout's or the machine's host (Codex review of 9b02494): handing over content is never a reason to start a host.
 export async function attach(method: string, args: unknown = {}, timeoutMs = 60000) {

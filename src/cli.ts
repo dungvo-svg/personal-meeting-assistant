@@ -2,7 +2,7 @@
 // `follow` and `read`, which print transcript lines for Claude to read.
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { attach, call, inspect } from './client.js';
+import { attach, call, inspect, reach } from './client.js';
 import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
@@ -358,7 +358,7 @@ async function main() {
       return out({ removed: r.removed.length, kept: r.kept, freedMb: megabytes(r.freedBytes) });
     }
     // Stop = recorder stops, ASR drains, the mix is made, then RAW: minutes on a long meeting, so wait much longer than usual.
-    case 'stop': { const r = await call('finish', session, 20 * 60000); return out({ session: r.session, raw: r.raw, audio: r.audio?.mix, ...(r.unfinished?.length ? { unfinished: r.unfinished } : {}), ...(r.decisions?.length ? { decisions: r.decisions } : {}), next: 'pma coverage (chỗ chưa nghe rõ → pma recheck) → pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }
+    case 'stop': { const r = await reach('finish', session, 20 * 60000); return out({ session: r.session, raw: r.raw, audio: r.audio?.mix, ...(r.unfinished?.length ? { unfinished: r.unfinished } : {}), ...(r.decisions?.length ? { decisions: r.decisions } : {}), next: 'pma coverage (chỗ chưa nghe rõ → pma recheck) → pma read → viết SUMMARY.md + tasks.json → pma summary / pma tasks' }); }
     case 'recheck': {
       const target = positional[0]?.replace(/^#/, ''); const sourceId = target ? Number(target) : undefined;
       if (target !== undefined && !Number.isInteger(sourceId)) throw new Error('pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS');
