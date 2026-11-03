@@ -54,9 +54,9 @@ const methods: Record<string, (input: any) => any> = {
   schedule: input => { const a = z.object({ sessionId: sid.optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/) }).parse(input); return runtime.setSchedule(current(a.sessionId), a.at); },
   sources: async input => { const devices = await runtime.listDevices(z.object({ levels: z.boolean().default(true) }).parse(input).levels); return { devices, suggested: runtime.suggest(devices) }; },
   // Choosing the speaker also starts the recorder (when `start` has not already found the remembered one).
-  select: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), mic: z.boolean().default(true) }).parse(input); const armed = await runtime.select(current(a.sessionId), a.deviceIndex, a.mic); return { index: armed.index, name: armed.name, recorder: runtime.recorderBrief() }; },
+  select: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), mic: z.boolean().optional() }).parse(input); const armed = await runtime.select(current(a.sessionId), a.deviceIndex, a.mic); return { index: armed.index, name: armed.name, recorder: runtime.recorderBrief() }; },
   selectMic: async input => { const a = z.object({ sessionId: sid.optional(), deviceIndex: z.number().int().nonnegative(), consent: z.literal(true) }).parse(input); const armed = await runtime.selectMic(current(a.sessionId), a.deviceIndex); return { index: armed.index, name: armed.name, channel: 'Tôi', expiresAt: armed.expiresAt }; },
-  listen: input => { const a = z.object({ sessionId: sid.optional(), mic: z.boolean().default(true) }).parse(input); return runtime.start(current(a.sessionId), a.mic); },
+  listen: input => { const a = z.object({ sessionId: sid.optional(), mic: z.boolean().optional() }).parse(input); return runtime.start(current(a.sessionId), a.mic); },
   replay: input => { const a = z.object({ sessionId: sid.optional(), file: z.string().min(1).max(1000), speed: z.number().min(0.5).max(20).default(1) }).parse(input); return runtime.replay(current(a.sessionId), a.file, a.speed); },
   pause: async input => { runtime.requireSession(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)); await runtime.pause(); return runtime.compact(); },
   audio: input => { const a = z.object({ action: z.enum(['list', 'purge']).default('list'), olderThanDays: z.number().min(0).max(3650).optional() }).parse(input); return a.action === 'purge' ? runtime.purgeAudio(a.olderThanDays) : runtime.audioList(); },
@@ -73,8 +73,8 @@ const methods: Record<string, (input: any) => any> = {
   coverage: input => { const a = z.object({ sessionId: sid.optional() }).parse(input); return runtime.coverage(afterwards(a.sessionId)); },
   finish: input => runtime.finish(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   raw: input => runtime.writeRaw(afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
-  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200) }).parse(input); return runtime.saveSummary(afterwards(a.sessionId), a.markdown, a.sourceIds); },
-  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), ownerBasis: z.enum(['stated', 'confirmed', 'inferred']).optional(), sourceIds: ids.min(1).max(50) })).max(200) }).parse(input); return runtime.saveTasks(afterwards(a.sessionId), a.tasks); },
+  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200) }).parse(input); const s = afterwards(a.sessionId); runtime.requireCentralContext(s); return runtime.saveSummary(s, a.markdown, a.sourceIds); },
+  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), ownerBasis: z.enum(['stated', 'confirmed', 'inferred']).optional(), sourceIds: ids.min(1).max(50) })).max(200) }).parse(input); const s = afterwards(a.sessionId); runtime.requireCentralContext(s); return runtime.saveTasks(s, a.tasks); },
   history: () => runtime.historyList(),
   glossary: input => {
     const a = z.object({ action: z.enum(['list', 'add', 'remove']).default('list'), name: z.string().max(80).optional(), variants: z.array(z.string().max(80)).max(20).default([]), force: z.boolean().default(false) }).parse(input);
@@ -87,7 +87,9 @@ const methods: Record<string, (input: any) => any> = {
   // Reading the brief as a role is the context receipt (ENG-45): the pack version that role's agent was shown is recorded then.
   brief: input => {
     const a = z.object({ sessionId: sid.optional(), as: z.string().regex(/^[a-z0-9-]{1,24}$/).optional() }).parse(input);
-    const markdown = composeBrief(runtime, root, a.sessionId); const id = a.sessionId ?? runtime.session?.id;
+    // A role reading after the meeting (to write SUMMARY/TASKS) reads, and is recorded against, the latest meeting.
+    const id = a.sessionId ?? runtime.session?.id ?? (a.as ? runtime.latestSessionId() ?? undefined : undefined);
+    const markdown = composeBrief(runtime, root, id);
     if (!id) return { markdown };
     const block = runtime.contextBlock(id);
     if (!a.as) return { markdown: markdown + (block ? '\n\n' + block + '\n' : '') };
@@ -169,9 +171,9 @@ const methods: Record<string, (input: any) => any> = {
     return a.action === 'mark' ? { first: board.mark(s, a.kind, a.detail) } : { cleared: board.clear(s, a.kind) };
   },
   picture: input => {
-    const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional() }).parse(input);
+    const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional(), expectedRevision: z.number().int().nonnegative().optional() }).parse(input);
     const id = current(a.sessionId);
-    if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); return runtime.savePicture(id, a.text, a.sourceIds); }
+    if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); return runtime.savePicture(id, a.text, a.sourceIds, { expectedRevision: a.expectedRevision, central: true }); }
     return runtime.picture(id);
   },
   mic: input => setMicState(runtime, z.object({ state: z.enum(['on', 'off', 'auto']) }).parse(input).state),

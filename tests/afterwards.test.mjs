@@ -11,6 +11,9 @@ test('a 30-minute picture longer than 8000 characters is saved; after stop and a
   try {
     const opened = await recordingHost(world.env, () => call('prepare', { title: 'Họp thầu thử', fixture: true })); const id = opened.session.id;   // starts the host: its pid is recorded as this test's
     const first = (await call('fixture', { text: 'Đoạn một.' })).id;
+    // The picture is the central session's: it counts only once chinh has read the current context (Codex review of 9b02494).
+    await assert.rejects(call('picture', { text: 'Bức tranh.', sourceIds: [first] }), /CONTEXT_NOT_READ/);
+    await call('brief', { as: 'chinh' });
     const long = 'Bức tranh. '.repeat(1800);   // ~19800 characters
     assert.ok(long.length > 8000);
     assert.equal((await call('picture', { text: long, sourceIds: [first] })).revision, 1);

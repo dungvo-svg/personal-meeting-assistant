@@ -64,6 +64,7 @@ test('follow prints batched lines with flags, marks the follower heartbeat and s
 
 test('after the meeting: read, summary and tasks through the CLI with real source IDs', async () => {
   assert.match(await pma('read'), /#1 .*Tuần này kiểm kê kho số 2\.\n#2 .*\nHẾT/);
+  await pma('brief', '--as', 'chinh');   // after the meeting: chinh reads the latest meeting's context before writing its reports
   const summaryFile = join(directory, 'summary.md'); writeFileSync(summaryFile, '- Kiểm kê kho số 2 trong tuần.');
   const summary = await json('summary', '--file', summaryFile, '--sources', '1');
   assert.match(readFileSync(summary.path, 'utf8'), /Kiểm kê kho số 2/);

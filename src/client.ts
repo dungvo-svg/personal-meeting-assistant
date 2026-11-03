@@ -139,3 +139,11 @@ export async function call(method: string, args: unknown = {}, timeoutMs = 60000
   const info = await ensureDaemon();
   return post(info, method, args, timeoutMs);
 }
+
+// Drafts (picture, translations, participants, summary, tasks, job results) only go to a host that is already running and answers
+// as this checkout's or the machine's host (Codex review of 9b02494): handing over content is never a reason to start a host.
+export async function attach(method: string, args: unknown = {}, timeoutMs = 60000) {
+  const { found, holder, why } = await locate();
+  if (!found) throw new Error(holder?.alive ? busy(holder, why) : 'HOST_NOT_RUNNING: không có host nào đang chạy; nội dung nháp không tự mở host. Mở host bằng một lệnh đọc (vd. pma history) hoặc pma start, rồi chạy lại');
+  return post(found.info, method, args, timeoutMs);
+}

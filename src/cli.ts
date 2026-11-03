@@ -2,7 +2,7 @@
 // `follow` and `read`, which print transcript lines for Claude to read.
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { call, inspect } from './client.js';
+import { attach, call, inspect } from './client.js';
 import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
@@ -11,12 +11,14 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
                                    variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
-  pma picture [--file f.md --sources 1,2]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô)
+  pma picture [--file f.md --sources 1,2 [--expect-revision N]]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô);
+                                   lưu cần vai chinh đã đọc context hiện tại (pma brief --as chinh); --expect-revision: bản đang sửa, có bản mới hơn thì báo xung đột
+                                   Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
   pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
   pma me --on | --off | --auto     micro "Tôi" đang bật/tắt khi máy không tự đọc được (ghi vào timeline, by:manual); --auto trả lại cho máy đọc
   pma at HH:MM [--session ID]      sửa giờ họp theo lịch của phiên đang mở (độ phủ tính lại; phiên đã kết thúc thì chạy pma raw lại)
   pma sources                      nguồn loa đang có tiếng (suggested)
-  pma select <index> [--no-mic]    chọn nguồn loa (sau khi người dùng đồng ý) và BẮT ĐẦU GHI ÂM cả buổi (bộ ghi riêng, tới khi pma stop). Nhớ lựa chọn
+  pma select <index> [--no-mic|--mic]   chọn nguồn loa (sau khi người dùng đồng ý) và BẮT ĐẦU GHI ÂM cả buổi (bộ ghi riêng, tới khi pma stop). Nhớ lựa chọn
                                    cho lần sau: pma start thấy đúng thiết bị đó thì ghi ngay, không cần select. Quyền chọn kéo dài cả phiên
   pma select-mic <index>           đổi micro kênh "Tôi" (mặc định: micro mà ứng dụng họp đang dùng, hoặc micro mặc định của Windows)
   pma listen                       bật nhận dạng chữ (ASR), chờ tới LISTENING; bộ nghe đuổi kịp từ giây đầu của bản ghi. Không giới hạn thời lượng.
@@ -71,6 +73,8 @@ function options(argv: string[]) {
   }
   return { positional, flags };
 }
+// --no-mic / --mic change the session's choice (kept until changed again); neither keeps it.
+const micFlag = (flags: Record<string, string>) => flags['no-mic'] === 'true' ? { mic: false } : flags.mic === 'true' ? { mic: true } : {};
 const list = (value?: string) => value ? value.split(',').map(v => Number(v.trim())).filter(Number.isInteger) : [];
 // `--file -` reads the text from stdin (0.12.1): the agent hands drafts (picture, translations, summary, tasks, participants) straight to
 // the host through a pipe, so it writes no draft file of its own anywhere; the host stores them as before.
@@ -267,12 +271,12 @@ async function main() {
     }
     case 'participants': {
       if (!flags.file) throw new Error('pma participants --file p.json');
-      return out(await call('participants', { participants: JSON.parse(input(flags.file)) }));
+      return out(await attach('participants', { participants: JSON.parse(input(flags.file)) }));
     }
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
     case 'picture': {
-      if (flags.file) return out(await call('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources) }));
+      if (flags.file) return out(await attach('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources), ...(flags['expect-revision'] ? { expectedRevision: Number(flags['expect-revision']) } : {}) }));
       const p = await call('picture', session);
       return console.log(p ? `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n${p.text}` : 'Chưa có bức tranh cuộc họp (pma picture --file f.md --sources <id,…>)');
     }
@@ -284,11 +288,11 @@ async function main() {
     }
     case 'at': return out(await call('schedule', { ...session, at: positional[0] ?? flags.at }));
     case 'sources': { const r = await call('sources', { levels: flags.levels !== 'false' }); return out({ suggested: r.suggested, devices: r.devices.map((d: any) => ({ index: d.index, name: d.name, kind: d.kind === 'microphone' ? 'mic' : 'speaker', default: d.isDefaultOutput || undefined, frames: d.level?.framesReceived, peak: d.level?.peak })) }); }
-    case 'select': return out(await call('select', { ...session, deviceIndex: Number(positional[0]), mic: flags['no-mic'] !== 'true' }));
+    case 'select': return out(await call('select', { ...session, deviceIndex: Number(positional[0]), ...micFlag(flags) }));
     // Micro "Tôi" is on by default (owner, 30/10/2026); select-mic only picks a different microphone.
     case 'select-mic': return out(await call('selectMic', { ...session, deviceIndex: Number(positional[0]), consent: true }));
     case 'listen': {
-      await call('listen', { ...session, mic: flags['no-mic'] !== 'true' });
+      await call('listen', { ...session, ...micFlag(flags) });
       // Model load took up to ~3 minutes on 30/10; wait for it instead of reporting a failure.
       const deadline = Date.now() + 300000; let status = await call('status');
       while (['WARMING', 'WARM_READY', 'LOADING_ASR', 'WAITING_FOR_SOURCE'].includes(status.captureState) && Date.now() < deadline) { await new Promise(r => setTimeout(r, 1500)); status = await call('status'); }
@@ -298,7 +302,7 @@ async function main() {
     case 'job': {
       const action = positional[0];
       if (action === 'start') return out(await call('job', { ...session, action, title: positional.slice(1).join(' ') || flags.title, kind: flags.kind || 'analysis' }));
-      if (action === 'done') return out(await call('job', { ...session, action, id: Number(positional[1]), result: flags.file ? input(flags.file) : flags.text, sourceIds: list(flags.sources) }));
+      if (action === 'done') return out(await attach('job', { ...session, action, id: Number(positional[1]), result: flags.file ? input(flags.file) : flags.text, sourceIds: list(flags.sources) }));
       if (action === 'fail') return out(await call('job', { ...session, action, id: Number(positional[1]), note: positional.slice(2).join(' ') || flags.note }));
       if (action === 'list' || !action) return out(await call('job', { ...session, action: 'list', ...(flags.status ? { status: flags.status } : {}) }));
       throw new Error('pma job start|done|fail|list');
@@ -337,7 +341,7 @@ async function main() {
     case 'say': return out(await call('manual', { ...session, text: flags.text === 'true' ? undefined : flags.text ?? (positional.join(' ') || undefined) }));
     case 'translate': {
       const items = flags.file ? JSON.parse(input(flags.file)) : [{ sourceId: Number(flags.source), text: flags.text }];
-      return out(await call('translate', { ...session, items }));
+      return out(await attach('translate', { ...session, items }));
     }
     case 'status': return out(await inspect());
     case 'pause': return out(await call('pause', session));
@@ -375,8 +379,8 @@ async function main() {
       return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}${flags.as ? ' --as ' + flags.as : ''}`);
     }
     case 'note': return out(await call('note', { ...session, key: flags.key || 'note-' + Date.now(), revision: Number(flags.revision || 1), kind: flags.kind || 'observation', text: flags.text, sourceIds: list(flags.sources) }));
-    case 'summary': return out(await call('summary', { ...session, markdown: input(flags.file), sourceIds: list(flags.sources) }));
-    case 'tasks': return out(await call('tasks', { ...session, tasks: JSON.parse(input(flags.file)) }));
+    case 'summary': return out(await attach('summary', { ...session, markdown: input(flags.file), sourceIds: list(flags.sources) }));
+    case 'tasks': return out(await attach('tasks', { ...session, tasks: JSON.parse(input(flags.file)) }));
     case 'raw': return out(await call('raw', session));
     case 'history': return out(await call('history'));
     case 'glossary': {

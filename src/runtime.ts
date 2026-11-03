@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { EventEmitter, once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -220,6 +220,7 @@ export class MeetingRuntime extends EventEmitter {
     try { this.claim(row.id); } catch (error) { this.lastError = String(error); return; }
     const context = JSON.parse(row.context);
     this.session = { id: row.id, title: row.title, created: row.created, ended: null, mode: row.mode, languages: context.languages ?? ['vi', 'lo', 'th'], context };
+    this.micWanted = this.micFor(row.id);
     this.armedDevice = { index: -1, name: previous.speaker ?? this.profile.speaker?.name ?? 'nguồn đang ghi', kind: 'speaker_loopback_all_device_audio', grantedAt: new Date().toISOString(), expiresAt: null, reattached: true };
     this.asrWanted = previous.asr === 'listening'; this.everListened = this.asrWanted;
     this.asrPosition = this.lastProcessedWall(row.id);
@@ -287,11 +288,11 @@ export class MeetingRuntime extends EventEmitter {
     // Who "Tôi" is (remembered for next time) and when the meeting was scheduled, for the coverage line in reports.
     if (extra.me?.trim()) this.saveProfile({ me: extra.me.trim().slice(0, 80) });
     const scheduled = scheduledAt(extra.at);
-    const context = { ...base, languages, me: this.profile.me, scheduledStart: scheduled };
+    const context = { ...base, languages, me: this.profile.me, scheduledStart: scheduled, ...(extra.mic === false ? { micOff: true } : {}) };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
     this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.followers = {}; this.committed = {}; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.captureState = 'OFF'; this.captureInfo = {};
-    this.recorder = newRecorder(); this.asrWanted = false; this.workerPaused = false; this.modelReady = false; this.everListened = false; this.asrPosition = null; this.workerCrashes = []; this.micWanted = extra.mic !== false && process.env.PMA_MIC !== '0'; this.recorderMic = null;
+    this.recorder = newRecorder(); this.asrWanted = false; this.workerPaused = false; this.modelReady = false; this.everListened = false; this.asrPosition = null; this.workerCrashes = []; this.micWanted = this.micFor(this.session.id); this.recorderMic = null;
     // The session host lives as long as the meeting: models load now (ASR stays paused until `listen`), and when the last
     // speaker source is still there the recorder starts at once, so the whole meeting is on disk from the first second.
     if (!fixture && extra.warm !== false) { this.warmUp(this.session.id); void this.resumeRemembered(this.session.id); }
@@ -389,10 +390,14 @@ export class MeetingRuntime extends EventEmitter {
   }
   // Same text on the same set of sources as the latest revision is not a new revision. The sources are checked against the session
   // first (as publish does), so equal text cannot be used to get past that check.
-  savePicture(id: string, text: string, sourceIds: number[]) {
+  // `expectedRevision` (the revision the writer started from): a newer one saved meanwhile is a conflict, not overwritten. `central`
+  // (the host RPC): the picture is the central session's, so the chinh reader must have read the current context first.
+  savePicture(id: string, text: string, sourceIds: number[], opts: { expectedRevision?: number; central?: boolean } = {}) {
     this.requireSession(id);
     const ids = this.sessionSourceIds(id, sourceIds).sort((a, b) => a - b); const latest = this.picture(id);
     if (latest && latest.text === text && latest.sourceIds.length === ids.length && [...latest.sourceIds].sort((a, b) => a - b).every((v, i) => v === ids[i])) return { saved: true, revision: latest.revision, duplicate: true };
+    if (opts.expectedRevision !== undefined && opts.expectedRevision !== (latest?.revision ?? 0)) throw new Error(`PICTURE_REVISION_CONFLICT: đang sửa từ bản ${opts.expectedRevision}, đã có bản ${latest?.revision ?? 0}; đọc pma picture, gộp rồi lưu lại`);
+    if (opts.central) this.requireCentralContext(id);
     const revision = (latest?.revision ?? 0) + 1;
     // How far this picture covers the meeting: its highest cited source, but never past what chinh had been handed when it was saved
     // (citing a row chinh has not been handed yet covers nothing).
@@ -652,20 +657,33 @@ export class MeetingRuntime extends EventEmitter {
   }
   // Speaker (loopback) source for the whole session. Recording starts here unless `start` already did it from the remembered
   // choice; a different speaker than the one recording means new segments. mic=false leaves the "Tôi" microphone out.
-  async select(id: string, deviceIndex: number, mic = true) {
+  async select(id: string, deviceIndex: number, mic?: boolean) {
     this.requireSession(id); this.claim(id);
     if (!this.devices.some(d => d.index === deviceIndex)) await this.listDevices(false);
     const device = this.devices.find(d => d.index === deviceIndex);
     if (device?.kind === 'microphone') throw new Error('MICROPHONE_NEEDS_SEPARATE_CONSENT: chỉ chọn nguồn loa (loopback) qua tool này');
     const changed = !!this.armedDevice && this.armedDevice.index !== deviceIndex;
     const armed = this.arm(id, deviceIndex);
-    this.micWanted = mic && process.env.PMA_MIC !== '0';
+    this.micWanted = this.micFor(id, mic);
     this.saveProfile({ speaker: { name: armed.name } });
     // `select --no-mic` after the recorder already started with the microphone (the remembered speaker started it): restart it
     // without, at once. A recorder whose microphone use is not known is restarted too when no microphone is wanted.
     const micChanged = this.recorderAlive() && (this.recorderMic === null ? !this.micWanted : this.recorderMic !== this.micWanted);
     if ((changed || micChanged) && this.recorderAlive()) await this.restartRecorder(id); else this.ensureRecorder(id);
     return armed;
+  }
+  // Whether the recorder may use the microphone in this session. Default yes (OWN-027). An explicit `mic` (false: --no-mic; true:
+  // --mic or choosing a microphone) is recorded in the session context, so a later select/listen without it, a recorder retry or a
+  // new host taking the session over keeps it. PMA_MIC=0 always wins.
+  private micFor(id: string, mic?: boolean) {
+    const row: any = this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id);
+    const context = row ? JSON.parse(row.context) : {};
+    if (mic !== undefined && (context.micOff === true) !== !mic) {
+      context.micOff = !mic; if (mic) delete context.micOff;
+      this.db.prepare('UPDATE sessions SET context=? WHERE id=?').run(JSON.stringify(context), id);
+      if (this.session?.id === id) this.session.context = context;
+    }
+    return context.micOff !== true && process.env.PMA_MIC !== '0';
   }
   suggest(devices: any[]) {
     const loud = devices.filter(d => d.kind !== 'microphone' && d.level?.framesReceived).sort((a, b) => (b.level.peak ?? 0) - (a.level.peak ?? 0))[0];
@@ -680,7 +698,7 @@ export class MeetingRuntime extends EventEmitter {
     const device = this.devices.find(d => d.index === deviceIndex);
     if (!device) throw new Error('DEVICE_NOT_LISTED');
     if (device.kind !== 'microphone') throw new Error('NOT_A_MICROPHONE');
-    this.armedMic = { ...device, grantedAt: new Date().toISOString(), expiresAt: null }; this.micWanted = process.env.PMA_MIC !== '0';
+    this.armedMic = { ...device, grantedAt: new Date().toISOString(), expiresAt: null }; this.micWanted = this.micFor(id, true);
     this.saveProfile({ mic: { name: device.name } });
     if (this.recorderAlive()) await this.restartRecorder(id);
     this.ping(); return this.armedMic;
@@ -812,11 +830,11 @@ export class MeetingRuntime extends EventEmitter {
   // ---- ASR worker (tools/audio_worker.py --follow <audio dir>): reads the recorder's files, from the first second on ----
   // `listen`: ASR on. The recorder is started if it is not running yet; a paused worker resumes and catches up from where
   // it paused, a missing one is started. (mic only matters when this is what starts the recorder.)
-  async start(id: string, mic = true) {
+  async start(id: string, mic?: boolean) {
     this.requireSession(id); this.claim(id);
     if (this.stoppingCapture || this.finishing || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select');
-    if (!this.recorderAlive() && !this.recorder.retry && this.recorder.state !== 'ERROR') { this.micWanted = mic && process.env.PMA_MIC !== '0'; this.ensureRecorder(id); }
+    if (!this.recorderAlive() && !this.recorder.retry && this.recorder.state !== 'ERROR') { this.micWanted = this.micFor(id, mic); this.ensureRecorder(id); }
     if (this.capture && !this.followMode) return { state: this.captureState, info: this.captureInfo };  // a replay is running
     this.asrWanted = true; this.everListened = true; this.lastError = null;
     if (this.capture) {
@@ -1312,12 +1330,28 @@ export class MeetingRuntime extends EventEmitter {
       ...(rows.length ? [...head, ...rows] : ['_Không thấy việc cần làm nào được nêu rõ trong transcript._'])];
     return this.saveReport(id, 'tasks', 'TASKS.md', lines.join('\n') + '\n', [...new Set(all)]);
   }
+  // The file first, read back, then the row (Codex review of 9b02494): a report the disk refused is not recorded as saved. The same
+  // content as the latest report of that kind is not a new row (a resent draft).
   private saveReport(id: string, kind: string, file: string, content: string, ids: number[]) {
+    const path = join(this.reportDir(id), file);
+    const latest: any = this.db.prepare('SELECT content FROM reports WHERE session_id=? AND kind=? ORDER BY id DESC LIMIT 1').get(id, kind);
+    const onDisk = (() => { try { return readFileSync(path, 'utf8'); } catch { return null; } })();
+    if (latest?.content === content && onDisk === content) return { saved: true, path, duplicate: true, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
     const count: any = this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE session_id=?').get(id);
     if (count.n >= 200) throw new Error('REPORT_CAPACITY_REACHED');
-    this.db.prepare('INSERT INTO reports(session_id,kind,content,source_ids,created) VALUES(?,?,?,?,?)').run(id, kind, content, JSON.stringify(ids), new Date().toISOString());
-    const path = join(this.reportDir(id), file); writeFileSync(path, content, 'utf8'); this.ping();
-    return { saved: true, path, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
+    const temporary = path + '.' + randomUUID().slice(0, 8) + '.tmp';
+    try { writeFileSync(temporary, content, 'utf8'); renameSync(temporary, path); if (readFileSync(path, 'utf8') !== content) throw new Error('READ_BACK_DIFFERS'); }
+    catch (error: any) { try { rmSync(temporary, { force: true }); } catch {} throw new Error('REPORT_NOT_WRITTEN: ' + file + ' chưa ghi được ra đĩa (' + String(error?.code ?? error?.message ?? error) + '); chưa lưu gì'); }
+    if (latest?.content !== content) this.db.prepare('INSERT INTO reports(session_id,kind,content,source_ids,created) VALUES(?,?,?,?,?)').run(id, kind, content, JSON.stringify(ids), new Date().toISOString());
+    this.ping(); return { saved: true, path, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
+  }
+  // The central session's drafts (picture, SUMMARY, TASKS) count only from a reader of the CURRENT context: the chinh role must have
+  // run `pma brief --as chinh` since the context last changed (a correction, a participant, the glossary).
+  requireCentralContext(id: string) {
+    const pack = this.packOf(id); if (!pack) return;
+    const own = this.bindingsOf(id)[bindingKey(id, MAIN_FOLLOWER, BRIEF_READER)];
+    if (!own) throw new Error('CONTEXT_NOT_READ: vai chinh chưa đọc context của cuộc họp này; chạy pma brief --as chinh rồi lưu lại');
+    if (own.version !== pack.version) throw new Error('CONTEXT_NOT_CURRENT: vai chinh đọc context v' + own.version + ', hiện là v' + pack.version + '; chạy pma brief --as chinh rồi lưu lại');
   }
   reportFile(id: string, kind: string) {
     const file = ({ raw: 'RAW.md', summary: 'SUMMARY.md', tasks: 'TASKS.md' } as Record<string, string>)[kind]; if (!file) throw new Error('UNKNOWN_REPORT');

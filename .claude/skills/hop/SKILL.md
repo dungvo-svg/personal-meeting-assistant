@@ -153,7 +153,8 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
    - ghi RAW.md.
 
    Có thể mất vài phút; lệnh tự chờ. WAV giữ tới khi người dùng tự xoá (`./pma audio`, `./pma audio purge`).
-2. Đọc toàn bộ bằng `./pma read`, sang trang bằng `--after <id>` tới khi thấy `HẾT`.
+2. Đọc toàn bộ bằng `./pma read`, sang trang bằng `--after <id>` tới khi thấy `HẾT`. `pma read` mở lại host đọc lịch sử nếu host họp đã thoát; các lệnh lưu (summary, tasks) không tự mở host, báo `HOST_NOT_RUNNING` thì chạy `./pma read` hoặc `./pma history` trước.
+   Trước khi lưu SUMMARY/TASKS chạy `./pma brief --as chinh` (đọc context của cuộc họp vừa xong). Lưu báo `CONTEXT_NOT_READ`/`CONTEXT_NOT_CURRENT` thì chạy lại đúng lệnh đó rồi lưu lại.
 3. `./pma coverage` liệt kê:
    - chỗ WAV có âm mà không có chữ;
    - đoạn lỗi;

@@ -33,3 +33,20 @@ test('select --no-mic after the recorder started with the microphone restarts it
     assert.deepEqual(micArgs(recorderSpawns(audio).at(-1).argv), [], 'the new recorder has no microphone');
   });
 });
+
+// Codex static review of 1c51bc4: the explicit no-mic choice must hold for the whole session, not only for the first recorder. It is
+// recorded in the session context; select/listen without --mic/--no-mic keep it; a new host taking the session over reads it from there.
+test('prepare(mic:false) is kept by the session: a later select without a choice still starts no microphone; --mic turns it back on', async () => {
+  await withFakes(async (r, dir) => {
+    r.prepare('Họp', false, undefined, undefined, { warm: false, mic: false }); const id = r.session.id;
+    assert.equal(JSON.parse(r.db.prepare('SELECT context FROM sessions WHERE id=?').get(id).context).micOff, true, 'stored with the session');
+    r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }, { index: 12, name: 'Mic', kind: 'microphone' }];
+    await r.select(id, 13); await until(() => r.recorder.state === 'RECORDING', 'recorder');
+    const audio = `${dir}/audio/${id}`;
+    assert.deepEqual(micArgs(recorderSpawns(audio)[0].argv), [], 'select without a choice did not turn the microphone back on');
+    assert.equal(r.micFor(id), false, 'what a new host taking the session over would read');
+    await r.select(id, 13, true); await until(() => recorderSpawns(audio).length === 2 && r.recorder.state === 'RECORDING', 'restarted with the mic');
+    assert.deepEqual(micArgs(recorderSpawns(audio).at(-1).argv), ['--mic-auto'], 'an explicit --mic is the owner turning it back on');
+    assert.equal(JSON.parse(r.db.prepare('SELECT context FROM sessions WHERE id=?').get(id).context).micOff, undefined);
+  });
+});
