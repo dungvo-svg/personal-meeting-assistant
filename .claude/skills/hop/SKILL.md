@@ -70,8 +70,8 @@ Thiếu thông tin thì để trống, không đoán.
   - mỗi lệnh Bash tối đa 10 phút, nên follow chạy `--minutes 9` rồi lặp lại;
   - xem nó còn chạy không: `./pma status` → `followers.dich.at` (giờ lần gọi cuối) và `committed` (đã lưu bản dịch tới đâu). `at` cũ hơn 2 phút trong lúc họp thì bật lại agent nền; nó đọc tiếp từ chỗ bản dịch đã lưu, không lặp phần đã dịch.
 - **Phân tích dài** (người dùng hỏi một câu cần vài phút):
-  - ghi việc: `./pma job start "<câu hỏi ngắn>"` → id;
-  - chạy agent nền (Agent tool, `run_in_background` true) với yêu cầu cuối cùng là lưu kết quả bằng `./pma job done <id> --file - --sources <id,…> <<'MD'` … `MD`;
+  - ghi việc: `./pma job start "<câu hỏi ngắn>"` → id và token (`job-…`);
+  - chạy agent nền (Agent tool, `run_in_background` true) với yêu cầu cuối cùng là lưu kết quả bằng `./pma job done <id> --token <job-…> --file - --sources <id,…> <<'MD'` … `MD` (thiếu token thì host từ chối);
   - trong lúc chờ vẫn trả lời người dùng và theo dõi họp; người dùng hỏi tiến độ thì `./pma job list`;
   - khi được báo agent xong, đưa kết quả ngắn và ghi điều quan trọng vào bức tranh. Không chặn phần tổng hợp để chờ.
 - **Câu hỏi cần người dùng quyết** (ai nhận việc, con số nào đúng…): hỏi một lần trong chat và ghi `./pma ask "<câu hỏi>" --sources <id,…>`. Người dùng trả lời thì `./pma answer <id> "<trả lời>"`. Không trả lời: follow in `NHẮC HỎI` đúng một lần, quá hạn thì câu hỏi vào "Câu hỏi mở" của bức tranh và SUMMARY. **Im lặng không phải đồng ý**: không tự chốt thay; việc không phụ thuộc câu hỏi vẫn làm tiếp.
@@ -93,7 +93,7 @@ Thiếu thông tin thì để trống, không đoán.
 - **Việc từ quyết định đã chốt:** `./pma act <idQĐ> "<việc>"`. Làm trong phạm vi chủ đã giao cho bạn. Xong thì `./pma action done <idViệc> "<kết quả>"`, lỗi thì `action fail`, hoàn tác thì `action rollback <idViệc> "<đã hoàn tác thế nào>"`. Việc cần quyền bạn chưa có, hoặc là quyết định nghiệp vụ (giá, hợp đồng, người): không tự làm, hỏi đúng người một lần.
 - Người dùng hỏi "đã chốt gì / còn gì": `./pma decisions`. Cuối họp, `stop` in `decisions`: đưa vào SUMMARY.
 - **Sửa nghe sai:** người dùng xác nhận "MTP là Mittaphab" thì `./pma correct --raw "MTP" --to "Mittaphab" --confirmed --source <id>`; bạn chỉ đoán thì bỏ `--confirmed`. Tài liệu được nhắc: `./pma doc --label "…" --pointer "<đường dẫn/link>"`. Không sửa hàng loạt chữ như "Ta", "tôi".
-- **Đọc context:** `./pma brief --as chinh` là lúc ghi nhận bạn đã đọc phiên bản context nào. Follow in `CONTEXT CHƯA ĐỌC` hoặc `CONTEXT ĐỔI` thì chạy lại đúng lệnh đó.
+- **Đọc context:** `./pma brief --as chinh` là lúc ghi nhận bạn đã đọc phiên bản context nào; nó in `Biên nhận context: rcpt-…`. Giữ biên nhận mới nhất: lưu bức tranh, SUMMARY, TASKS đều kèm `--receipt rcpt-…`. Follow in `CONTEXT CHƯA ĐỌC` hoặc `CONTEXT ĐỔI`, hoặc lưu báo `CONTEXT_NOT_CURRENT`, thì chạy lại đúng lệnh đó và dùng biên nhận mới.
 
 ### Vai của từng người (Dũng, Quân, Oanh)
 
@@ -123,7 +123,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
     - **Câu hỏi mở / còn tranh luận**;
     - **Người dự và lập trường** (khi rõ);
     - **Chỗ chưa nghe rõ** (#id, đã/chưa recheck).
-  - Lưu bằng `./pma picture --file - --sources <id của lô này> <<'MD'`, rồi bức tranh, rồi `MD`. Mỗi lần lưu là một bản mới; `./pma picture` đọc bản mới nhất.
+  - Lưu bằng `./pma picture --file - --sources <id của lô này> --receipt <rcpt-…> <<'MD'`, rồi bức tranh, rồi `MD`. Mỗi lần lưu là một bản mới; `./pma picture` đọc bản mới nhất.
   - Trả lời người dùng **chỉ phần thay đổi** so với bản trước, vài dòng. Người dùng hỏi gì thì trả lời dựa trên bức tranh + `#id`.
   - Phiên Claude mới vào giữa họp: `./pma brief` rồi `./pma picture` là đủ để nối mạch.
 - Không tự kết thúc cuộc họp. Chỉ người dùng gõ kết thúc. Câu chào cuối buổi chưa đủ để kết thúc.
@@ -154,7 +154,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
 
    Có thể mất vài phút; lệnh tự chờ. WAV giữ tới khi người dùng tự xoá (`./pma audio`, `./pma audio purge`).
 2. Đọc toàn bộ bằng `./pma read`, sang trang bằng `--after <id>` tới khi thấy `HẾT`. `pma read` mở lại host đọc lịch sử nếu host họp đã thoát; các lệnh lưu (summary, tasks) không tự mở host, báo `HOST_NOT_RUNNING` thì chạy `./pma read` hoặc `./pma history` trước.
-   Trước khi lưu SUMMARY/TASKS chạy `./pma brief --as chinh` (đọc context của cuộc họp vừa xong). Lưu báo `CONTEXT_NOT_READ`/`CONTEXT_NOT_CURRENT` thì chạy lại đúng lệnh đó rồi lưu lại.
+   Trước khi lưu SUMMARY/TASKS chạy `./pma brief --as chinh` (đọc context của cuộc họp vừa xong); nó in `Biên nhận context: rcpt-…`. Lưu kèm `--receipt rcpt-…`. Báo `CONTEXT_NOT_READ`/`CONTEXT_NOT_CURRENT` thì đọc lại và lưu bằng biên nhận mới.
 3. `./pma coverage` liệt kê:
    - chỗ WAV có âm mà không có chữ;
    - đoạn lỗi;

@@ -24,17 +24,47 @@ test('drafts never start a host: the CLI sends them through attach, and attach d
   assert.match(cli, /attach\('job', \{ \.\.\.session, action, id: Number\(positional\[1\]\), result/, 'job done goes through attach');
 });
 
-test('the central picture and reports need chinh to have read the current context', async () => {
+test('the central picture and reports need the receipt of a chinh read of the current context; the shared reader is not one', async () => {
   await withFakes(async r => {
     const { id, source } = meeting(r);
     assert.throws(() => r.savePicture(id, 'Bức tranh.', [source], { central: true }), /CONTEXT_NOT_READ/);
-    assert.throws(() => r.requireCentralContext(id), /CONTEXT_NOT_READ/);
     r.bind(id, 'chinh', 'agent');
-    assert.equal(r.savePicture(id, 'Bức tranh.', [source], { central: true }).revision, 1);
+    assert.throws(() => r.savePicture(id, 'Bức tranh.', [source], { central: true, receipt: 'agent' }), /CONTEXT_RECEIPT_UNKNOWN|CONTEXT_NOT_READ/, 'the shared reader every process uses is no receipt');
+    const other = r.contextReceipt(id, 'dich').receipt;
+    assert.throws(() => r.requireCentralContext(id, other), /CONTEXT_RECEIPT_UNKNOWN/, 'a receipt of another role');
+    const { receipt } = r.contextReceipt(id, 'chinh'); assert.match(receipt, /^rcpt-[a-f0-9]{16}$/);
+    assert.equal(r.savePicture(id, 'Bức tranh.', [source], { central: true, receipt }).revision, 1);
     r.addToContext(id, 'corrections', { raw: 'MTP', corrected: 'Mittaphab', basis: 'user_confirmed', scope: 'meeting', source: 'correction' });
-    assert.throws(() => r.savePicture(id, 'Bức tranh 2.', [source], { central: true }), /CONTEXT_NOT_CURRENT/);
-    r.bind(id, 'chinh', 'agent');
-    assert.equal(r.savePicture(id, 'Bức tranh 2.', [source], { central: true }).revision, 2);
+    assert.throws(() => r.savePicture(id, 'Bức tranh 2.', [source], { central: true, receipt }), /CONTEXT_NOT_CURRENT/);
+    const again = r.contextReceipt(id, 'chinh').receipt; assert.notEqual(again, receipt);
+    assert.equal(r.savePicture(id, 'Bức tranh 2.', [source], { central: true, receipt: again }).revision, 2);
+  });
+});
+
+test('an idempotency key gives back the first result for the same content and refuses other content; no key remembers nothing', async () => {
+  await withFakes(async r => {
+    const { id, source } = meeting(r);
+    const save = text => () => r.savePicture(id, text, [source]);
+    const first = r.draftOnce(id, 'picture', 'k1', 'h1', save('Một.'));
+    assert.equal(first.revision, 1); assert.equal(first.receipt.state, 'SAVED'); assert.equal(first.receipt.delivered, 'NOT_AVAILABLE');
+    const again = r.draftOnce(id, 'picture', 'k1', 'h1', () => { throw new Error('must not save twice'); });
+    assert.equal(again.duplicate, true); assert.equal(again.revision, 1);
+    assert.throws(() => r.draftOnce(id, 'picture', 'k1', 'h2', save('Khác.')), /IDEMPOTENCY_KEY_REUSED/);
+    assert.equal(r.draftOnce(id, 'picture', undefined, 'h3', save('Hai.')).revision, 2);
+    assert.equal(r.draftOnce(id, 'picture', undefined, 'h1', save('Một.')).revision, 3, 'an edit back to an earlier text still saves without a key');
+    assert.throws(() => r.draftOnce(id, 'summary', 'k9', 'h9', () => { throw new Error('DISK'); }), /DISK/);
+    assert.equal(r.db.prepare("SELECT COUNT(*) AS n FROM draft_keys WHERE key='k9'").get().n, 0, 'a failed save keeps no key');
+  });
+});
+
+test('a background job is finished only with the token its start returned', async () => {
+  await withFakes(async r => {
+    const { id } = meeting(r);
+    const job = r.ledger.jobs.start(id, 'analysis', 'So sánh giá'); const token = r.jobToken(job);
+    assert.match(token, /^job-[a-f0-9]{16}$/);
+    assert.throws(() => r.requireJobToken(job), /JOB_TOKEN_REQUIRED/);
+    assert.throws(() => r.requireJobToken(job, 'job-0000000000000000'), /JOB_TOKEN_REQUIRED/);
+    assert.doesNotThrow(() => r.requireJobToken(job, token));
   });
 });
 

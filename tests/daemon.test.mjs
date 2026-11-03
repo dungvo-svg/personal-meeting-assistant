@@ -64,14 +64,15 @@ test('follow prints batched lines with flags, marks the follower heartbeat and s
 
 test('after the meeting: read, summary and tasks through the CLI with real source IDs', async () => {
   assert.match(await pma('read'), /#1 .*Tuần này kiểm kê kho số 2\.\n#2 .*\nHẾT/);
-  await pma('brief', '--as', 'chinh');   // after the meeting: chinh reads the latest meeting's context before writing its reports
+  // After the meeting chinh reads the latest meeting's context; its receipt goes with each report.
+  const receipt = (await pma('brief', '--as', 'chinh')).match(/Biên nhận context: (rcpt-[a-f0-9]{16})/)[1];
   const summaryFile = join(directory, 'summary.md'); writeFileSync(summaryFile, '- Kiểm kê kho số 2 trong tuần.');
-  const summary = await json('summary', '--file', summaryFile, '--sources', '1');
+  const summary = await json('summary', '--file', summaryFile, '--sources', '1', '--receipt', receipt);
   assert.match(readFileSync(summary.path, 'utf8'), /Kiểm kê kho số 2/);
   const tasksFile = join(directory, 'tasks.json'); writeFileSync(tasksFile, JSON.stringify([{ task: 'Gửi báo cáo', owner: 'Anh Nam', due: 'trước thứ Sáu', sourceIds: [2] }]));
-  assert.match(readFileSync((await json('tasks', '--file', tasksFile)).path, 'utf8'), /\| 1 \| Gửi báo cáo \| Anh Nam \| trước thứ Sáu \| #2 \|/);
+  assert.match(readFileSync((await json('tasks', '--file', tasksFile, '--receipt', receipt)).path, 'utf8'), /\| 1 \| Gửi báo cáo \| Anh Nam \| trước thứ Sáu \| #2 \|/);
   const bad = join(directory, 'bad.json'); writeFileSync(bad, JSON.stringify([{ task: 'Bịa', sourceIds: [999] }]));
-  assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'tasks', '--file', bad], { env }).catch(e => e)).stdout, /SOURCE_OUTSIDE_SESSION/);
+  assert.match((await run(process.execPath, [resolve('dist/cli.js'), 'tasks', '--file', bad, '--receipt', receipt], { env }).catch(e => e)).stdout, /SOURCE_OUTSIDE_SESSION/);
 });
 
 test('pma at sets the scheduled start of the current session and rejects bad times', async () => {

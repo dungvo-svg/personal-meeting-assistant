@@ -12,7 +12,8 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
                                    variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
   pma picture [--file f.md --sources 1,2 [--expect-revision N]]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô);
-                                   lưu cần vai chinh đã đọc context hiện tại (pma brief --as chinh); --expect-revision: bản đang sửa, có bản mới hơn thì báo xung đột
+                                   lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --expect-revision: bản đang sửa, có bản mới hơn thì báo xung đột;
+                                   --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
   pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
   pma me --on | --off | --auto     micro "Tôi" đang bật/tắt khi máy không tự đọc được (ghi vào timeline, by:manual); --auto trả lại cho máy đọc
@@ -73,6 +74,8 @@ function options(argv: string[]) {
   }
   return { positional, flags };
 }
+// --receipt (of `pma brief --as chinh`) and --key (idempotency) for the central drafts.
+const draftFlags = (flags: Record<string, string>) => ({ ...(flags.receipt ? { receipt: flags.receipt } : {}), ...(flags.key ? { idempotencyKey: flags.key } : {}) });
 // --no-mic / --mic change the session's choice (kept until changed again); neither keeps it.
 const micFlag = (flags: Record<string, string>) => flags['no-mic'] === 'true' ? { mic: false } : flags.mic === 'true' ? { mic: true } : {};
 const list = (value?: string) => value ? value.split(',').map(v => Number(v.trim())).filter(Number.isInteger) : [];
@@ -271,12 +274,12 @@ async function main() {
     }
     case 'participants': {
       if (!flags.file) throw new Error('pma participants --file p.json');
-      return out(await attach('participants', { participants: JSON.parse(input(flags.file)) }));
+      return out(await attach('participants', { participants: JSON.parse(input(flags.file)), ...(flags.key ? { idempotencyKey: flags.key } : {}) }));
     }
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
     case 'picture': {
-      if (flags.file) return out(await attach('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources), ...(flags['expect-revision'] ? { expectedRevision: Number(flags['expect-revision']) } : {}) }));
+      if (flags.file) return out(await attach('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources), ...(flags['expect-revision'] ? { expectedRevision: Number(flags['expect-revision']) } : {}), ...draftFlags(flags) }));
       const p = await call('picture', session);
       return console.log(p ? `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n${p.text}` : 'Chưa có bức tranh cuộc họp (pma picture --file f.md --sources <id,…>)');
     }
@@ -302,8 +305,8 @@ async function main() {
     case 'job': {
       const action = positional[0];
       if (action === 'start') return out(await call('job', { ...session, action, title: positional.slice(1).join(' ') || flags.title, kind: flags.kind || 'analysis' }));
-      if (action === 'done') return out(await attach('job', { ...session, action, id: Number(positional[1]), result: flags.file ? input(flags.file) : flags.text, sourceIds: list(flags.sources) }));
-      if (action === 'fail') return out(await call('job', { ...session, action, id: Number(positional[1]), note: positional.slice(2).join(' ') || flags.note }));
+      if (action === 'done') return out(await attach('job', { ...session, action, id: Number(positional[1]), result: flags.file ? input(flags.file) : flags.text, sourceIds: list(flags.sources), ...(flags.token ? { token: flags.token } : {}) }));
+      if (action === 'fail') return out(await call('job', { ...session, action, id: Number(positional[1]), note: positional.slice(2).join(' ') || flags.note, ...(flags.token ? { token: flags.token } : {}) }));
       if (action === 'list' || !action) return out(await call('job', { ...session, action: 'list', ...(flags.status ? { status: flags.status } : {}) }));
       throw new Error('pma job start|done|fail|list');
     }
@@ -341,7 +344,7 @@ async function main() {
     case 'say': return out(await call('manual', { ...session, text: flags.text === 'true' ? undefined : flags.text ?? (positional.join(' ') || undefined) }));
     case 'translate': {
       const items = flags.file ? JSON.parse(input(flags.file)) : [{ sourceId: Number(flags.source), text: flags.text }];
-      return out(await attach('translate', { ...session, items }));
+      return out(await attach('translate', { ...session, items, ...(flags.key ? { idempotencyKey: flags.key } : {}) }));
     }
     case 'status': return out(await inspect());
     case 'pause': return out(await call('pause', session));
@@ -379,8 +382,8 @@ async function main() {
       return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}${flags.as ? ' --as ' + flags.as : ''}`);
     }
     case 'note': return out(await call('note', { ...session, key: flags.key || 'note-' + Date.now(), revision: Number(flags.revision || 1), kind: flags.kind || 'observation', text: flags.text, sourceIds: list(flags.sources) }));
-    case 'summary': return out(await attach('summary', { ...session, markdown: input(flags.file), sourceIds: list(flags.sources) }));
-    case 'tasks': return out(await attach('tasks', { ...session, tasks: JSON.parse(input(flags.file)) }));
+    case 'summary': return out(await attach('summary', { ...session, markdown: input(flags.file), sourceIds: list(flags.sources), ...draftFlags(flags) }));
+    case 'tasks': return out(await attach('tasks', { ...session, tasks: JSON.parse(input(flags.file)), ...draftFlags(flags) }));
     case 'raw': return out(await call('raw', session));
     case 'history': return out(await call('history'));
     case 'glossary': {

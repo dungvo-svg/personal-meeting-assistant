@@ -50,3 +50,18 @@ test('prepare(mic:false) is kept by the session: a later select without a choice
     assert.equal(JSON.parse(r.db.prepare('SELECT context FROM sessions WHERE id=?').get(id).context).micOff, undefined);
   });
 });
+
+test('listen with an explicit --no-mic while the recorder runs with the microphone records the choice and restarts without it', async () => {
+  await withFakes(async (r, dir) => {
+    r.prepare('Họp', false, undefined, undefined, { warm: false }); const id = r.session.id;
+    r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }, { index: 12, name: 'Mic', kind: 'microphone' }];
+    await r.select(id, 13); await until(() => r.recorder.state === 'RECORDING', 'recorder');
+    const audio = `${dir}/audio/${id}`; assert.deepEqual(micArgs(recorderSpawns(audio)[0].argv), ['--mic-auto']);
+    await r.start(id, false).catch(() => {});   // the ASR side is the fake worker; only the recorder's microphone is checked here
+    await until(() => recorderSpawns(audio).length === 2 && r.recorder.state === 'RECORDING', 'restarted');
+    assert.deepEqual(micArgs(recorderSpawns(audio).at(-1).argv), [], 'the explicit choice reached the running recorder');
+    assert.equal(r.micFor(id), false, 'and is kept by the session');
+  });
+});
+// Not covered by a fixture (static only): a new host taking the session over (reattach) and the recorder's own retry; both read
+// micFor()/micWanted from the session, see runtime.ts reattach() and ensureRecorder().

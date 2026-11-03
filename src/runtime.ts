@@ -184,6 +184,8 @@ export class MeetingRuntime extends EventEmitter {
     // `committed` (0.12.1): how far a role's work is saved, not only printed (see committedOf).
     this.db.exec(CONTEXT_TABLES_SQL); this.ledger = new Ledger(this.db, () => this.now()); this.decisions = new DecisionLedger(this.db, () => this.now());
     this.cowork = new CoworkLedger(this.db, () => this.now(), { requireContext: true });
+    this.db.exec(`CREATE TABLE IF NOT EXISTS draft_keys(session_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, content_hash TEXT NOT NULL, result TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(session_id, kind, key));
+      CREATE TABLE IF NOT EXISTS job_tokens(job_id INTEGER PRIMARY KEY, token TEXT NOT NULL);`);
     if (!(this.db.prepare('PRAGMA table_info(followers)').all() as any[]).some(c => c.name === 'committed')) this.db.exec('ALTER TABLE followers ADD COLUMN committed INTEGER NOT NULL DEFAULT 0');
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
     if (!columns.includes('capture_id')) this.db.exec("ALTER TABLE sources ADD COLUMN capture_id TEXT NOT NULL DEFAULT ''");
@@ -391,13 +393,13 @@ export class MeetingRuntime extends EventEmitter {
   // Same text on the same set of sources as the latest revision is not a new revision. The sources are checked against the session
   // first (as publish does), so equal text cannot be used to get past that check.
   // `expectedRevision` (the revision the writer started from): a newer one saved meanwhile is a conflict, not overwritten. `central`
-  // (the host RPC): the picture is the central session's, so the chinh reader must have read the current context first.
-  savePicture(id: string, text: string, sourceIds: number[], opts: { expectedRevision?: number; central?: boolean } = {}) {
+  // (the host RPC): the picture is the central session's, so it needs the receipt of a chinh read of the current context.
+  savePicture(id: string, text: string, sourceIds: number[], opts: { expectedRevision?: number; central?: boolean; receipt?: string } = {}) {
     this.requireSession(id);
     const ids = this.sessionSourceIds(id, sourceIds).sort((a, b) => a - b); const latest = this.picture(id);
     if (latest && latest.text === text && latest.sourceIds.length === ids.length && [...latest.sourceIds].sort((a, b) => a - b).every((v, i) => v === ids[i])) return { saved: true, revision: latest.revision, duplicate: true };
     if (opts.expectedRevision !== undefined && opts.expectedRevision !== (latest?.revision ?? 0)) throw new Error(`PICTURE_REVISION_CONFLICT: đang sửa từ bản ${opts.expectedRevision}, đã có bản ${latest?.revision ?? 0}; đọc pma picture, gộp rồi lưu lại`);
-    if (opts.central) this.requireCentralContext(id);
+    if (opts.central) this.requireCentralContext(id, opts.receipt);
     const revision = (latest?.revision ?? 0) + 1;
     // How far this picture covers the meeting: its highest cited source, but never past what chinh had been handed when it was saved
     // (citing a row chinh has not been handed yet covers nothing).
@@ -834,7 +836,9 @@ export class MeetingRuntime extends EventEmitter {
     this.requireSession(id); this.claim(id);
     if (this.stoppingCapture || this.finishing || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select');
-    if (!this.recorderAlive() && !this.recorder.retry && this.recorder.state !== 'ERROR') { this.micWanted = this.micFor(id, mic); this.ensureRecorder(id); }
+    const micWanted = this.micFor(id, mic);
+    if (!this.recorderAlive() && !this.recorder.retry && this.recorder.state !== 'ERROR') { this.micWanted = micWanted; this.ensureRecorder(id); }
+    else if (mic !== undefined && this.recorderAlive() && this.recorderMic !== micWanted) { this.micWanted = micWanted; await this.restartRecorder(id); }
     if (this.capture && !this.followMode) return { state: this.captureState, info: this.captureInfo };  // a replay is running
     this.asrWanted = true; this.everListened = true; this.lastError = null;
     if (this.capture) {
@@ -1345,13 +1349,43 @@ export class MeetingRuntime extends EventEmitter {
     if (latest?.content !== content) this.db.prepare('INSERT INTO reports(session_id,kind,content,source_ids,created) VALUES(?,?,?,?,?)').run(id, kind, content, JSON.stringify(ids), new Date().toISOString());
     this.ping(); return { saved: true, path, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
   }
-  // The central session's drafts (picture, SUMMARY, TASKS) count only from a reader of the CURRENT context: the chinh role must have
-  // run `pma brief --as chinh` since the context last changed (a correction, a participant, the glossary).
-  requireCentralContext(id: string) {
+  // A draft (pma-draft/1 kinds: picture, translations, participants, summary, tasks) saved once per caller key: the same key and the
+  // same normalised content give back the first result; the same key with other content is refused. Without a key nothing is
+  // remembered (a later edit back to an earlier text must still save). The receipt says SAVED only: delivered / confirmed / done
+  // are other receipts that need a transport this host does not have.
+  draftOnce<T extends object>(id: string, kind: string, key: string | undefined, contentHash: string, save: () => T) {
+    const receipt = (at: string) => ({ state: 'SAVED', kind, contentHash, at, delivered: 'NOT_AVAILABLE', confirmed: 'NOT_AVAILABLE' });
+    if (!key) { const out = save(); return { ...out, receipt: receipt(new Date(this.now()).toISOString()) }; }
+    const row: any = this.db.prepare('SELECT content_hash,result,at FROM draft_keys WHERE session_id=? AND kind=? AND key=?').get(id, kind, key);
+    if (row) { if (row.content_hash !== contentHash) throw new Error('IDEMPOTENCY_KEY_REUSED: khoá ' + key + ' đã dùng cho nội dung khác'); return { ...JSON.parse(row.result), duplicate: true, receipt: receipt(row.at) }; }
+    const out = save(); const at = new Date(this.now()).toISOString();
+    this.db.prepare('INSERT INTO draft_keys(session_id,kind,key,content_hash,result,at) VALUES(?,?,?,?,?,?)').run(id, kind, key, contentHash, JSON.stringify(out), at);
+    return { ...out, receipt: receipt(at) };
+  }
+  // A background job is finished or failed only by whoever holds the token its start returned (Codex review of 8a53bb0: job done had
+  // a session fence only).
+  jobToken(jobId: number) { const token = 'job-' + randomUUID().replace(/-/g, '').slice(0, 16); this.db.prepare('INSERT OR REPLACE INTO job_tokens(job_id,token) VALUES(?,?)').run(jobId, token); return token; }
+  requireJobToken(jobId: number, token?: string) {
+    const row: any = this.db.prepare('SELECT token FROM job_tokens WHERE job_id=?').get(jobId);
+    if (!row) return;   // a job started before 0.12.1 has no token
+    if (row.token !== token) throw new Error('JOB_TOKEN_REQUIRED: việc nền #' + jobId + ' chỉ được kết thúc bằng --token mà pma job start trả về');
+  }
+  // The central session's drafts (picture, SUMMARY, TASKS) count only with the receipt of a chinh read of the CURRENT context.
+  // Each read of the brief as a role gets its own receipt (a host-made id, bound as that read's consumer): the writer of a central
+  // draft shows the receipt of ITS read. This proves that whoever holds the receipt was shown the current context version; it is not
+  // an identity, a consumer ACK of a delivery, or an execution generation (those need the BidOps interface).
+  contextReceipt(id: string, role: string) {
+    const receipt = 'rcpt-' + randomUUID().replace(/-/g, '').slice(0, 16);
+    const bound = this.bind(id, role, receipt); this.bind(id, role, BRIEF_READER);   // the shared reader only feeds follow's CONTEXT warnings
+    return { receipt, ...bound };
+  }
+  requireCentralContext(id: string, receipt?: string) {
     const pack = this.packOf(id); if (!pack) return;
-    const own = this.bindingsOf(id)[bindingKey(id, MAIN_FOLLOWER, BRIEF_READER)];
-    if (!own) throw new Error('CONTEXT_NOT_READ: vai chinh chưa đọc context của cuộc họp này; chạy pma brief --as chinh rồi lưu lại');
-    if (own.version !== pack.version) throw new Error('CONTEXT_NOT_CURRENT: vai chinh đọc context v' + own.version + ', hiện là v' + pack.version + '; chạy pma brief --as chinh rồi lưu lại');
+    if (!receipt) throw new Error('CONTEXT_NOT_READ: cần --receipt của lần đọc context (pma brief --as chinh in "Biên nhận context: rcpt-…")');
+    if (!/^rcpt-[a-f0-9]{16}$/.test(receipt)) throw new Error('CONTEXT_RECEIPT_UNKNOWN: biên nhận không do host cấp');
+    const own = this.bindingsOf(id)[bindingKey(id, MAIN_FOLLOWER, receipt)];
+    if (!own) throw new Error('CONTEXT_RECEIPT_UNKNOWN: biên nhận này không phải của vai chinh trong cuộc họp này; chạy pma brief --as chinh');
+    if (own.version !== pack.version) throw new Error('CONTEXT_NOT_CURRENT: biên nhận đọc context v' + own.version + ', hiện là v' + pack.version + '; chạy pma brief --as chinh rồi lưu lại với biên nhận mới');
   }
   reportFile(id: string, kind: string) {
     const file = ({ raw: 'RAW.md', summary: 'SUMMARY.md', tasks: 'TASKS.md' } as Record<string, string>)[kind]; if (!file) throw new Error('UNKNOWN_REPORT');
