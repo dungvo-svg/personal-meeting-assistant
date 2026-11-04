@@ -29,6 +29,9 @@ Dành cho phiên Claude điều khiển bộ họp, không phải lệnh chủ p
 - `--no-mic` (hoặc `PMA_MIC=0`) chỉ bỏ **micro**; tiếng **loa vẫn được ghi**. Mặc định micro "Tôi" luôn ghi (OWN-027);
 - CLI `start` không có cờ fixture hay cờ tắt warm-up. `PMA_WARM=0` không tới được host đã mở qua WMI (không nằm trong danh sách biến được chuyển). Đừng hứa "không ghi âm" bằng các cờ đó.
 
+- Không ghi micro (`--no-mic`, `PMA_MIC=0`) chỉ bỏ micro của máy này; bộ ghi vẫn ghi loa (đầu ra Zoom/Meet) và không đổi micro hay mute của Zoom. Zoom không phát lại giọng của chính mình ra loa, nên khi không ghi micro thì **lời của chủ máy thường không có trong bản ghi**. Nói rõ điều đó với người dùng trước khi chọn. Trạng thái mute của Zoom (tự đọc) chỉ là nhãn, không phải no-mic; `UNKNOWN` không được coi là đang bật hay đang tắt.
+- `status` có `micMode`: `OFF` / `ON` khi biết bộ ghi được mở với hay không có micro; `UNKNOWN` khi bộ ghi được tiếp quản mà không biết (không được báo là không ghi micro); `NEXT_RECORDER_NO_MIC` / `NEXT_RECORDER_WITH_MIC` khi chưa có bộ ghi.
+- `start --no-mic` khi cuộc họp đang mở và bộ ghi đang ghi micro (hoặc chưa biết): báo `MIC_OFF_NOT_APPLIED`, không đổi gì. Dùng `select <index> --no-mic` để khởi động lại bộ ghi không micro.
 - `start` không nhận `--session`. Nếu host đang có một cuộc họp **chưa kết thúc**, `start` trả lại chính cuộc họp đó: không tạo cuộc họp mới, và các lựa chọn mới (`--no-mic`, tiêu đề, agenda) **không** được áp vào nó. Vì vậy phải `status` trước. Đang có cuộc họp khác mở thì hỏi người dùng, không gọi `start` mù.
 
 Trước một `start` thật của bản này, còn phải xem host 0.11 ở thư mục dữ liệu cũ đã biết (main checkout `.local\runtime`) bằng `status` của **bản này**. Lệnh này chỉ đọc. Đặt `PMA_DATA_DIR` cho đúng lệnh đó, không đặt global:

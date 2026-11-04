@@ -4,7 +4,7 @@
   "date": "2026-11-01",
   "meaning": "Versioned source/document snapshot, not actual host/device/meeting acceptance.",
   "files": {
-    ".claude/skills/hop/SKILL.md": "0744c4c0fc055d140badc2c4c2e086c72a2b120aa9791ce139f3581379fc7c32",
+    ".claude/skills/hop/SKILL.md": "6d90ed36305acebc6de56914fcaf965e557ca696a55d30261110c2b5bc70f937",
     ".gitattributes": "99775c81146a29365a75ed86f7be589e28ac952b780ead75d006727f551928f0",
     ".gitignore": "a47718c7f2c2f3bd3b6d9aaf876365d1118e1251553e44c348ca989812580190",
     "AGENTS.md": "545374fd501c749bdf87c94b8da6a048749a599dad225f6e4e7d18c30ec455ba",
@@ -45,7 +45,7 @@
     "src/cli.ts": "75fcecebdc66cb96951fc619395d809239e66164760c3754ae841282110207fb",
     "src/client.ts": "e8d76f3d2c751f29c3e832da0e518dfa7cc052d0c5a2dd106461cc1939579ed2",
     "src/daemon.ts": "dfc34251c1fb2803a82cddb6269b21bf08c608343cdfe9d2c2020d040317031b",
-    "src/runtime.ts": "1d57cbed410f001fb09676f8344332ef4bd6c31eeaee94cd64fd1a5330cb92b1",
+    "src/runtime.ts": "7d80f49aaa4b99f6889c4d8250fbea28b5f6d4e18aa556344d231b6990693943",
     "src/server.ts": "e44f9951c808f98d636fee4b12c0355f5d3776defcd3fa4dc7884ac091ba9565",
     "src/text.ts": "e6ca80ea9417427d4fefb819e4c2755f1fe694b2fbbf20a4066d034b4c160ca2",
     "tests/daemon.test.mjs": "a99128fe02de75fdee8dec15e290e9d3f46d11c088914c789dd511d79b6aa053",

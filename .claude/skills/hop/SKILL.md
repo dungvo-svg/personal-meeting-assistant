@@ -44,7 +44,7 @@ Thiếu thông tin thì để trống, không đoán.
 **Micro "Tôi"** luôn ghi, không phụ thuộc nền tảng.
 - Mỗi đoạn micro có nhãn: `Tôi (mic bật)` = nói trong họp; `Tôi (mic tắt — nói riêng)`; `Tôi (?)` = không đọc được trạng thái.
 - Người dùng có thể tự đánh dấu: `./pma me --off` / `--on` / `--auto`.
-- Muốn tắt hẳn micro cho buổi này: `./pma select <index> --no-mic`.
+- Muốn tắt hẳn micro cho buổi này: `./pma select <index> --no-mic`. Báo trước với người dùng: không ghi micro thì lời của chính họ thường không có trong bản ghi (Zoom không phát giọng mình ra loa). `./pma status` → `micMode` (OFF / ON / UNKNOWN …); `UNKNOWN` không phải OFF.
 - **Bộ dịch (vai `dich`) không bao giờ nhận lời "Tôi" khi mic tắt hoặc không rõ** (owner 01/11, OWN-030). Host chặn trước khi giao. Chỉ đoạn mà **cả đoạn** là mic bật mới tới bộ dịch. Tiếng loa của người dự vẫn đi qua bình thường. Phiên trung tâm vẫn thấy đủ, WAV/RAW không đổi.
 - Người dùng muốn đưa một dòng chữ vào họp (ví dụ con số đọc trên giấy): `./pma say --text "…"`. RAW ghi là "nhập tay".
 

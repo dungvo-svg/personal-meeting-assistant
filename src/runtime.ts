@@ -89,7 +89,15 @@ export function parseAlternatives(value: unknown): Alternative[] {
 }
 export type CoverageItem = { kind: string; from: string; to: string; fromClock: string; toClock: string; seconds: number; sourceId?: number; why: string; rechecked: boolean; recheck: string };
 // What the host leaves in daemon.json for the next host (Q-3): enough to find the session's recorder again after a crash.
-export type Registry = { sessionId: string | null; recorderPid: number | null; workerPid: number | null; asr: 'listening' | 'paused'; speaker: string | null };
+export type Registry = { sessionId: string | null; recorderPid: number | null; workerPid: number | null; asr: 'listening' | 'paused'; speaker: string | null; recorderMic?: boolean | null };
+// Whether the microphone is being recorded, from what this host knows (04/11): OFF / ON only for a recorder whose arguments this host
+// (or the host before it, through daemon.json) chose; a recorder taken over without that is UNKNOWN, never OFF. Without a recorder,
+// what the next one will do. The Zoom/Meet mute state is a separate label, not this.
+export type MicMode = 'OFF' | 'ON' | 'UNKNOWN' | 'NEXT_RECORDER_NO_MIC' | 'NEXT_RECORDER_WITH_MIC';
+export function micModeOf(recorderAlive: boolean, recorderMic: boolean | null, micWanted: boolean): MicMode {
+  if (!recorderAlive) return micWanted ? 'NEXT_RECORDER_WITH_MIC' : 'NEXT_RECORDER_NO_MIC';
+  return recorderMic === false ? 'OFF' : recorderMic === true ? 'ON' : 'UNKNOWN';
+}
 // The recorder (tools/recorder.py): one process that writes the WAV files of the whole session. It outlives the host.
 type Recorder = { state: string; child: ChildProcess | null; pid: number | null; attached: boolean; stopping: boolean; restarts: number[]; info: Record<string, any>; error: string | null; watch: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null };
 const newRecorder = (): Recorder => ({ state: 'OFF', child: null, pid: null, attached: false, stopping: false, restarts: [], info: {}, error: null, watch: null, retry: null });
@@ -217,7 +225,7 @@ export class MeetingRuntime extends EventEmitter {
   // What daemon.json carries about the live session; the host rewrites the file whenever this changes.
   registry(): Registry {
     const live = this.session && !this.session.ended;
-    return { sessionId: live ? this.session.id : null, recorderPid: live ? this.recorder.pid : null, workerPid: this.capture?.pid ?? null, asr: this.asrWanted ? 'listening' : 'paused', speaker: this.armedDevice?.name ?? null };
+    return { sessionId: live ? this.session.id : null, recorderPid: live ? this.recorder.pid : null, workerPid: this.capture?.pid ?? null, asr: this.asrWanted ? 'listening' : 'paused', speaker: this.armedDevice?.name ?? null, recorderMic: live ? this.recorderMic : null };
   }
   // Takes over a session whose recorder is still alive: the recorder is watched by PID (there is no pipe to it), the ASR
   // worker is started again from the last position stored in the database, and nothing is lost, only delayed.
@@ -227,6 +235,9 @@ export class MeetingRuntime extends EventEmitter {
     const context = JSON.parse(row.context);
     this.session = { id: row.id, title: row.title, created: row.created, ended: null, mode: row.mode, languages: context.languages ?? ['vi', 'lo', 'th'], context };
     this.micWanted = this.micFor(row.id);
+    // The recorder keeps the microphone choice it was started with; only the host that started it knows it (daemon.json). Not
+    // recorded there (an older host) means UNKNOWN: status does not claim no-mic for it, and select restarts it when no mic is wanted.
+    this.recorderMic = typeof previous.recorderMic === 'boolean' ? previous.recorderMic : null;
     this.armedDevice = { index: -1, name: previous.speaker ?? this.profile.speaker?.name ?? 'nguồn đang ghi', kind: 'speaker_loopback_all_device_audio', grantedAt: new Date().toISOString(), expiresAt: null, reattached: true };
     this.asrWanted = previous.asr === 'listening'; this.everListened = this.asrWanted;
     this.asrPosition = this.lastProcessedWall(row.id);
@@ -280,7 +291,16 @@ export class MeetingRuntime extends EventEmitter {
   // right here, so a later `select --no-mic` would be too late for the first seconds).
   prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean; mic?: boolean } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
-    if (this.session && !this.session.ended) return this.snapshot();
+    if (this.session && !this.session.ended) {
+      // A meeting is already open (start returns it). An explicit no-mic is applied only where it is true: no recorder yet, or one
+      // already without the microphone. A recorder that records (or may record) the microphone is not changed here, and the call
+      // says so instead of looking like it worked: select --no-mic restarts that recorder without it (04/11, review of runtime.ts:283).
+      if (extra.mic === false) {
+        if (this.recorderAlive() && this.recorderMic !== false) throw new Error('MIC_OFF_NOT_APPLIED: cuộc họp đang mở và bộ ghi đang (hoặc có thể đang) ghi micro; start không đổi được. Dùng pma select <index> --no-mic để khởi động lại bộ ghi không micro');
+        this.micWanted = this.micFor(this.session.id, false);
+      }
+      return this.snapshot();
+    }
     if (this.capture || this.stoppingCapture || this.recorderAlive() || this.captureState === 'CLEANUP_UNCONFIRMED') throw new Error('PREVIOUS_CAPTURE_NOT_CLOSED');
     if (fixture && !this.testMode) throw new Error('FIXTURE_DISABLED');
     // A fixture session has no audio, model or GPU: it takes no machine lock.
@@ -454,7 +474,7 @@ export class MeetingRuntime extends EventEmitter {
     // "LISTENING, lag 1.2 s" while a second runtime filled the GPU). Silence from a listening worker is reported on its own.
     const silent = Math.round((Date.now() - this.lastWorkerEventAt) / 1000);
     if (this.captureState === 'LISTENING' && this.lastWorkerEventAt && silent >= ASR_STALL_SECONDS) captureInfo.asrStalledSeconds = silent;
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), context: id ? (({ version, missing }) => ({ version, missing }))(this.packOf(id)!) : null, ledger: id ? this.ledger.summaryOf(id) : null, decisions: id ? this.decisions.summaryOf(id) : null, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), context: id ? (({ version, missing }) => ({ version, missing }))(this.packOf(id)!) : null, ledger: id ? this.ledger.summaryOf(id) : null, decisions: id ? this.decisions.summaryOf(id) : null, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), micMode: micModeOf(this.recorderAlive(), this.recorderMic, this.micWanted), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
   }
   // How far a role's work is saved. Never past what it was handed (its cursor).
   // - chinh, a high-water contract, not row-by-row coverage: the picture is rewritten as the WHOLE meeting (OWN-029), so a picture saved

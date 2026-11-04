@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { test, withFakes, until, readLog } from './fakes.mjs';
+import { micModeOf } from '../dist/runtime.js';
 
 const micArgs = argv => argv.filter(a => a === '--mic-auto' || a === '--mic-device');
 const recorderSpawns = audio => readLog(audio, 'recorder-log.jsonl').filter(e => e.what === 'spawn');
@@ -65,3 +66,39 @@ test('listen with an explicit --no-mic while the recorder runs with the micropho
 });
 // Not covered by a fixture (static only): a new host taking the session over (reattach) and the recorder's own retry; both read
 // micFor()/micWanted from the session, see runtime.ts reattach() and ensureRecorder().
+
+// 04/11 review (runtime.ts:283 and the takeover path): an explicit no-mic is applied only where it is true, and status says what is
+// known about the recorder's microphone. A recorder taken over without that knowledge is UNKNOWN, never OFF.
+test('micModeOf: OFF/ON only when known, UNKNOWN for a recorder taken over without it, and what the next recorder will do', () => {
+  assert.equal(micModeOf(true, false, false), 'OFF');
+  assert.equal(micModeOf(true, true, false), 'ON', 'a recorder started with the mic is ON even if no mic is now wanted');
+  assert.equal(micModeOf(true, null, false), 'UNKNOWN', 'unknown is not OFF');
+  assert.equal(micModeOf(false, null, false), 'NEXT_RECORDER_NO_MIC');
+  assert.equal(micModeOf(false, null, true), 'NEXT_RECORDER_WITH_MIC');
+});
+
+test('start --no-mic on an open meeting whose recorder records the mic is refused, not reported as applied; nothing restarts', async () => {
+  await withFakes(async (r, dir) => {
+    r.prepare('Họp', false, undefined, undefined, { warm: false }); const id = r.session.id;
+    r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }, { index: 12, name: 'Mic', kind: 'microphone' }];
+    await r.select(id, 13); await until(() => r.recorder.state === 'RECORDING', 'recorder');
+    assert.equal(r.compact().micMode, 'ON');
+    assert.throws(() => r.prepare('Họp', false, undefined, undefined, { mic: false }), /MIC_OFF_NOT_APPLIED/);
+    assert.equal(r.micFor(id), true, 'the refused call changed nothing'); assert.equal(recorderSpawns(`${dir}/audio/${id}`).length, 1);
+    assert.equal(r.compact().micMode, 'ON');
+  });
+});
+
+test('start --no-mic on an open meeting with no recorder yet is applied: the first recorder has no mic, the takeover record says so', async () => {
+  await withFakes(async (r, dir) => {
+    r.prepare('Họp', false, undefined, undefined, { warm: false }); const id = r.session.id;
+    assert.equal(r.prepare('Họp', false, undefined, undefined, { mic: false }).session.id, id, 'the open meeting is returned');
+    assert.equal(r.compact().micMode, 'NEXT_RECORDER_NO_MIC');
+    r.devices = [{ index: 13, name: 'Loop', kind: 'speaker_loopback_all_device_audio' }, { index: 12, name: 'Mic', kind: 'microphone' }];
+    await r.select(id, 13); await until(() => r.recorder.state === 'RECORDING', 'recorder');
+    assert.deepEqual(micArgs(recorderSpawns(`${dir}/audio/${id}`)[0].argv), []);
+    assert.equal(r.compact().micMode, 'OFF'); assert.equal(r.registry().recorderMic, false, 'daemon.json tells the next host');
+  });
+});
+// Not covered by a fixture (static only): reattach() taking over a live recorder; it reads recorderMic from daemon.json and leaves it
+// null (UNKNOWN) when an older host did not write it.
