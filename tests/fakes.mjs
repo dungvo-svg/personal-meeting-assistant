@@ -59,6 +59,7 @@ const dir = flag('--dir'); const timeline = path.join(dir, 'timeline.jsonl');
 const write = event => fs.appendFileSync(timeline, JSON.stringify({ t: new Date().toISOString(), ...event }) + '\\n');
 const log = (what, extra) => fs.appendFileSync(path.join(dir, 'recorder-log.jsonl'), JSON.stringify({ at: Date.now(), what, ...extra }) + '\\n');
 log('spawn', { argv: args, pid: process.pid });
+if (args.includes('--mic-auto') || args.includes('--mic-device')) log('mic-open', {});
 const seg = (fs.existsSync(timeline) ? fs.readFileSync(timeline, 'utf8').split('\\n').filter(l => l.includes('"open"')).length : 0) + 1;
 write({ type: 'open', seg, channel: 'speaker', rate: 16000, device: flag('--speaker-name') });
 console.log(JSON.stringify({ type: 'recording', speaker: flag('--speaker-name'), micDevice: 'Mic', micSelectedBy: 'windows_default' }));
@@ -84,8 +85,11 @@ export async function withFakes(fn, options = {}) {
   const root = mkdtempSync(join(tmpdir(), 'pma-fake-root-')); const dir = mkdtempSync(join(tmpdir(), 'pma-session-test-'));
   mkdirSync(join(root, 'tools')); writeFileSync(join(root, 'tools', 'audio_worker.py'), FAKE_WORKER); writeFileSync(join(root, 'tools', 'recorder.py'), FAKE_RECORDER);
   for (const [name, value] of Object.entries(options.profile ? { 'profile.json': JSON.stringify(options.profile) } : {})) writeFileSync(join(dir, name), value);
-  const before = { PMA_PYTHON: process.env.PMA_PYTHON, PMA_WARM: process.env.PMA_WARM, PMA_MIC: process.env.PMA_MIC };
+  const before = { PMA_PYTHON: process.env.PMA_PYTHON, PMA_WARM: process.env.PMA_WARM, PMA_MIC: process.env.PMA_MIC, PMA_AUTO_SOURCE: process.env.PMA_AUTO_SOURCE };
   process.env.PMA_PYTHON = process.execPath; delete process.env.PMA_WARM; delete process.env.PMA_MIC;
+  delete process.env.PMA_AUTO_SOURCE;
+  if (options.mic === false) process.env.PMA_MIC = '0';
+  if (options.autoSource === false) process.env.PMA_AUTO_SOURCE = '0';
   const r = new MeetingRuntime(root, dir, false);
   r.restartDelayMs = 30; r.mixer = () => {};
   try { await fn(r, dir, root); } finally {

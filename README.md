@@ -25,3 +25,9 @@ Trợ lý họp chạy trên máy của owner. **Claude trong phiên làm việc
 Cần Node 24.14+, Python venv `.venv` và model trong `.local/models` (`config/asr-profile.example.json`). Chạy test: `npm test` và `.venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py"`.
 
 Dự án độc lập với AIOS. Chỉ Claude là AI; âm thanh và ASR là mã nguồn mở chạy trên máy.
+
+## Chế độ chỉ loa (bản sửa 0.11.1, chưa phát hành)
+
+Khi chủ động chọn không thu micro, đặt `PMA_MIC=0` **trước khi tạo host**. `PMA_AUTO_SOURCE=0` cũng có thể đặt trước host để chờ chọn nguồn loa rõ ràng. Windows launcher chuyển cả hai lựa chọn tới host; bộ ghi không nhận `--mic-auto`/`--mic-device` khi micro bị tắt. Đây là lựa chọn riêng của lượt chạy, không đổi mặc định mic hay chính sách WAV/RAW của OWN-027.
+
+Các biến không cấu hình lại một host đã chạy. Không dùng chúng để thay nóng phiên đang họp. Bản sửa chỉ được build/test ở worktree tách biệt; không coi fixture là nghiệm thu audio hoặc việc nhận nút mute. Nguồn loopback là âm thanh đầu ra trộn, không phải danh tính người nói.

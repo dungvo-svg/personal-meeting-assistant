@@ -3,10 +3,11 @@ import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { daemonEnvArgs } from './launch-env.js';
+export { DAEMON_ENV } from './launch-env.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
-export const DAEMON_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH'];
 type Info ={ url: string; pid: number; token: string; version: string; startedAt: string };
 
 export function daemonInfo(): Info | null {
@@ -32,7 +33,7 @@ export async function ensureDaemon(): Promise<Info> {
   // The runtime must outlive the Claude session, shell command or MCP adapter that starts it, and must not
   // hold their stdout pipes. On Windows a detached child still inherits those handles and the caller's job,
   // so it is created through WMI instead, with its console hidden. Settings travel as --env arguments because WMI drops the environment.
-  const settings = DAEMON_ENV.filter(key => process.env[key]).flatMap(key => ['--env', `${key}=${process.env[key]}`]);
+  const settings = daemonEnvArgs();
   const argv = [process.execPath, '--no-warnings', join(root, 'dist', 'daemon.js'), ...settings];
   const child = process.platform === 'win32'
     ? spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '$s = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }; $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = $env:PMA_LAUNCH; CurrentDirectory = $env:PMA_LAUNCH_DIR; ProcessStartupInformation = $s }; exit $r.ReturnValue'], { stdio: 'ignore', windowsHide: true, env: { ...process.env, PMA_LAUNCH: argv.map(a => `"${a}"`).join(' '), PMA_LAUNCH_DIR: root } })

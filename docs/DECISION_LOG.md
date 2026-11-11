@@ -1,5 +1,7 @@
 # Sổ quyết định
 
+03/11/2026 — ENGINEERING patch 0.11.1 (isolated, chưa promote): theo yêu cầu build song song của owner lúc 01:51:29 UTC, sửa forwarding Windows cho tùy chọn đã có `PMA_MIC=0` và `PMA_AUTO_SOURCE=0`. Dùng một allowlist chung ở `src/launch-env.ts`, áp dụng trước `MeetingRuntime`. Test dùng backend giả để chứng minh zero microphone-open khi explicit disabled. Không đổi OWNER_LOCKED, không diễn giải yêu cầu ẩn mic OFF/UNKNOWN khỏi share thành lệnh đổi mặc định RAW/WAV. Thẩm quyền share ngày 01/11 nằm trong `OWNER-MIC-SHARE-DECISION.md` của bộ research; patch này không thực hiện guard follower của 0.12.
+
 Revision v0.7.0 —28/10/2026. Chỉ nội dung dưới nhãn OWNER_LOCKED là lựa chọn đã được người dùng chốt. Nội dung kỹ thuật do agent thiết kế phải giữ nhãn riêng.
 
 ## Nguồn quyết định

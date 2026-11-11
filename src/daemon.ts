@@ -12,15 +12,11 @@ import { MeetingRuntime } from './runtime.js';
 import { composeBrief } from './brief.js';
 import { applyParticipants } from './participants.js';
 import { setMicState } from './mic.js';
+import { applyDaemonEnv } from './launch-env.js';
 
-export const VERSION = '0.11.0';
+export const VERSION = '0.11.1';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
-const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH'];
-for (let i = 2; i < process.argv.length - 1; i++) {
-  if (process.argv[i] !== '--env') continue;
-  const [key, ...value] = process.argv[++i].split('=');
-  if (ALLOWED_ENV.includes(key)) process.env[key] = value.join('=');
-}
+applyDaemonEnv(process.argv.slice(2));
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dataDir = process.env.PMA_DATA_DIR || join(root, '.local', 'runtime');
 const port = Number(process.env.PMA_PORT || 8796);

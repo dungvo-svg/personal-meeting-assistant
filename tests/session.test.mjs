@@ -89,6 +89,45 @@ test('pause stops the ASR only: the recorder keeps recording, a temporary mix is
   });
 });
 
+test('disabled microphone opens zero mic sources from remembered start through selection, listen and recorder restart', async () => {
+  await withFakes(async (r, dir) => {
+    r.prepare('Loopback only'); const id = r.session.id; const audio = join(dir, 'audio', id);
+    await until(() => r.recorder.state === 'RECORDING', 'remembered speaker recording');
+    const noMic = () => {
+      const recorded = spawns(audio, 'recorder-log.jsonl');
+      assert.ok(recorded.length > 0);
+      for (const { argv } of recorded) {
+        assert.ok(argv.includes('--speaker-device'));
+        assert.ok(!argv.includes('--mic-auto') && !argv.includes('--mic-device'));
+      }
+      assert.equal(readLog(audio, 'recorder-log.jsonl').filter(e => e.what === 'mic-open').length, 0);
+    };
+    noMic(); // before select/listen: remembered microphone must already be disabled
+    await r.select(id, 13); await r.start(id);
+    await until(() => r.captureState === 'LISTENING', 'speaker ASR');
+    noMic();
+    await r.selectMic(id, 12);
+    await until(() => spawns(audio, 'recorder-log.jsonl').length === 2 && r.recorder.state === 'RECORDING', 'explicit mic choice still disabled');
+    noMic();
+    writeFileSync(join(audio, 'crash-recorder'), '');
+    await until(() => spawns(audio, 'recorder-log.jsonl').length === 3 && r.recorder.state === 'RECORDING', 'recorder restarted');
+    noMic();
+  }, { mic: false, profile: { speaker: { name: 'Loop' }, mic: { name: 'Mic' } } });
+});
+
+test('disabled automatic source records nothing until an explicit loopback selection', async () => {
+  await withFakes(async (r, dir) => {
+    r.prepare('Explicit source'); const id = r.session.id; const audio = join(dir, 'audio', id);
+    await until(() => r.captureState === 'WARM_READY', 'warm fake worker');
+    await sleep(100);
+    assert.equal(r.recorder.state, 'OFF');
+    assert.equal(spawns(audio, 'recorder-log.jsonl').length, 0);
+    await r.select(id, 13);
+    await until(() => r.recorder.state === 'RECORDING', 'explicit speaker recording');
+    assert.equal(readLog(audio, 'recorder-log.jsonl').filter(e => e.what === 'mic-open').length, 0);
+  }, { mic: false, autoSource: false, profile: { speaker: { name: 'Loop' }, mic: { name: 'Mic' } } });
+});
+
 test('the ASR worker dies: it is started again from where it got to, the skipped audio becomes a "[KHOẢNG TRỐNG ASR]" row, and it is not stopped for good', async () => {
   await withFakes(async (r, dir) => {
     const { id, audio } = await openSession(r, dir);

@@ -1,4 +1,6 @@
-# Baseline sản phẩm v0.11.0
+# Baseline sản phẩm v0.11.1
+
+Bản sửa kỹ thuật 03/11/2026, chỉ trong worktree isolated, chưa tích hợp/phát hành. Windows launcher giữ lựa chọn explicit `PMA_MIC=0` và `PMA_AUTO_SOURCE=0` trước khi host tạo runtime. Không đổi mặc định, OWN-027 hoặc chính sách share/capture/WAV/RAW. Các quyết định sản phẩm dưới đây giữ nguyên nguồn ngày 31/10.
 
 Ngày 31/10/2026. **Đây là nơi chốt sản phẩm hiện hành.** Quyết định có nguồn ở [DECISION_LOG.md](DECISION_LOG.md). Kế hoạch triển khai ở [PLAN_0_11.md](PLAN_0_11.md). Hành vi khi họp do skill [`hop`](../.claude/skills/hop/SKILL.md) định nghĩa. Các bản trước nằm trong [`docs/history/`](history/): chỉ để tra lại, không còn hiệu lực.
 

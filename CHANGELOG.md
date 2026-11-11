@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.11.1 — 03/11/2026 (isolated, chưa phát hành)
+
+- Sửa Windows launcher bỏ sót `PMA_MIC` và `PMA_AUTO_SOURCE`: dùng chung allowlist gửi/nhận trước khi tạo runtime. Khi explicit `PMA_MIC=0`, nguồn nhớ, select/listen và recorder restart không mở mic. Không đổi mặc định hay OWN-027; không tích hợp 0.12.
+- Test pure env round-trip, fake lifecycle, Windows WMI + host với backend giả và recorder entry point với nguồn instrumented. Chỉ chứng minh đường disabled; không chứng minh nút mute, ASR thật, native follower hoặc nhận tên người nói.
+- Được giao build song song 03/11; main/runtime họp không sửa, chưa merge/deploy/push. Research cuối tuần giữ làm reference local riêng, không coi các lệnh lịch sử là chỉ đạo hôm nay.
+
 ## 0.11.0 —31/10/2026
 
 Audit thiết kế 31/10 (owner: "có vẻ bạn đang làm sai thiết kế").
