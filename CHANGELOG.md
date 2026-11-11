@@ -13,6 +13,8 @@ Audit 10/11 (owner U31, OWN-033, OWN-034): 5/8 buổi họp 04–10/11 mất ngu
 - **`pma coverage` đủ danh sách**: chữ in hết mọi trang; `--json --after N --limit M` theo trang (B3, trước dừng ở 200).
 - **Bảng tên**: biến thể một chữ chỉ khớp đúng như viết ("quân y" không thành "Hoàng Văn Quân") (C1).
 - **Quy trình trong công cụ** (OWN-033): `pma guide` in quy trình họp của bản đang cài với đường dẫn đầy đủ (chạy được từ mọi thư mục); `pma guide dich` phần cho agent dịch nền. Kỹ năng `hop` chỉ còn vài dòng chỉ đường; dự án khác dùng đúng bản kỹ năng đó.
+- **Bỏ MCP** (OWN-035, owner 11/11): chỉ còn CLI `pma` + kỹ năng `hop`. Đã xoá `src/server.ts`, `tools/install_claude.py`, `tools/mcp_config.py`, `tools/probe.mjs`, `tests/mcp_smoke.test.mjs`, thư viện `@modelcontextprotocol/sdk`; `npm start` chạy daemon. Mã cuối ở thẻ `archive/mcp-adapter-0.12.1`. Đăng ký MCP cũ trong `~/.claude.json` chưa gỡ (chờ owner): phiên mở ở thư mục này sẽ báo MCP không kết nối được, vô hại.
+- **`pma doctor`**: một lệnh, mọi máy, chỉ đọc: Node, bản build, `.venv` và gói Python, CUDA/GPU, mô hình (mã băm), nguồn âm, đĩa, host và khoá máy, kỹ năng `hop` + Stop hook của thư mục đang đứng; mỗi mục thiếu có cách sửa; `--json`.
 - Kiểm thử: tests/no_self_stop.test.mjs (mỗi quyết định OWN-015/022/028/034 một bài), tests/test_follow_rotation.py (đổi file khi đang đọc với hai kênh, khoá, mất dòng, file thiếu).
 
 ## 0.12.1 — 03/11/2026

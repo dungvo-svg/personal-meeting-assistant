@@ -66,6 +66,6 @@ Chỉ chạy `start` khi người dùng muốn bắt đầu một cuộc họp t
 
 ## Đã kiểm và chưa kiểm
 
-- Đã kiểm bằng fixture (không ghi âm): `status` / `stop` đúng UUID / sai UUID từ thư mục BidOps bằng đường dẫn tuyệt đối; `stop` khi không có host; `stop` (reach) tới host giả kiểu 0.11; MCP `session_finish` khi không có host.
+- Đã kiểm bằng fixture (không ghi âm): `status` / `stop` đúng UUID / sai UUID từ thư mục BidOps bằng đường dẫn tuyệt đối; `stop` khi không có host; `stop` (reach) tới host giả kiểu 0.11. (MCP đã bỏ 11/11, OWN-035.)
 - Host thử ở lại sau `stop`, nên bài kiểm luôn thấy cùng pid. Trường hợp host thật tự thoát rồi `status` trả `NOT_RUNNING` thì chỉ mô tả ở trên, chưa kiểm.
 - **Chưa** kiểm: CLI `start` thật, ghi âm thật, cuộc họp thật, cài đặt global.

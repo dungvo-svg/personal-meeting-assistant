@@ -142,23 +142,6 @@ test('a late report derived from an older version is refused by its base revisio
   });
 });
 
-// Codex review of 9124eb3 (entrypoints): the MCP adapter carries the same contract as the CLI, and the generic note path cannot write
-// the picture. The adapter is read as text (importing it would connect a stdio MCP server).
-test('the MCP adapter needs the receipt and base for reports, sends them attach-only, reads context with a receipt, and offers no-mic', () => {
-  const server = readFileSync(resolve('src/server.ts'), 'utf8');
-  assert.match(server, /const VERSION = '0\.12\.1'/);
-  assert.match(server, /registerTool\('context_read'[\s\S]*?forward\('brief'/);
-  const lineOf = tool => server.split(/\r?\n/).find(l => l.includes(`registerTool('${tool}'`));
-  for (const tool of ['report_save_summary', 'report_save_tasks']) {
-    const line = lineOf(tool);
-    assert.match(line, /receipt, expectedRevision: base/, tool + ' requires the receipt and base'); assert.match(line, /forwardDraft\(/, tool + ' never starts a host');
-  }
-  for (const tool of ['session_prepare', 'source_select', 'hearing_start']) assert.match(lineOf(tool), /mic: z\.boolean\(\)\.optional\(\)/, tool + ' has an explicit mic choice');
-  assert.match(server, /registerTool\('session_status'[\s\S]*?inspect\(\)/, 'status stays a pure inspect');
-  // session_prepare is an activation (warm-up, remembered speaker): its description must not promise a harmless prepare (Codex 03/11).
-  assert.doesNotMatch(lineOf('session_prepare'), /No capture until/); assert.match(lineOf('session_prepare'), /starts recording it at once/);
-});
-
 test('the picture key is reserved: note_publish cannot write a picture revision past its receipt and base', async () => {
   await withFakes(async r => {
     const { id, source } = meeting(r);

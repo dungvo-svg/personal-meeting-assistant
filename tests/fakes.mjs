@@ -107,7 +107,10 @@ export async function withFakes(fn, options = {}) {
   let leftover = null;
   try { await fn(r, dir, root); } finally {
     await r.close();
-    const alive = [r.capture?.pid, r.recorderAlive() ? r.recorder.pid : null].filter(pid => pid);
+    // An exit that already happened may not have reached this runtime yet (another runtime stopped it): give it up to 3 s.
+    const owned = () => [r.capture?.pid, r.recorderAlive() ? r.recorder.pid : null].filter(pid => pid);
+    for (const end = Date.now() + 3000; owned().length && Date.now() < end;) await sleep(50);
+    const alive = owned();
     if (alive.length) leftover = alive;
     for (const key of Object.keys(process.env)) if (key.startsWith('PMA_')) delete process.env[key];
     Object.assign(process.env, saved);

@@ -8,12 +8,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js",
+    "start": "node dist/daemon.js",
     "test": "npm run build && node --test tests/*.test.mjs",
     "daemon": "node dist/daemon.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.2",
     "zod": "4.6.7"
   },
   "devDependencies": {

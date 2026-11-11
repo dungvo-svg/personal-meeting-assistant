@@ -39,7 +39,7 @@ Các quyết định đã bị thay, vẫn ghi trong DECISION_LOG để tra:
 - OWN-012: chỉ Việt–Lào.
 - OWN-016: micro khi được.
 - OWN-018: WAV tự xoá 7 ngày.
-- OWN-002/OWN-011 (thay được bằng AGY/Codex/MCP host khác): vẫn hiệu lực nhưng **không ưu tiên**; mọi thiết kế hiện tại nhắm Claude Code.
+- OWN-002/OWN-011 (thay được bằng host khác qua MCP): **đã bỏ** 11/11 (OWN-035). Công cụ chỉ có một mặt: CLI `pma` + kỹ năng `hop` chỉ đường tới `pma guide`. Bộ MCP cuối cùng ở thẻ `archive/mcp-adapter-0.12.1`.
 
 ## Kiến trúc (0.12)
 
@@ -48,7 +48,7 @@ pma start ─► host phiên (src/daemon.ts) — chỉ sống trong phiên họp
              ├─ bộ ghi (tools/recorder.py): loa + micro → WAV khúc 10 phút + timeline.jsonl; không model; tự chạy lại; sống cả khi host chết
              └─ bộ nghe (tools/audio_worker.py --follow): đọc WAV từ giây 0, đuổi kịp, nhận dạng vi/lo/th trên GPU
 Claude ─► pma brief (context trước họp) · pma follow · pma translate · pma picture · pma say · pma recheck · pma coverage · pma stop
-          (CLI/MCP ─► /rpc loopback có token; không còn trang web nào. Host lọc dòng cho vai dịch trước khi giao)
+          (CLI ─► /rpc loopback có token; không còn trang web nào. Host lọc dòng cho vai dịch trước khi giao)
 ```
 
 Chi tiết và quy ước file: [PLAN_0_11.md](PLAN_0_11.md). Cách vận hành trong họp: skill `hop`.
