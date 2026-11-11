@@ -8,7 +8,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { MeetingRuntime } from '../dist/runtime.js';
 import { markAudioDir } from '../dist/audio.js';
-import { test, withFakes, openSession, until, sleep, readLog } from './fakes.mjs';
+import { FAKE_IDENTITY, test, withFakes, openSession, until, sleep, readLog } from './fakes.mjs';
 import { isolatedEnv, recordingHost, teardown } from './harness.mjs';
 
 const spawns = (audio, file) => readLog(audio, file).filter(entry => entry.what === 'spawn');
@@ -106,16 +106,16 @@ test('the ASR worker dies: it is started again from where it got to, the skipped
   });
 });
 
-test('the ASR worker keeps dying: 3 restarts in 10 minutes, then ERROR with a clear text; the recording goes on and listen tries again', async () => {
+// Since the audit of 10/11 (T5) the worker is never given up while the meeting is open: tests/no_self_stop.test.mjs.
+test('the ASR worker keeps dying: every crash is a gap row and a restart; past 3 the retry is slower with a loud error; the recording goes on', async () => {
   await withFakes(async (r, dir) => {
     const { id, audio } = await openSession(r, dir);
     writeFileSync(join(audio, 'crash-worker'), 'always');
     await r.start(id);
-    await until(() => r.captureState === 'ERROR', 'give up');
-    assert.equal(spawns(audio, 'worker-log.jsonl').length, 4, 'the first worker and 3 restarts'); assert.equal(r.capture, null);
-    assert.match(r.lastError, /chết 4 lần trong 10 phút/); assert.match(r.lastError, /pma coverage/); assert.match(r.lastError, /boom/);
-    assert.equal(r.sources(id).filter(row => row.origin === 'system_gap').length, 3); assert.equal(r.recorder.state, 'RECORDING'); assert.equal(r.registry().asr, 'paused');
-    rmSync(join(audio, 'crash-worker')); await r.start(id); await until(() => r.captureState === 'LISTENING', 'listening again'); assert.ok(r.capture);
+    await until(() => spawns(audio, 'worker-log.jsonl').length >= 5, 'restarts past the limit');
+    assert.match(r.lastError, /chết \d+ lần trong 10 phút/); assert.match(r.lastError, /pma coverage/); assert.match(r.lastError, /boom/);
+    assert.ok(r.sources(id).filter(row => row.origin === 'system_gap').length >= 4); assert.equal(r.recorder.state, 'RECORDING'); assert.equal(r.registry().asr, 'listening');
+    rmSync(join(audio, 'crash-worker')); await until(() => r.captureState === 'LISTENING', 'listening again'); assert.ok(r.capture);
   });
 });
 
@@ -139,9 +139,9 @@ test('a new host takes over a session whose recorder is still alive (nothing mar
     const recorderPid = r.recorder.pid;
     // The host dies: no handler runs, the database is simply abandoned; the recorder is a separate process and goes on.
     r.closing = true; r.db.close();
-    writeFileSync(join(dir, 'daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:1', pid: 999999, token: 'x', version: 't', startedAt: new Date().toISOString(), sessionId: id, recorderPid, workerPid: null, asr: 'listening', speaker: 'Loop' }));
+    writeFileSync(join(dir, 'daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:1', pid: 999999, token: 'x', version: 't', startedAt: new Date().toISOString(), sessionId: id, recorderPid, recorderStartedAt: FAKE_IDENTITY(recorderPid), workerPid: null, asr: 'listening', speaker: 'Loop' }));
     delete process.env.PMA_WARM;
-    const next = new MeetingRuntime(root, dir, false); next.restartDelayMs = 30; next.mixer = () => {};
+    const next = new MeetingRuntime(root, dir, false, undefined, { startedAt: FAKE_IDENTITY }); next.restartDelayMs = 30; next.mixer = () => {};
     try {
       assert.equal(next.session.id, id); assert.equal(next.session.ended, null); assert.equal(next.history(id).session.ended, null); assert.deepEqual(next.session.languages, ['vi', 'lo', 'th']);
       assert.equal(next.recorder.attached, true); assert.equal(next.recorder.pid, recorderPid); assert.equal(next.recorder.state, 'RECORDING'); assert.equal(next.registry().recorderPid, recorderPid);
@@ -172,8 +172,8 @@ test('a host that takes over a live meeting resumes each follow role at its stor
     await r.next(id, c, 0, 12, true, 'dich', { lease: 'dichbbbbb' }); assert.deepEqual(r.release(id, 'dich', 'dichbbbbb', c), { released: true });
     const recorderPid = r.recorder.pid;
     r.closing = true; r.db.close();
-    writeFileSync(join(dir, 'daemon.json'), JSON.stringify({ pid: 999999, sessionId: id, recorderPid, workerPid: null, asr: 'paused', speaker: 'Loop' }));
-    const next = new MeetingRuntime(root, dir, false); next.mixer = () => {};
+    writeFileSync(join(dir, 'daemon.json'), JSON.stringify({ pid: 999999, sessionId: id, recorderPid, recorderStartedAt: FAKE_IDENTITY(recorderPid), workerPid: null, asr: 'paused', speaker: 'Loop' }));
+    const next = new MeetingRuntime(root, dir, false, undefined, { startedAt: FAKE_IDENTITY }); next.mixer = () => {};
     try {
       assert.equal(next.session.id, id);
       assert.deepEqual(next.followers, { chinh: { cursor: b, at: null }, dich: { cursor: c, at: null } });

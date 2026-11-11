@@ -78,7 +78,7 @@ const methods: Record<string, (input: any) => any> = {
   // Listening again from the WAV, and the list of what is worth listening to again. Both work on a finished session too:
   // without an ID they take the open session, else the latest one.
   recheck: input => { const a = z.object({ sessionId: sid.optional(), sourceId: z.number().int().positive().optional(), from: z.string().max(40).optional(), to: z.string().max(40).optional(), channel: z.enum(['speaker', 'mic']).optional(), beam: z.number().int().min(1).max(16).optional() }).parse(input); return runtime.recheck(afterwards(a.sessionId), a); },
-  coverage: input => { const a = z.object({ sessionId: sid.optional() }).parse(input); return runtime.coverage(afterwards(a.sessionId)); },
+  coverage: input => { const a = z.object({ sessionId: sid.optional(), after: z.number().int().nonnegative().optional(), limit: z.number().int().min(1).max(500).optional() }).parse(input); return runtime.coverage(afterwards(a.sessionId), a); },
   finish: input => runtime.finish(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   raw: input => runtime.writeRaw(afterwards(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200), receipt, idempotencyKey: key, expectedRevision: z.number().int().nonnegative().optional() }).parse(input); const s = afterwards(a.sessionId); runtime.requireCentralContext(s, a.receipt); if (a.expectedRevision === undefined) throw new Error(BASE_REQUIRED('summary')); const v = draft('summary', { markdown: a.markdown, sourceIds: a.sourceIds }); return runtime.draftOnce(s, 'summary', a.idempotencyKey, v.contentHash, () => runtime.saveSummary(s, a.markdown, a.sourceIds, a.expectedRevision)); },
@@ -244,7 +244,8 @@ if (!runtime.testMode || process.env.PMA_EXIT_AFTER_FINISH === '1') runtime.on('
 let stopping = false;
 async function shutdown() {
   if (stopping) return; stopping = true;
-  await runtime.close();
+  // Stopping the host is not ending the meeting: only `pma stop` (the owner) ends it. An open meeting is handed to the next host.
+  await runtime.close({ keepMeeting: true });
   // Gone from daemon.json before the port is released, so a command that comes right after starts a new host instead of calling this one.
   try { rmSync(join(dataDir, 'daemon.json'), { force: true }); } catch {}
   http.close(); setTimeout(() => process.exit(0), 100).unref();

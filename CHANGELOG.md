@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.12.1 — 10/11/2026 (gộp: audit A1, không tự tắt, quy trình trong công cụ)
+
+Audit 10/11 (owner U31, OWN-033, OWN-034): 5/8 buổi họp 04–10/11 mất nguyên một file thu 10 phút có tiếng mà không ra chữ, không báo gì.
+
+- **Bộ nghe không còn bỏ file 10 phút** (A1): hai luồng đọc (loa, micro) dùng chung một `Timeline` không khoá nên mất dòng `open` của file mới; thiếu dòng đó bộ đọc lấp im lặng cả file. Nay `Timeline.update` có khoá; bộ đọc tự đối chiếu với file trên đĩa (file kế tiếp có mà timeline chưa thấy thì đọc lại timeline); số file nhảy cóc thì báo `[KHOẢNG TRỐNG ASR] … file thu số N` (`SEGMENT_NOT_READ`) kèm lệnh `recheck`. Một `open` sau `end` (bộ ghi chạy lại) không còn bị coi là hết bản ghi.
+- **Canh gác bộ nghe** (K4): bộ nghe gửi nhịp tim mỗi 5 giây kèm trạng thái từng kênh. Host tự chạy lại bộ nghe khi nó im 90 giây, hoặc khi kênh loa chờ âm 90 giây trong khi bộ ghi đã ghi trước; chạy lại tiếp đúng vị trí, không bỏ 10 giây, không tính là lỗi chết. Chờ vì ASR chậm (`waiting_asr`) không phải đứng.
+- **Không tự kết thúc, không bỏ cuộc** (T2–T6): `pma shutdown`/tín hiệu dừng host không kết thúc cuộc họp (bộ ghi ghi tiếp, `takeover.json`, host sau tiếp quản); bộ ghi kết thúc vì lỗi (`interrupted`) được chạy lại, chỉ `stop` của owner mới kết thúc; bộ nghe đọc tới `end` mà bộ ghi vẫn chạy thì được chạy lại; bộ nghe/bộ ghi chết nhiều lần thì thử chậm lại (60 giây) với lỗi hiện rõ, không còn `ERROR` dừng hẳn; phần chữ chưa xả xong khi kết thúc được ghi thành khoảng trống `ASR_DRAIN_CUT`.
+- **Tiếp quản không đụng tiến trình chưa xác minh** (review 4c21d07): PID còn sống mà giờ khởi động không khớp (hoặc không biết) thì `recorder.state UNVERIFIED`: không gửi tín hiệu, không file STOP, không chạy bộ ghi thứ hai; khi tiến trình đó thoát bộ ghi tự chạy lại. Cùng danh tính mà thiếu chế độ micro thì tiếp quản với `micMode UNKNOWN`. Năng lực `mic-session/2` bắt buộc trước khi gửi `prepare` không micro.
+- **Nhật ký bộ nghe** (K6): `asr-log.jsonl` cạnh WAV ghi mọi sự kiện của bộ nghe (khởi động, nhịp tim, khoảng trống, lỗi, đứng, thoát), không ghi chữ.
+- **`pma recheck` khoảng dài tự chia đoạn 5 phút**, mỗi đoạn một dòng kết quả (A2; khoảng 10–20 phút từng hỏng).
+- **`pma coverage` đủ danh sách**: chữ in hết mọi trang; `--json --after N --limit M` theo trang (B3, trước dừng ở 200).
+- **Bảng tên**: biến thể một chữ chỉ khớp đúng như viết ("quân y" không thành "Hoàng Văn Quân") (C1).
+- **Quy trình trong công cụ** (OWN-033): `pma guide` in quy trình họp của bản đang cài với đường dẫn đầy đủ (chạy được từ mọi thư mục); `pma guide dich` phần cho agent dịch nền. Kỹ năng `hop` chỉ còn vài dòng chỉ đường; dự án khác dùng đúng bản kỹ năng đó.
+- Kiểm thử: tests/no_self_stop.test.mjs (mỗi quyết định OWN-015/022/028/034 một bài), tests/test_follow_rotation.py (đổi file khi đang đọc với hai kênh, khoá, mất dòng, file thiếu).
+
 ## 0.12.1 — 03/11/2026
 
 Nhánh `pma/v5-cursor`, nền `pma/v5-int` `55a0394` (0.12.0 chưa tích hợp).

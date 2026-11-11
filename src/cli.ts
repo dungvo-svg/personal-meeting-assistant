@@ -1,6 +1,10 @@
 // `pma`: how Claude (or a person) drives the meeting runtime. Replies are compact JSON, except
 // `follow` and `read`, which print transcript lines for Claude to read.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { pieces, RECHECK_PIECE_SECONDS } from './ranges.js';
 import { randomBytes } from 'node:crypto';
 import { attach, call, inspect, reach } from './client.js';
 import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
@@ -15,6 +19,8 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --base N: bản đã đọc (lần đầu 0), BẮT BUỘC cho picture/summary/tasks; có bản mới hơn thì báo xung đột;
                                    --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
+  pma doctor [--json]               máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
+  pma guide [dich]                 quy trình họp của bản pma đang cài (kỹ năng hop chỉ trỏ tới đây); dich: phần cho agent dịch nền
   pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
   pma me --on | --off | --auto     micro "Tôi" đang bật/tắt khi máy không tự đọc được (ghi vào timeline, by:manual); --auto trả lại cho máy đọc
   pma at HH:MM [--session ID]      sửa giờ họp theo lịch của phiên đang mở (độ phủ tính lại; phiên đã kết thúc thì chạy pma raw lại)
@@ -54,7 +60,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    kết thúc: dừng ghi, bộ nghe đọc nốt, ghép meeting-mix.wav, rồi mới ghi RAW.md (có thể mất vài phút)
   pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS [--channel speaker|mic] [--beam 8] [--session ID]
                                    nghe lại một đoạn từ bản ghi âm (chậm hơn, kỹ hơn), lưu kết quả, đoạn đó hiện "(đã nghe lại: …)" trong RAW
-  pma coverage [--json] [--session ID]   chỗ bản ghi có tiếng mà chưa có chữ, đoạn ASR lỗi, đoạn cờ không chắc: mỗi dòng kèm lệnh pma recheck
+  pma coverage [--json [--after N] [--limit 200]] [--session ID]   chỗ bản ghi có tiếng mà chưa có chữ, đoạn ASR lỗi, đoạn cờ không chắc: mỗi dòng kèm lệnh pma recheck
   pma audio [list | purge [--older-than N]]   xem âm thanh đã lưu (mỗi phiên: meeting-mix.wav dùng cho pma replay, hoặc "đang ghép") / xoá: âm thanh KHÔNG tự hết hạn,
                                    chỉ xoá khi bạn gõ lệnh này: --older-than N xoá phiên cũ hơn N ngày (0 = tất cả; phiên đang họp luôn được giữ)
   pma read [--after N] [--limit 100] [--session ID] [--as TÊN]   --as khác chinh: chỉ phần được phép chiếu cho vai đó (mặc định: đọc đủ như chủ)
@@ -79,6 +85,16 @@ const draftFlags = (flags: Record<string, string>) => { const base = flags.base 
 // --no-mic / --mic change the session's choice (kept until changed again); neither keeps it.
 const micFlag = (flags: Record<string, string>) => flags['no-mic'] === 'true' ? { mic: false } : flags.mic === 'true' ? { mic: true } : {};
 const list = (value?: string) => value ? value.split(',').map(v => Number(v.trim())).filter(Number.isInteger) : [];
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..').split('\\').join('/');
+// guide/hop.md with the full path of this installed pma, so its commands run from any folder; `dich`: the background translator part.
+function guide(part?: string) {
+  const version = (() => { try { return JSON.parse(readFileSync(`${ROOT}/package.json`, 'utf8')).version; } catch { return '?'; } })();
+  let text = readFileSync(`${ROOT}/guide/hop.md`, 'utf8').replace(/^<!--[\s\S]*?-->\r?\n/, '');
+  if (part === 'dich') { const from = text.indexOf('## Brief agent dịch nền'); const to = text.indexOf('\n## ', from + 5); if (from < 0) throw new Error('GUIDE_PART_NOT_FOUND: dich'); text = text.slice(from, to < 0 ? undefined : to); }
+  else if (part) throw new Error('pma guide [dich]');
+  text = text.replaceAll('{{PMA}}', `"${ROOT}/pma"`).replaceAll('{{PMA_CMD}}', `"${ROOT}/pma.cmd"`).replaceAll('{{ROOT}}', ROOT);
+  return `<!-- pma ${version} · ${ROOT} -->\n${text}`;
+}
 // `--file -` reads the text from stdin (0.12.1): the agent hands drafts (picture, translations, summary, tasks, participants) straight to
 // the host through a pipe, so it writes no draft file of its own anywhere; the host stores them as before.
 const input = (file?: string) => { if (!file) throw new Error('--file <đường dẫn> hoặc --file - (đọc từ stdin)'); return file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8'); };
@@ -216,7 +232,7 @@ async function follow(flags: Record<string, string>) {
   const contextCheck = (s: any) => {
     const ctx = s?.followers?.[name]?.context; if (!ctx || ctx.state === 'READY' || ctx.state === 'DEGRADED' || ctx.state === 'NOT_READY' && ctx.reasons?.includes('ASR_NOT_LISTENING')) return;
     const key = `${s.context?.version}:${ctx.state}`; if (key === toldContext) return; toldContext = key;
-    console.log(`CONTEXT ${ctx.reasons?.includes('STALE_CONTEXT') ? 'ĐỔI' : 'CHƯA ĐỌC'} (v${s.context?.version}, ${ctx.state}): chạy ./pma brief --as ${name}`);
+    console.log(`CONTEXT ${ctx.reasons?.includes('STALE_CONTEXT') ? 'ĐỔI' : 'CHƯA ĐỌC'} (v${s.context?.version}, ${ctx.state}): chạy pma brief --as ${name}`);
   };
   contextCheck(await call('status').catch(() => null));
   for (;;) {
@@ -275,6 +291,16 @@ async function main() {
     case 'participants': {
       if (!flags.file) throw new Error('pma participants --file p.json');
       return out(await attach('participants', { participants: JSON.parse(input(flags.file)), ...(flags.key ? { idempotencyKey: flags.key } : {}) }));
+    }
+    // The meeting procedure belongs to the tool and its version; the hop skill of any project only points here (owner 10/11).
+    case 'guide': return process.stdout.write(guide(positional[0]));
+    // What this machine has for the meeting tool (tools/doctor.py, read-only): the same list on every machine.
+    case 'doctor': {
+      const venv = `${ROOT}/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`;
+      const python = existsSync(venv) ? venv : process.env.PMA_PYTHON || 'python';
+      const done = spawnSync(python, ['-I', `${ROOT}/tools/doctor.py`, '--project', process.cwd(), ...(flags.json ? ['--json'] : [])], { stdio: 'inherit' });
+      if (done.error) { console.log(`THIẾU python: không chạy được ${python} (${done.error.message}) → tạo .venv theo README`); process.exitCode = 1; return; }
+      process.exitCode = done.status ?? 1; return;
     }
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
@@ -364,11 +390,19 @@ async function main() {
       if (target !== undefined && !Number.isInteger(sourceId)) throw new Error('pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS');
       if (sourceId === undefined && !(flags.from && flags.to)) throw new Error('pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS');
       const channel = flags.channel; const beam = flags.beam ? Number(flags.beam) : undefined;
-      return out(await call('recheck', { ...session, sourceId, from: flags.from, to: flags.to, ...(channel ? { channel } : {}), ...(beam ? { beam } : {}) }, 15 * 60000));
+      const extra = { ...(channel ? { channel } : {}), ...(beam ? { beam } : {}) };
+      if (sourceId !== undefined) return out(await call('recheck', { ...session, sourceId, ...extra }, 15 * 60000));
+      // A long range is heard in pieces of at most 5 minutes, one after another, each saved as it is done (BidOps 09–10/11: 10–20
+      // minute ranges failed while 5–6 minute ones worked). One line of JSON per piece.
+      for (const [from, to] of pieces(flags.from, flags.to, RECHECK_PIECE_SECONDS)) out(await call('recheck', { ...session, from, to, ...extra }, 15 * 60000));
+      return;
     }
     case 'coverage': {
-      const r = await call('coverage', session, 120000);
+      const page = { ...(flags.after ? { after: Number(flags.after) } : {}), ...(flags.limit ? { limit: Number(flags.limit) } : {}) };
+      const r = await call('coverage', { ...session, ...page }, 120000);
       if (flags.json) return out(r);
+      // Text: the whole list, page after page (it used to stop at 200 of 385).
+      for (let next = r.next; next !== null && next !== undefined;) { const more = await call('coverage', { ...session, after: next }, 120000); r.items.push(...more.items); next = more.next; }
       console.log(`ÂM THANH ${r.audio.seconds >= 60 ? Math.round(r.audio.seconds / 60) + ' phút' : r.audio.seconds + ' giây'} (xét theo ${r.audio.basis === 'mix' ? 'file ghép' : 'file loa'}) · cần nghe lại: ${r.open}/${r.total}`);
       if (r.note) console.log(`LƯU Ý: ${r.note}`);
       const KIND: Record<string, string> = { NO_TRANSCRIPT: 'CÓ TIẾNG NHƯNG KHÔNG CÓ CHỮ', ASR_GAP: 'KHOẢNG TRỐNG ASR', UNSURE: 'CHƯA CHẮC', RECORDER_LOST: 'BỘ GHI MẤT ÂM', RECORDER_ERROR: 'BỘ GHI LỖI' };

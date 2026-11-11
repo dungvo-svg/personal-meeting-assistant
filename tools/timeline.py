@@ -13,6 +13,7 @@ clock that runs a little off the wall clock does not accumulate error.
 """
 import bisect
 import json
+import threading
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -136,6 +137,7 @@ class Timeline:
         self.ended = False
         self.end_reason = None
         self._offset = 0
+        self._lock = threading.RLock()  # the two channel readers of a followed session share one Timeline
 
     @classmethod
     def load(cls, directory):
@@ -144,22 +146,41 @@ class Timeline:
         return timeline
 
     def update(self):
-        """Reads what was appended since the last call. Returns the new events (a half-written last line waits for the next call)."""
-        try:
-            with open(self.directory / TIMELINE_FILE, 'rb') as file:
-                file.seek(self._offset)
-                data = file.read()
-        except OSError:
-            return []
-        end = data.rfind(b'\n') + 1  # only whole lines
-        self._offset += end
-        fresh = []
-        for line in data[:end].decode('utf-8', errors='replace').splitlines():
-            event = _parse_line(line)
-            if event:
-                self._apply(event)
-                fresh.append(event)
-        return fresh
+        """Reads what was appended since the last call. Returns the new events (a half-written last line waits for the next call).
+        The lock covers read + parse + apply + offset: two readers updating at once applied lines twice and pushed the offset
+        past lines nobody had read (a lost `open` meant a whole segment of silence)."""
+        with self._lock:
+            try:
+                with open(self.directory / TIMELINE_FILE, 'rb') as file:
+                    file.seek(self._offset)
+                    data = file.read()
+            except OSError:
+                return []
+            end = data.rfind(b'\n') + 1  # only whole lines
+            self._offset += end
+            fresh = []
+            for line in data[:end].decode('utf-8', errors='replace').splitlines():
+                event = _parse_line(line)
+                if event:
+                    self._apply(event)
+                    fresh.append(event)
+            return fresh
+
+    def reload(self):
+        """Rebuilds all state from the start of the file. Segment objects that already exist keep their identity (a reader
+        holds them) and take the rebuilt state in place."""
+        with self._lock:
+            rebuilt = Timeline(self.directory)
+            rebuilt.update()
+            for channel, segments in rebuilt.by_channel.items():
+                old = {segment.seg: segment for segment in self.by_channel.get(channel, [])}
+                for i, segment in enumerate(segments):
+                    if segment.seg in old:
+                        old[segment.seg].__dict__.update(segment.__dict__)
+                        segments[i] = old[segment.seg]
+            self.events, self.by_channel = rebuilt.events, rebuilt.by_channel
+            self.mic_state_events, self.error_events = rebuilt.mic_state_events, rebuilt.error_events
+            self.ended, self.end_reason, self._offset = rebuilt.ended, rebuilt.end_reason, rebuilt._offset
 
     def _segment(self, event):
         for segment in reversed(self.by_channel.get(event.get('channel'), [])):
@@ -171,6 +192,7 @@ class Timeline:
         self.events.append(event)
         kind = event['type']
         if kind == 'open':
+            self.ended, self.end_reason = False, None  # a recorder started again into the same folder continues the session
             segment = Segment(self.directory, int(event['seg']), event['channel'], event['rate'], event.get('device'), event['wall'])
             self.by_channel.setdefault(segment.channel, []).append(segment)
         elif kind in ('tick', 'close'):
@@ -203,7 +225,8 @@ class Timeline:
         return sorted(self.by_channel)
 
     def segments(self, channel):
-        return list(self.by_channel.get(channel, []))
+        with self._lock:
+            return list(self.by_channel.get(channel, []))
 
     def start_wall(self):
         walls = [segments[0].open_wall for segments in self.by_channel.values() if segments]
@@ -243,7 +266,9 @@ class Timeline:
         return sorted(found, key=lambda item: (item['start'], item['channel']))
 
     def mic_states(self):
-        return list(self.mic_state_events)
+        with self._lock:
+            return list(self.mic_state_events)
 
     def errors(self):
-        return list(self.error_events)
+        with self._lock:
+            return list(self.error_events)

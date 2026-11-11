@@ -38,7 +38,10 @@ export function applyGlossary(text: string, glossary: GlossaryEntry[]) {
   for (const entry of glossary) {
     for (const variant of [...entry.variants].sort((a, b) => b.length - a.length)) {
       if (!variant.trim() || variant.toLowerCase() === entry.name.toLowerCase()) continue;
-      const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escape(variant)}(?![\\p{L}\\p{N}])`, 'giu');
+      // A one-word variant is often an everyday word too ("Quân" of a person, "quân" in "quân y"; also Duy, Linh, Đức: BidOps
+      // 10/11). It is taken only as written (a capital stays a capital); a variant of several words still matches any case.
+      const oneWord = !/\s/.test(variant.trim());
+      const pattern = new RegExp(`(?<![\\p{L}\\p{N}])${escape(variant)}(?![\\p{L}\\p{N}])`, oneWord ? 'gu' : 'giu');
       text = text.replace(pattern, match => `${entry.name} (nghe: ${match})`);
     }
   }

@@ -13,6 +13,7 @@ RATE16 = 16000
 BLOCK_SAMPLES = 2048  # native samples per block handed to the chunker (what a device read gives)
 PAD_MIN_SECONDS = 0.3  # a hole in a channel's audio at least this long is filled with silence, so channels share one time axis
 WAIT_SECONDS = 0.2  # how long a reader waits for the recorder before it looks again
+DISK_CHECK_SECONDS = 5.0  # how often a waiting reader checks the disk for a segment the timeline does not show
 SEGMENT_END = object()  # returned by ChannelFollower.read_block when a segment is finished and the chunker must flush
 
 
@@ -112,8 +113,15 @@ class ChannelFollower:
     a lost stretch, a segment after a restart) are filled with silence, so both channels count seconds from the same moment.
     """
 
-    def __init__(self, timeline, channel, draining=lambda: False, holding=lambda: False, sleep=time.sleep):
+    def __init__(self, timeline, channel, draining=lambda: False, holding=lambda: False, sleep=time.sleep, on_missing=None, check_seconds=DISK_CHECK_SECONDS, clock=time.monotonic):
         self.timeline = timeline
+        self.on_missing = on_missing  # (channel, [missing seg numbers], start wall, end wall): audio the reader could not read, reported
+        self.check_seconds = check_seconds
+        self.clock = clock
+        self.state, self.state_since = 'waiting_audio', clock()  # reading / waiting_audio / held, for the worker's heartbeat
+        self.blocked = None  # set from outside while the reader waits for ASR (waiting_asr)
+        self.last_end_wall = None
+        self._checked = clock()
         self.channel = channel
         self.draining = draining  # stop was requested: read what is on disk, do not wait for more
         self.holding = holding  # pause was requested: keep position, read nothing
@@ -125,9 +133,55 @@ class ChannelFollower:
         self.ranges = []  # [axis sample where the segment's span starts, Segment, [(axis sample, native sample) at each continuous piece's first sample]]
         self.disk_samples = 0  # 16 kHz samples the recorder has put on disk for this channel (for the lag figure)
 
+    def _set(self, state):
+        if state != self.state:
+            self.state, self.state_since = state, self.clock()
+
+    def status(self):
+        """Read-only view for monitoring: state (reading / waiting_audio / held / waiting_asr), seconds in it, segment, axis seconds."""
+        state, since = (self.blocked[0], self.blocked[1]) if self.blocked else (self.state, self.state_since)
+        return {'state': state, 'stateSeconds': round(max(0.0, self.clock() - since), 1), 'seg': self.last_seg, 'axisSeconds': round(self.position / RATE16, 1)}
+
+    def mark_blocked(self, blocked):
+        self.blocked = (blocked, self.clock()) if blocked else None
+
     def _wait(self):
+        self._set('waiting_audio')
         self.sleep(WAIT_SECONDS)
         return b''
+
+    def _has(self, seg):
+        return any(segment.seg == seg for segment in self.timeline.segments(self.channel))
+
+    def _disk_check(self, force=False):
+        # The recorder's files are the truth: when the next segment's WAV exists but the timeline shows no such segment, a
+        # line was lost on the way; read the file again from its start. True when the segment is known afterwards.
+        now = self.clock()
+        if not force and now - self._checked < self.check_seconds:
+            return False
+        self._checked = now
+        seg = (self.last_seg or 0) + 1
+        if self._has(seg) or not tl.segment_path(self.timeline.directory, seg, self.channel).exists():
+            return False
+        self.timeline.reload()
+        return self._has(seg)
+
+    def _missing(self, segment):
+        # A segment numbered past the next one: look at the file again, then report what is still absent. The silence padding
+        # that follows keeps both channels on one axis; the report says the hole is not recorded audio that was skipped quietly.
+        expected = (self.last_seg or 0) + 1
+        if segment.seg <= expected:
+            return segment
+        self.timeline.reload()
+        segment = next_segment(self.timeline, self.channel, self.last_seg)
+        if segment.seg > expected:
+            missing = list(range(expected, segment.seg))
+            if self.last_seg is None:  # a channel that starts late is no loss; only segments that exist on disk count
+                missing = [seg for seg in missing if tl.segment_path(self.timeline.directory, seg, self.channel).exists()]
+            if missing and self.on_missing:
+                start = self.last_end_wall if self.last_end_wall is not None else (self.timeline.start_wall() or segment.open_wall)
+                self.on_missing(self.channel, missing, start, segment.open_wall)
+        return segment
 
     def _begin(self, segment):
         import av
@@ -168,7 +222,10 @@ class ChannelFollower:
             # Caught up with the file. The close (or the next segment, or the end) is looked at before the size is read
             # again: whatever is on disk by then is all there will be.
             self.timeline.update()
-            finished = segment.closed or self.timeline.ended or self.draining() or next_segment(self.timeline, self.channel, segment.seg) is not None
+
+            def over():
+                return segment.closed or self.timeline.ended or self.draining() or next_segment(self.timeline, self.channel, segment.seg) is not None
+            finished = over() or (self._disk_check() and over())
             limit = limit_of(segment, wav)
             if done >= limit:
                 if not finished:
@@ -176,6 +233,7 @@ class ChannelFollower:
                 if resampler:
                     self._emit(self._flush(resampler))
                 wav.close()
+                self.last_end_wall = segment.end_wall()
                 self.cur = None
                 self.out.append(SEGMENT_END)
                 return None
@@ -204,17 +262,23 @@ class ChannelFollower:
     def read_block(self):
         while True:
             if self.out:
+                self._set('reading')
                 return self.out.pop(0)
             if self.holding():
-                return self._wait()
+                self._set('held')
+                self.sleep(WAIT_SECONDS)
+                return b''
             if self.cur is None:
                 self.timeline.update()
                 segment = next_segment(self.timeline, self.channel, self.last_seg)
                 if segment is None:
-                    if self.timeline.ended or self.draining():
+                    ending = self.timeline.ended or self.draining()
+                    if self._disk_check(force=ending):  # before an end is believed, the disk is asked once more
+                        continue
+                    if ending:
                         raise EOFError
                     return self._wait()
-                self._begin(segment)
+                self._begin(self._missing(segment))
             result = self._step()
             if result is not None:
                 return result

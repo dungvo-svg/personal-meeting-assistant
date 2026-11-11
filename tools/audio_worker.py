@@ -14,7 +14,7 @@ import uuid
 
 from follow_source import RATE16, SEGMENT_END, ChannelFollower, cut_window
 from mic_state import label_mic_chunk, share_ok
-from timeline import Timeline, parse_wall
+from timeline import Timeline, format_wall, parse_wall
 
 os.environ.setdefault('HF_HUB_DISABLE_TELEMETRY', '1')
 os.environ.setdefault('HF_HUB_OFFLINE', '1')
@@ -459,6 +459,7 @@ def mic_is_own_voice(mic_rms, speaker_rms, ratio=MIC_OVER_SPEAKER, share=MIC_OWN
 MEETING_APPS = ('zoom', 'ms-teams', 'teams', 'slack', 'webex', 'discord', 'skype', 'chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi')
 MIC_RECHECK_SECONDS = 30
 PAUSE_GRACE_SECONDS = 5
+HEARTBEAT_SECONDS = 5  # --follow: how often the worker says where each reader is
 
 
 def _same_words(text):
@@ -695,6 +696,7 @@ def capture(args):
         speaker_progress = [0]  # samples the speaker reader has taken in: a followed mic chunk waits for its slots to exist
         speaker_over = threading.Event()
         followers = {}
+        asr_started = [None]  # monotonic start of the transcribe call that is running, None when idle
         reader_lock = threading.Lock()
 
         def ending():
@@ -703,7 +705,19 @@ def capture(args):
         if listening.follow:
             # The recorder's files (Q-1), read from sample 0 as fast as ASR takes them; no device is opened and no pacing.
             timeline = Timeline(listening.follow)
-            followers = {name: ChannelFollower(timeline, name, draining=drain.is_set, holding=follow_pause.is_set) for name in ('speaker', 'mic')}
+
+            def on_missing(channel, missing, start_wall, end_wall):
+                # Audio of a segment the reader never got (its `open` line was not seen): nothing is dropped without a gap.
+                origin = timeline.start_wall() or 0
+                emit({'type': 'gap', 'start': start_wall - origin, 'end': end_wall - origin, 'reason': 'SEGMENT_NOT_READ', 'channel': channel, 'wall': format_wall(start_wall), 'seg': missing[0]})
+            followers = {name: ChannelFollower(timeline, name, draining=drain.is_set, holding=follow_pause.is_set, on_missing=on_missing) for name in ('speaker', 'mic')}
+
+            def heartbeat():
+                # Every few seconds, whatever the main thread is doing (a transcribe call can run for minutes): where each reader is.
+                while not listening_over.wait(HEARTBEAT_SECONDS):
+                    started = asr_started[0]
+                    emit({'type': 'status', 'follow': {name: follower.status() for name, follower in followers.items()}, 'asrBusySeconds': round(time.monotonic() - started, 1) if started else 0})
+            threading.Thread(target=heartbeat, daemon=True).start()
             rate, channels, source_name, keepalive_note = RATE16, 1, 'FOLLOW:' + listening.follow.name, 'FOLLOW_FILES'
             inputs = [(name, follower.read_block, rate, channels, follower.locate) for name, follower in followers.items()]
         elif listening.replay:
@@ -809,12 +823,18 @@ def capture(args):
                     try:
                         if listening.replay or listening.follow or final:
                             # A recording or the recorder's files can wait for ASR, and a paused tail is drained by the main loop; nothing is lost.
-                            while not stop.is_set() and not listening_over.is_set():
-                                try:
-                                    chunks.put(chunk, timeout=0.5)
-                                    break
-                                except queue.Full:
-                                    pass
+                            follower = followers.get(channel)
+                            try:
+                                while not stop.is_set() and not listening_over.is_set():
+                                    try:
+                                        chunks.put(chunk, timeout=0.5)
+                                        break
+                                    except queue.Full:
+                                        if follower and not follower.blocked:
+                                            follower.mark_blocked('waiting_asr')  # ASR slower than audio: legitimate, not a stall
+                            finally:
+                                if follower:
+                                    follower.mark_blocked(None)
                         else:
                             chunks.put_nowait(chunk)
                     except queue.Full:
@@ -931,10 +951,11 @@ def capture(args):
                         if not any(thread.is_alive() for thread in threads) or time.monotonic() - pause_seen > PAUSE_GRACE_SECONDS:
                             return 'pause'
                     continue
-                inference_started = time.monotonic()
+                inference_started = asr_started[0] = time.monotonic()
                 # Where the chunk begins in real time and in the recorder's files (followed sources only).
                 place = {'wall': where[0], 'seg': where[1]} if where and where[0] else {}
                 if skip_until and place and parse_wall(place['wall']) + (end - begin) <= skip_until:
+                    asr_started[0] = None
                     continue  # transcribed by the worker that crashed, or inside the gap the host already recorded
                 try:
                     frame = av.AudioFrame.from_ndarray(waveform.reshape(1, -1), format='flt', layout='mono')
@@ -972,6 +993,7 @@ def capture(args):
                 except Exception as exc:
                     # One bad chunk must not end the meeting: say which stretch has no text and go on with the next.
                     emit({'type': 'gap', 'start': begin, 'end': end, 'reason': 'ASR_ERROR', 'channel': channel, 'message': f'{type(exc).__name__}: {exc}'[:200], **place})
+                asr_started[0] = None
                 # How far the text lags behind the audio (seconds of meeting not yet transcribed when this chunk finished).
                 if listening.follow:
                     lag = round(followers[channel].disk_samples / RATE16 - end, 1)  # what is on disk but not yet transcribed

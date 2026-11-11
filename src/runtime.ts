@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { EventEmitter, once } from 'node:events';
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -9,7 +9,7 @@ import { applyGlossary, collapseLoops, foldRuns, isHallucination, micLabel, risk
 import { canonicalOwner } from './participants.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
-import { claimMachine, machineHolder, releaseMachine } from './machine_lock.js';
+import { claimMachine, machineHolder, processStartedAt, releaseMachine } from './machine_lock.js';
 import { shareOk } from './mic_share.js';
 import { Ledger } from './jobs.js';
 import { DecisionLedger } from './decisions.js';
@@ -89,7 +89,7 @@ export function parseAlternatives(value: unknown): Alternative[] {
 }
 export type CoverageItem = { kind: string; from: string; to: string; fromClock: string; toClock: string; seconds: number; sourceId?: number; why: string; rechecked: boolean; recheck: string };
 // What the host leaves in daemon.json for the next host (Q-3): enough to find the session's recorder again after a crash.
-export type Registry = { sessionId: string | null; recorderPid: number | null; workerPid: number | null; asr: 'listening' | 'paused'; speaker: string | null; recorderMic?: boolean | null };
+export type Registry = { sessionId: string | null; recorderPid: number | null; workerPid: number | null; asr: 'listening' | 'paused'; speaker: string | null; recorderMic?: boolean | null; recorderStartedAt?: string | null };
 // Whether the microphone is being recorded, from what this host knows (04/11): OFF / ON only for a recorder whose arguments this host
 // (or the host before it, through daemon.json) chose; a recorder taken over without that is UNKNOWN, never OFF. Without a recorder,
 // what the next one will do. The Zoom/Meet mute state is a separate label, not this.
@@ -99,12 +99,17 @@ export function micModeOf(recorderAlive: boolean, recorderMic: boolean | null, m
   return recorderMic === false ? 'OFF' : recorderMic === true ? 'ON' : 'UNKNOWN';
 }
 // The recorder (tools/recorder.py): one process that writes the WAV files of the whole session. It outlives the host.
-type Recorder = { state: string; child: ChildProcess | null; pid: number | null; attached: boolean; stopping: boolean; restarts: number[]; info: Record<string, any>; error: string | null; watch: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null };
-const newRecorder = (): Recorder => ({ state: 'OFF', child: null, pid: null, attached: false, stopping: false, restarts: [], info: {}, error: null, watch: null, retry: null });
+// unverifiedPid: a live process holds the PID daemon.json names for the recorder, but its OS start time does not prove it is that
+// recorder (reused PID, older host). It is neither controlled nor replaced while it lives (review of 4c21d07, finding b).
+type Recorder = { state: string; child: ChildProcess | null; pid: number | null; attached: boolean; stopping: boolean; restarts: number[]; info: Record<string, any>; error: string | null; watch: ReturnType<typeof setInterval> | null; retry: ReturnType<typeof setTimeout> | null; unverifiedPid: number | null };
+const newRecorder = (): Recorder => ({ state: 'OFF', child: null, pid: null, attached: false, stopping: false, restarts: [], info: {}, error: null, watch: null, retry: null, unverifiedPid: null });
 const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch (error: any) { return error?.code === 'EPERM'; } };
+// Past these counts in RESTART_WINDOW_MS a restart is no longer quick, but it never stops while the meeting is open: only the owner
+// ends a meeting (OWN-015, OWN-022, OWN-028; audit 10/11, T5). The slower retry comes every persistRetryMs, with a loud error.
 const MAX_RECORDER_RESTARTS = 5; const MAX_WORKER_RESTARTS = 3; const RESTART_WINDOW_MS = 10 * 60000;
 // After the ASR worker died, the audio it was working on (and could have died of) is skipped this long and marked as a gap.
 const SKIP_AFTER_CRASH_SECONDS = 10;
+const TAKEOVER_FILE = 'takeover.json';
 // A replay is a file played through the old per-listening worker; this is far beyond any recording, not a meeting limit.
 const REPLAY_MAX_SECONDS = 86400;
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
@@ -138,6 +143,10 @@ export class MeetingRuntime extends EventEmitter {
   // Process control, injectable: a test fakes a recorder that will not stop without touching any real process (review of 13cd5e8).
   alive = (pid: number) => pidAlive(pid);
   killPid = (pid: number) => { process.kill(pid); };
+  // When the OS says a process started (read-only; machine_lock.processStartedAt). With the pid it is the recorder's identity: a
+  // recorder taken over keeps the microphone choice written for it only when its start time matches (a reused pid does not).
+  startedAt = (pid: number) => processStartedAt(pid);
+  private recorderStartedAt: string | null = null;
   context: any;
   closing = false;
   recorder: Recorder = newRecorder();
@@ -165,7 +174,12 @@ export class MeetingRuntime extends EventEmitter {
   // A recheck worker is running (it loads a model too): the machine lock is kept meanwhile.
   rechecking = 0;
   // Timings, all overridable by tests.
-  restartDelayMs = 1500; drainIdleMs = 120000; drainMaxMs = 30 * 60000; recorderStopMs = 20000; mixWaitMs = 15 * 60000; recheckTimeoutMs = 600000;
+  restartDelayMs = 1500; persistRetryMs = 60000; drainIdleMs = 120000; drainMaxMs = 30 * 60000; recorderStopMs = 20000; mixWaitMs = 15 * 60000; recheckTimeoutMs = 600000;
+  stallCheckMs = 5000; stallSeconds = ASR_STALL_SECONDS;
+  // Why the live worker is being restarted by the stall check (null: not by it). Such a restart resumes at asrPosition, no skip.
+  private stalled: string | null = null;
+  private stallRestarts = 0;
+  private stallTimer: ReturnType<typeof setInterval> | null = null;
   opener: Opener = defaultOpener;
   mixer: Mixer = defaultMixer;
   // The machine-wide lock (machine_lock.ts): set by the host (daemon.ts); a runtime made directly (tests) has none and takes no lock.
@@ -177,8 +191,9 @@ export class MeetingRuntime extends EventEmitter {
   // Seats of the people's Claudes (today only simulated roles on this machine), their tasks and replies, converging into the
   // central session (cowork.ts). The host names each seat's consumer and generation; replies need the host's own context.
   cowork!: CoworkLedger;
-  constructor(public root: string, public dataDir: string, public testMode = false, machine?: { port: number | null }) {
-    super(); mkdirSync(dataDir, { recursive: true }); // A diagnostic host takes the real machine lock only when a lock folder is given (tests use their own).
+  // `hooks` (tests): process seams set before a takeover can run in this constructor.
+  constructor(public root: string, public dataDir: string, public testMode = false, machine?: { port: number | null }, hooks: { alive?: (pid: number) => boolean; killPid?: (pid: number) => void; startedAt?: (pid: number) => string | null } = {}) {
+    super(); Object.assign(this, hooks); mkdirSync(dataDir, { recursive: true }); // A diagnostic host takes the real machine lock only when a lock folder is given (tests use their own).
     if (machine && !(testMode && !process.env.PMA_LOCK_DIR)) this.machine = { token: randomUUID(), port: machine.port };
     this.db = new DatabaseSync(join(dataDir, 'history.sqlite3'));
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
@@ -211,12 +226,16 @@ export class MeetingRuntime extends EventEmitter {
     try { this.profile = JSON.parse(readFileSync(join(dataDir, 'profile.json'), 'utf8')); } catch { this.profile = {}; }
     // A previous host that died while its recorder kept recording leaves that recorder's PID in daemon.json: this host takes
     // the session over instead of ending it. Every other unfinished session belongs to a process that is gone.
+    // A host that was shut down while the meeting was open (pma shutdown, a signal) leaves takeover.json instead: the meeting goes on.
     let previous: any = null; try { previous = JSON.parse(readFileSync(join(dataDir, 'daemon.json'), 'utf8')); } catch {}
-    const survivor = previous?.sessionId && Number.isInteger(previous.recorderPid) && previous.recorderPid !== process.pid && pidAlive(previous.recorderPid) ? previous as Registry : null;
+    if (!previous?.sessionId) { try { previous = JSON.parse(readFileSync(join(dataDir, TAKEOVER_FILE), 'utf8')); } catch {} }
+    rmSync(join(dataDir, TAKEOVER_FILE), { force: true });
+    const survivor = previous?.sessionId && Number.isInteger(previous.recorderPid) && previous.recorderPid !== process.pid && this.alive(previous.recorderPid) ? previous as Registry : null;
     this.db.prepare("UPDATE sessions SET ended=COALESCE((SELECT MAX(created) FROM sources WHERE session_id=sessions.id), created) WHERE ended IS NULL AND id<>?").run(survivor?.sessionId ?? '');
     try { this.context = JSON.parse(readFileSync(join(root, '.local', 'meeting-context.json'), 'utf8')); }
     catch { this.context = { title: 'Phiên họp cá nhân', language: 'vi', translation_required: false, topics: [] }; }
     if (survivor) this.reattach(survivor);
+    this.stallTimer = setInterval(() => this.stallCheck(), this.stallCheckMs); this.stallTimer.unref?.();
   }
   // Kept between sessions: the user's own name (`start --me`), how long the last model load took, and the last speaker/mic
   // choice (so the next `start` can record at once when the same device is there).
@@ -225,7 +244,7 @@ export class MeetingRuntime extends EventEmitter {
   // What daemon.json carries about the live session; the host rewrites the file whenever this changes.
   registry(): Registry {
     const live = this.session && !this.session.ended;
-    return { sessionId: live ? this.session.id : null, recorderPid: live ? this.recorder.pid : null, workerPid: this.capture?.pid ?? null, asr: this.asrWanted ? 'listening' : 'paused', speaker: this.armedDevice?.name ?? null, recorderMic: live ? this.recorderMic : null };
+    return { sessionId: live ? this.session.id : null, recorderPid: live ? this.recorder.pid : null, workerPid: this.capture?.pid ?? null, asr: this.asrWanted ? 'listening' : 'paused', speaker: this.armedDevice?.name ?? null, recorderMic: live ? this.recorderMic : null, recorderStartedAt: live ? this.recorderStartedAt : null };
   }
   // Takes over a session whose recorder is still alive: the recorder is watched by PID (there is no pipe to it), the ASR
   // worker is started again from the last position stored in the database, and nothing is lost, only delayed.
@@ -237,7 +256,12 @@ export class MeetingRuntime extends EventEmitter {
     this.micWanted = this.micFor(row.id);
     // The recorder keeps the microphone choice it was started with; only the host that started it knows it (daemon.json). Not
     // recorded there (an older host) means UNKNOWN: status does not claim no-mic for it, and select restarts it when no mic is wanted.
-    this.recorderMic = typeof previous.recorderMic === 'boolean' ? previous.recorderMic : null;
+    // Kept only when the recorder running now is provably the one it was written for: same pid AND the same OS start time. A missing
+    // or different start time (an older host, a pid reused by another process) leaves it UNKNOWN; nothing is inferred.
+    const now = this.startedAt(previous.recorderPid!);
+    const same = typeof previous.recorderStartedAt === 'string' && now !== null && now === previous.recorderStartedAt;
+    this.recorderMic = same && typeof previous.recorderMic === 'boolean' ? previous.recorderMic : null;
+    this.recorderStartedAt = same ? now : null;
     this.armedDevice = { index: -1, name: previous.speaker ?? this.profile.speaker?.name ?? 'nguồn đang ghi', kind: 'speaker_loopback_all_device_audio', grantedAt: new Date().toISOString(), expiresAt: null, reattached: true };
     this.asrWanted = previous.asr === 'listening'; this.everListened = this.asrWanted;
     this.asrPosition = this.lastProcessedWall(row.id);
@@ -245,7 +269,10 @@ export class MeetingRuntime extends EventEmitter {
     // proves itself with its next call, and until then the role is free and the Stop hook sees no live reader.
     for (const f of this.db.prepare('SELECT name,cursor,committed FROM followers WHERE session_id=?').all(row.id) as any[]) { this.followers[f.name] = { cursor: f.cursor, at: null }; this.committed[f.name] = f.committed; }
     this.agentCursor = this.followers[MAIN_FOLLOWER]?.cursor ?? 0;
-    this.attachRecorder(previous.recorderPid!);
+    // A live process with that PID that cannot be proven to be the recorder (start time differs or is unknown) is not taken: no
+    // signal, no STOP file, and no second recorder on the same folder while it lives. The files are still read (harmless); once
+    // that process is gone, the recorder is started again as after a crash. Same identity without a mic mode attaches as UNKNOWN.
+    if (!same) { this.watchUnverified(previous.recorderPid!); } else this.attachRecorder(previous.recorderPid!);
     if (process.env.PMA_WARM !== '0') {
       this.captureState = this.asrWanted ? 'LOADING_ASR' : 'WARMING';
       try { this.spawnFollower(row.id); } catch (error) { this.captureState = 'ERROR'; this.lastError = String(error); }
@@ -296,7 +323,7 @@ export class MeetingRuntime extends EventEmitter {
       // already without the microphone. A recorder that records (or may record) the microphone is not changed here, and the call
       // says so instead of looking like it worked: select --no-mic restarts that recorder without it (04/11, review of runtime.ts:283).
       if (extra.mic === false) {
-        if (this.recorderAlive() && this.recorderMic !== false) throw new Error('MIC_OFF_NOT_APPLIED: cuộc họp đang mở và bộ ghi đang (hoặc có thể đang) ghi micro; start không đổi được. Dùng pma select <index> --no-mic để khởi động lại bộ ghi không micro');
+        if ((this.recorderAlive() || this.recorder.unverifiedPid) && this.recorderMic !== false) throw new Error('MIC_OFF_NOT_APPLIED: cuộc họp đang mở và bộ ghi đang (hoặc có thể đang) ghi micro; start không đổi được. Dùng pma select <index> --no-mic để khởi động lại bộ ghi không micro');
         this.micWanted = this.micFor(this.session.id, false);
       }
       return this.snapshot();
@@ -474,7 +501,7 @@ export class MeetingRuntime extends EventEmitter {
     // "LISTENING, lag 1.2 s" while a second runtime filled the GPU). Silence from a listening worker is reported on its own.
     const silent = Math.round((Date.now() - this.lastWorkerEventAt) / 1000);
     if (this.captureState === 'LISTENING' && this.lastWorkerEventAt && silent >= ASR_STALL_SECONDS) captureInfo.asrStalledSeconds = silent;
-    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), context: id ? (({ version, missing }) => ({ version, missing }))(this.packOf(id)!) : null, ledger: id ? this.ledger.summaryOf(id) : null, decisions: id ? this.decisions.summaryOf(id) : null, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), micMode: micModeOf(this.recorderAlive(), this.recorderMic, this.micWanted), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
+    return { session: s ? { id: s.id, title: s.title, created: s.created, ended: s.ended, mode: s.mode, languages: s.languages, meeting: s.context?.meeting } : null, captureState: this.captureState, captureInfo, lastError: this.lastError, armedDevice: this.armedDevice ? { index: this.armedDevice.index, name: this.armedDevice.name, expiresAt: this.armedDevice.expiresAt } : null, armedMic: this.armedMic ? { index: this.armedMic.index, name: this.armedMic.name } : null, lastAgentReadAt: this.lastAgentReadAt, lastFollowAt: this.lastFollowAt, agentCursor: this.agentCursor, unread: backlog.count, followers: this.followersState(id), machine: this.machineState(), context: id ? (({ version, missing }) => ({ version, missing }))(this.packOf(id)!) : null, ledger: id ? this.ledger.summaryOf(id) : null, decisions: id ? this.decisions.summaryOf(id) : null, replay: s?.replay, sourceCount: counts.sources, noteCount: counts.notes, lastNoteAt: counts.lastNoteAt, audio: this.audioInfoOf(id), recorder: this.recorderBrief(), micMode: micModeOf(this.recorderAlive() || !!this.recorder.unverifiedPid, this.recorderMic, this.micWanted), asr: { wanted: this.asrWanted, position: this.asrPosition, restarts: this.workerCrashes.length } };
   }
   // How far a role's work is saved. Never past what it was handed (its cursor).
   // - chinh, a high-water contract, not row-by-row coverage: the picture is rewritten as the WHOLE meeting (OWN-029), so a picture saved
@@ -760,6 +787,7 @@ export class MeetingRuntime extends EventEmitter {
   private ensureRecorder(id: string) {
     // A diagnostic runtime (testMode) never opens a device, however it is driven.
     if (this.testMode || !this.armedDevice || this.closing || this.recorderAlive() || this.recorder.retry) return;
+    if (this.recorder.unverifiedPid) throw new Error(`RECORDER_UNVERIFIED: tiến trình PID ${this.recorder.unverifiedPid} đang chạy nhưng không xác minh được là bộ ghi của cuộc họp này; không chạy bộ ghi thứ hai lên cùng thư mục. Bộ ghi tự chạy lại khi tiến trình đó thoát.`);
     const rec = this.recorder; rec.stopping = false; rec.restarts = []; rec.error = null;
     this.spawnRecorder(id);
   }
@@ -772,6 +800,9 @@ export class MeetingRuntime extends EventEmitter {
     // No --parent: the recorder must keep recording if this host dies (a new host takes the session over by its PID).
     const child = spawn(this.python(), [join(this.root, 'tools', 'recorder.py'), '--dir', dir, '--speaker-device', String(device.index), '--speaker-name', String(device.name), ...mic], { windowsHide: true, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     rec.child = child; rec.pid = child.pid ?? null; rec.attached = false;
+    // Its identity for the host after this one, read once, off the spawn path.
+    this.recorderStartedAt = null; const spawned = rec.pid;
+    if (spawned) setTimeout(() => { if (this.recorder.pid === spawned) { this.recorderStartedAt = this.startedAt(spawned); this.ping(); } }, 0).unref?.();
     child.stdin!.on('error', () => {});
     const lines = createInterface({ input: child.stdout! }); let error = '';
     child.stderr!.on('data', d => { error = (error + d).slice(-2000); });
@@ -801,11 +832,13 @@ export class MeetingRuntime extends EventEmitter {
   private recorderCrashed(reason: string) {
     const rec = this.recorder; const now = Date.now(); const id = this.session?.id; if (!id) return;
     rec.restarts = [...rec.restarts.filter(t => now - t < RESTART_WINDOW_MS), now];
-    if (rec.restarts.length > MAX_RECORDER_RESTARTS) {
-      rec.state = 'ERROR'; rec.error = `Bộ ghi âm chết ${rec.restarts.length} lần trong 10 phút nên không chạy lại nữa (${reason}). Đã ghi được tới lúc này; kiểm tra nguồn loa rồi pma select <index> để ghi tiếp.`;
-      this.lastError = rec.error; this.ping(); return;
-    }
-    rec.state = 'RESTARTING'; rec.error = `Bộ ghi âm dừng bất ngờ (${reason}); đang chạy lại lần ${rec.restarts.length}/${MAX_RECORDER_RESTARTS}.`; this.ping();
+    const slow = rec.restarts.length > MAX_RECORDER_RESTARTS;
+    rec.state = 'RESTARTING';
+    rec.error = slow
+      ? `Bộ ghi âm chết ${rec.restarts.length} lần trong 10 phút (${reason}); vẫn thử lại mỗi ${Math.round(this.persistRetryMs / 1000)} giây cho tới khi bạn kết thúc cuộc họp. Đã ghi được tới lúc này; kiểm tra nguồn loa (pma sources, pma select <index>).`
+      : `Bộ ghi âm dừng bất ngờ (${reason}); đang chạy lại lần ${rec.restarts.length}/${MAX_RECORDER_RESTARTS}.`;
+    if (slow) this.lastError = rec.error;
+    this.ping();
     rec.retry = setTimeout(async () => {
       rec.retry = null;
       if (!this.session || this.session.id !== id || this.session.ended || this.closing || rec.stopping || this.recorderAlive()) return;
@@ -818,7 +851,19 @@ export class MeetingRuntime extends EventEmitter {
         }
         this.spawnRecorder(id);
       } catch (error) { this.recorderCrashed(String(error)); }
-    }, this.restartDelayMs);
+    }, slow ? this.persistRetryMs : this.restartDelayMs);
+  }
+  // A process holds the recorder's PID but is not proven to be it (see reattach): watched by PID only, never signalled.
+  private watchUnverified(pid: number) {
+    const rec = this.recorder; rec.unverifiedPid = pid; rec.state = 'UNVERIFIED';
+    rec.error = this.lastError = `RECORDER_UNVERIFIED: PID ${pid} đang chạy nhưng giờ khởi động của nó không khớp bộ ghi đã ghi trong daemon.json (PID dùng lại, hoặc host cũ không ghi danh tính). Không điều khiển, không chạy bộ ghi thay thế; khi tiến trình đó thoát, bộ ghi tự chạy lại.`;
+    rec.watch = setInterval(() => {
+      if (this.alive(pid)) return;
+      clearInterval(rec.watch!); rec.watch = null; rec.unverifiedPid = null;
+      if (this.closing || !this.session || this.session.ended) { rec.state = 'OFF'; this.ping(); return; }
+      this.recorderCrashed('tiến trình chưa xác minh đã thoát');
+    }, 2000);
+    rec.watch.unref?.();
   }
   // A recorder left by the previous host: watched by PID, stopped through its STOP file.
   private attachRecorder(pid: number) {
@@ -827,7 +872,10 @@ export class MeetingRuntime extends EventEmitter {
       if (this.isAlive(pid)) return;
       clearInterval(rec.watch!); rec.watch = null; rec.attached = false; rec.pid = null;
       if (rec.stopping || this.closing || !this.session || this.session.ended) { rec.state = 'OFF'; this.ping(); return; }
-      if (readTimeline(audioDir(this.dataDir, this.session.id)).at(-1)?.type === 'end') { void this.finish(this.session.id).catch(() => {}); return; }
+      // Only an end the owner asked for (stop on its pipe, the STOP file of a stop) completes the meeting; an end written while the
+      // recorder failed ("interrupted") or hit its time limit is a crash, and the recording is started again (audit 10/11, T3).
+      const last = readTimeline(audioDir(this.dataDir, this.session.id)).at(-1);
+      if (last?.type === 'end' && ['stop', 'STOP_file'].includes(String(last.reason))) { void this.finish(this.session.id).catch(() => {}); return; }
       this.recorderCrashed('tiến trình ghi âm biến mất sau khi host chạy lại');
     }, 2000);
     rec.watch.unref();
@@ -836,6 +884,7 @@ export class MeetingRuntime extends EventEmitter {
   private async stopRecorder() {
     const rec = this.recorder; if (rec.retry) { clearTimeout(rec.retry); rec.retry = null; }
     rec.stopping = true;
+    if (rec.unverifiedPid) { rec.state = 'UNVERIFIED'; this.lastError ||= rec.error; return; }  // never signalled (see watchUnverified)
     if (!this.session || !this.recorderAlive()) { if (rec.state !== 'ERROR') rec.state = 'OFF'; return; }
     // The stop goes out first, on the recorder's own pipe (memory, no disk); only then the STOP file (the only signal an attached
     // recorder has) and the state change, whose listeners write daemon.json and the machine lock. A slow or refused disk delays those,
@@ -859,6 +908,15 @@ export class MeetingRuntime extends EventEmitter {
     rec.state = 'OFF'; this.ping();
   }
   private async restartRecorder(id: string) { await this.stopRecorder(); this.ensureRecorder(id); }
+  private async handOver() {
+    const id = this.session!.id;
+    try { writeFileSync(join(this.dataDir, TAKEOVER_FILE), JSON.stringify({ ...this.registry(), recorderPid: this.recorder.pid ?? this.recorder.unverifiedPid, at: new Date().toISOString() }), 'utf8'); } catch (error) { this.lastError = 'Không ghi được takeover.json: ' + String(error); }
+    this.asrLog(id, { type: 'handover' });
+    const child = this.capture; if (!child) return;
+    this.workerStopping = true; try { child.kill(); } catch {}
+    await Promise.race([once(child, 'close').catch(() => {}), sleep(3000)]);
+    this.workerStopping = false; if (this.capture === child) this.capture = null;
+  }
 
   // ---- ASR worker (tools/audio_worker.py --follow <audio dir>): reads the recorder's files, from the first second on ----
   // `listen`: ASR on. The recorder is started if it is not running yet; a paused worker resumes and catches up from where
@@ -868,7 +926,7 @@ export class MeetingRuntime extends EventEmitter {
     if (this.stoppingCapture || this.finishing || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select');
     const micWanted = this.micFor(id, mic);
-    if (!this.recorderAlive() && !this.recorder.retry && this.recorder.state !== 'ERROR') { this.micWanted = micWanted; this.ensureRecorder(id); }
+    if (!this.recorderAlive() && !this.recorder.retry && !this.recorder.unverifiedPid && this.recorder.state !== 'ERROR') { this.micWanted = micWanted; this.ensureRecorder(id); }
     else if (mic !== undefined && this.recorderAlive() && this.recorderMic !== micWanted) { this.micWanted = micWanted; await this.restartRecorder(id); }
     if (this.capture && !this.followMode) return { state: this.captureState, info: this.captureInfo };  // a replay is running
     this.asrWanted = true; this.everListened = true; this.lastError = null;
@@ -912,12 +970,14 @@ export class MeetingRuntime extends EventEmitter {
     const captureId = randomUUID(); this.captureId = captureId; this.captureInfo = { captureId }; this.followMode = follow; this.lastWorkerEventAt = Date.now();
     const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), ...(follow ? [] : ['--capture']), ...workerArgs, ...(follow ? [] : ['--capture-id', captureId]), '--parent', String(process.pid), '--languages', (this.session.languages || ['vi']).join(','), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.capture = child; child.stdin!.on('error', () => {});
+    if (follow) this.asrLog(id, { type: 'spawn', pid: child.pid ?? null, args: workerArgs });
     const lines = createInterface({ input: child.stdout! });
     let error = '';
     child.stderr!.on('data', d => { error = (error + d).slice(-3000); });
     lines.on('line', line => {
       if (line.length > 100000) return;
       if (this.capture === child) this.lastWorkerEventAt = Date.now();  // any output counts as progress while the worker drains
+      if (follow && this.capture === child) { try { const e = JSON.parse(line); if (e?.type !== 'source') this.asrLog(id, e); } catch {} }
       // While it drains (STOPPING) the follow worker's last text still counts; a replay's does not (it is cut off).
       if (this.capture !== child || this.captureState === 'CLEANUP_UNCONFIRMED' || (!follow && this.captureState === 'STOPPING') || this.session?.id !== id || this.session.ended) return;
       try { this.onWorkerEvent(JSON.parse(line), follow); }
@@ -959,9 +1019,12 @@ export class MeetingRuntime extends EventEmitter {
     if (event.type === 'status' && event.followPaused === true && this.captureState === 'PAUSING') this.captureState = this.modelReady ? 'WARM_READY' : 'WARMING';
     if (event.type === 'gap') {
       const seconds = Math.max(0, Math.round(event.end - event.start)); const reason = String(event.reason || 'GAP');
+      const hms = (ms: number) => new Date(ms).toLocaleTimeString('vi-VN', { hour12: false }); const from = Date.parse(event.wall);
       const text = reason.startsWith('ASR_ERROR')
         ? `[KHOẢNG TRỐNG ASR] ${seconds} giây không nhận dạng được (lỗi ASR${event.message ? ': ' + String(event.message).slice(0, 200) : ''}); âm thanh vẫn còn trong bản ghi, dùng pma recheck.`
-        : `[Khoảng trống ${seconds} giây: ASR không theo kịp, âm thanh đoạn này không được nhận dạng]`;
+        : reason === 'SEGMENT_NOT_READ' && Number.isFinite(from)
+          ? `[KHOẢNG TRỐNG ASR] ${hms(from)}–${hms(from + seconds * 1000)}: bộ nghe không đọc được file thu số ${event.seg ?? '?'} (${seconds} giây); âm thanh vẫn còn trong bản ghi: pma recheck --from ${hms(from)} --to ${hms(from + seconds * 1000)}.`
+          : `[Khoảng trống ${seconds} giây: ASR không theo kịp, âm thanh đoạn này không được nhận dạng]`;
       this.ingest(text, 'system_gap', event.start, event.end, reason, this.captureId, '', event.wall, event.seg);
       this.notePosition(event);
     }
@@ -1016,28 +1079,76 @@ export class MeetingRuntime extends EventEmitter {
   // the WAV), then give up with a clear error. The recording is untouched either way.
   private workerGone(id: string, follow: boolean, code: number | null, error: string) {
     if (!follow) { this.captureState = code === 0 ? 'OFF' : 'ERROR'; if (code !== 0) this.lastError ||= 'Audio worker stopped: ' + error; this.ping(); return; }
-    this.modelReady = false;
-    if (this.closing || this.finishing || !this.session || this.session.ended || this.session.id !== id) { this.captureState = 'OFF'; this.ping(); return; }
-    if (code === 0) { this.captureState = 'OFF'; this.asrWanted = false; this.ping(); return; }  // read to the end of a finished recording
+    // A worker we asked to stop and whose exit we could not confirm (CLEANUP_UNCONFIRMED): this late exit is that confirmation, not a
+    // crash. Checked here, where restarts are decided, so no caller can restart it (late-exit fixtures of 03/11).
+    if (this.captureState === 'CLEANUP_UNCONFIRMED') { this.capture = null; this.captureState = 'OFF'; this.lastError = null; this.stalled = null; this.ping(); return; }
+    this.modelReady = false; this.asrLog(id, { type: 'exit', code, stalled: this.stalled ?? undefined });
+    if (this.closing || this.finishing || !this.session || this.session.ended || this.session.id !== id) { this.stalled = null; this.captureState = 'OFF'; this.ping(); return; }
+    // Stopped by the stall check: nothing it read was lost, so it resumes exactly at asrPosition (no skipped stretch, no gap row).
+    if (this.stalled) { this.stalled = null; this.respawnFollower(id, this.restartDelayMs); return; }
+    if (code === 0) {
+      // It read to an `end` of the timeline. With a recorder still running (or starting again) the recording is not over: a new run
+      // of the recorder continues the same meeting and the ASR follows it (audit 10/11, T4). Only then is it the end of the recording.
+      if (this.asrWanted && (this.recorderAlive() || this.recorder.retry || this.recorder.unverifiedPid)) { this.respawnFollower(id, this.restartDelayMs); return; }
+      this.captureState = 'OFF'; this.asrWanted = false; this.ping(); return;
+    }
     const now = Date.now(); this.workerCrashes = [...this.workerCrashes.filter(t => now - t < RESTART_WINDOW_MS), now];
     const detail = error.trim().split(/\r?\n/).slice(-3).join(' | ').slice(0, 300) || `mã ${code}`;
-    if (this.workerCrashes.length > MAX_WORKER_RESTARTS) {
-      this.captureState = 'ERROR'; this.asrWanted = false;
-      this.lastError = `Bộ nghe (ASR) chết ${this.workerCrashes.length} lần trong 10 phút nên không chạy lại nữa (${detail}). Âm thanh vẫn đang được ghi đầy đủ; sau họp dùng pma coverage rồi pma recheck. Thử lại: pma listen.`;
-      this.ping(); return;
-    }
+    const slow = this.workerCrashes.length > MAX_WORKER_RESTARTS;
     if (this.asrPosition) {
       const from = Date.parse(this.asrPosition); const to = from + SKIP_AFTER_CRASH_SECONDS * 1000; const hms = (ms: number) => new Date(ms).toLocaleTimeString('vi-VN', { hour12: false });
       try { this.ingest(`[KHOẢNG TRỐNG ASR] ${hms(from)}–${hms(to)}: bộ nghe bị lỗi và được chạy lại, đoạn này chưa được nhận dạng (âm thanh còn trong bản ghi: pma recheck --from ${hms(from)} --to ${hms(to)}).`, 'system_gap', 0, SKIP_AFTER_CRASH_SECONDS, 'ASR_RESTARTED', this.captureId, '', this.asrPosition); } catch {}
       this.asrPosition = new Date(to).toISOString();
     }
-    this.captureState = 'ASR_RESTARTING'; this.lastError = `Bộ nghe (ASR) chết (${detail}); đang chạy lại lần ${this.workerCrashes.length}/${MAX_WORKER_RESTARTS}.`;
+    // Never given up while the meeting is open (T5): past MAX_WORKER_RESTARTS the retry is slower and the error stays visible.
+    this.lastError = slow
+      ? `Bộ nghe (ASR) chết ${this.workerCrashes.length} lần trong 10 phút (${detail}); vẫn thử lại mỗi ${Math.round(this.persistRetryMs / 1000)} giây cho tới khi bạn kết thúc cuộc họp. Âm thanh vẫn đang được ghi đầy đủ; sau họp dùng pma coverage rồi pma recheck.`
+      : `Bộ nghe (ASR) chết (${detail}); đang chạy lại lần ${this.workerCrashes.length}/${MAX_WORKER_RESTARTS}.`;
+    this.respawnFollower(id, slow ? this.persistRetryMs : this.restartDelayMs);
+  }
+  private respawnFollower(id: string, delayMs: number) {
+    this.captureState = 'ASR_RESTARTING';
+    if (this.workerRetry) clearTimeout(this.workerRetry);
     this.workerRetry = setTimeout(() => {
       this.workerRetry = null;
       if (this.closing || this.finishing || !this.session || this.session.id !== id || this.session.ended || this.capture) return;
-      try { this.spawnFollower(id); } catch (e) { this.captureState = 'ERROR'; this.lastError = String(e); this.ping(); }
-    }, this.restartDelayMs);
+      try { this.spawnFollower(id); } catch (e) { this.lastError = String(e); this.respawnFollower(id, this.persistRetryMs); this.ping(); }
+    }, delayMs);
     this.ping();
+  }
+  // A live follow worker that does not move is restarted (audit 10/11, K4): (a) no output at all for ASR_STALL_SECONDS (its heartbeat
+  // comes every 5 s, so the process is hung), or (b) its speaker reader has waited for audio that long while the recorder's own
+  // record of the speaker channel is that far ahead of it (the reader lost track of the files). A reader waiting because the ASR is
+  // behind (waiting_asr) is slow, not stalled, and is left alone.
+  private stallCheck() {
+    const id = this.session?.id;
+    if (!id || this.session.ended || !this.followMode || !this.capture || this.workerStopping || this.workerPaused || this.stalled || this.captureState !== 'LISTENING') return;
+    const silent = (Date.now() - this.lastWorkerEventAt) / 1000;
+    const speaker = this.captureInfo.follow?.speaker;
+    let why: string | null = null;
+    if (this.lastWorkerEventAt && silent >= this.stallSeconds) why = `không báo gì trong ${Math.round(silent)} giây`;
+    else if (speaker?.state === 'waiting_audio' && Number(speaker.stateSeconds) >= this.stallSeconds) {
+      const ahead = this.recordedAhead(id, Number(speaker.axisSeconds));
+      if (ahead !== null && ahead >= this.stallSeconds) why = `chờ file loa ${Math.round(Number(speaker.stateSeconds))} giây trong khi bộ ghi đã ghi trước ${Math.round(ahead)} giây`;
+    }
+    if (!why) return;
+    const child = this.capture; this.stalled = why; this.stallRestarts++;
+    const at = this.asrPosition ? new Date(this.asrPosition).toLocaleTimeString('vi-VN', { hour12: false }) : 'đầu bản ghi';
+    this.lastError = `Bộ nghe đứng (${why}); đã tự chạy lại, tiếp từ ${at}, không bỏ đoạn nào.`;
+    this.asrLog(id, { type: 'stall', why }); this.ping();
+    try { child.kill(); } catch {}
+  }
+  // Seconds of speaker audio the recorder has recorded beyond the reader's axis position (axis 0 = the first segment's open).
+  private recordedAhead(id: string, axisSeconds: number) {
+    if (!Number.isFinite(axisSeconds)) return null;
+    const segments = segmentsOf(readTimeline(audioDir(this.dataDir, id))); if (!segments.length) return null;
+    const start = Math.min(...segments.map(s => s.openMs));
+    const last = Math.max(...segments.filter(s => s.channel === 'speaker').map(s => s.ticks.at(-1)?.ms ?? s.openMs));
+    return Number.isFinite(last) ? (last - start) / 1000 - axisSeconds : null;
+  }
+  // The worker's own record of what it did, beside the WAV of the meeting (audit 10/11, K6): every event but the text itself.
+  private asrLog(id: string, entry: Record<string, unknown>) {
+    try { appendFileSync(join(audioDir(this.dataDir, id), 'asr-log.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...entry }) + '\n', 'utf8'); } catch {}
   }
   // Pause is for the ASR only: the worker finishes the chunk it holds and waits; the recorder keeps recording and `listen`
   // catches up from the WAV. A temporary meeting-mix.wav is made while ASR rests. No answer from the worker is not an error.
@@ -1107,14 +1218,25 @@ export class MeetingRuntime extends EventEmitter {
     this.lastWorkerEventAt = Date.now(); this.captureInfo = { ...this.captureInfo, draining: true };
     try { child.stdin?.write('stop\n'); } catch {}
     const idleMs = this.followMode && this.everListened ? this.drainIdleMs : Math.min(this.drainIdleMs, 4000); const started = Date.now();
+    let cut = false;
     while (!done) {
       await Promise.race([exited, sleep(100)]);
-      if (!done && (Date.now() - this.lastWorkerEventAt > idleMs || Date.now() - started > this.drainMaxMs)) { child.kill(); break; }
+      if (!done && (Date.now() - this.lastWorkerEventAt > idleMs || Date.now() - started > this.drainMaxMs)) { child.kill(); cut = true; break; }
     }
+    // What it did not get to is a gap, in RAW and coverage, never silence (audit 10/11, T6).
+    if (cut && this.followMode && this.everListened && this.session) this.drainCutGap(this.session.id);
     if (!done) await Promise.race([exited, sleep(3000)]);
     if (child.exitCode === null && child.signalCode === null) { child.kill(); this.captureState = 'CLEANUP_UNCONFIRMED'; this.lastError = 'Owned audio worker exit not yet confirmed'; }
     else if (this.capture === child) this.capture = null;
     this.workerStopping = false; this.captureInfo = { ...this.captureInfo, draining: false }; this.ping();
+  }
+  private drainCutGap(id: string) {
+    const segments = segmentsOf(readTimeline(audioDir(this.dataDir, id))); if (!segments.length) return;
+    const end = Math.max(...segments.map(s => s.ticks.at(-1)?.ms ?? s.openMs)); const from = this.asrPosition ? Date.parse(this.asrPosition) : Math.min(...segments.map(s => s.openMs));
+    if (!(end - from > 1000)) return;
+    const hms = (ms: number) => new Date(ms).toLocaleTimeString('vi-VN', { hour12: false }); const seconds = Math.round((end - from) / 1000);
+    try { this.ingest(`[KHOẢNG TRỐNG ASR] ${hms(from)}–${hms(end)}: bộ nghe chưa đọc xong khi kết thúc (${seconds} giây); âm thanh vẫn còn trong bản ghi: pma recheck --from ${hms(from)} --to ${hms(end)}.`, 'system_gap', 0, seconds, 'ASR_DRAIN_CUT', this.captureId, '', new Date(from).toISOString()); } catch {}
+    this.asrLog(id, { type: 'drain_cut', from: new Date(from).toISOString(), seconds });
   }
   // Ends the session: stops the recorder, lets the ASR read to the end, makes the mix and only then writes RAW. The session
   // stays open (followers keep receiving the drained text) until all of that is done.
@@ -1202,7 +1324,7 @@ export class MeetingRuntime extends EventEmitter {
   }
   // What the live ASR did not give: stretches of the recording with sound and no transcript, ASR gaps, rows the ASR itself
   // doubted, and what the recorder lost. Times are real (wall-clock). Everything here can be fixed by `pma recheck`.
-  coverage(id: string) {
+  coverage(id: string, page: { after?: number; limit?: number } = {}) {
     const session = this.sessionRow(id); const dir = audioDir(this.dataDir, id); const events = readTimeline(dir);
     const rows: any[] = this.db.prepare('SELECT id,text,origin,boundary,wall,start,end FROM sources WHERE session_id=? ORDER BY id').all(id);
     const rechecks = (this.db.prepare('SELECT from_wall,to_wall FROM rechecks WHERE session_id=?').all(id) as any[]).map(r => ({ from: Date.parse(r.from_wall), to: Date.parse(r.to_wall) }));
@@ -1244,7 +1366,7 @@ export class MeetingRuntime extends EventEmitter {
     items.sort((a, b) => a.at - b.at);
     const counts: Record<string, number> = {}; for (const item of items) counts[item.kind] = (counts[item.kind] ?? 0) + 1;
     const seconds = windows.length ? Math.round((Math.max(...windows.map(w => w.ms)) - Math.min(...windows.map(w => w.ms))) / 1000) + 1 : 0;
-    return { sessionId: id, audio: { dir, basis, seconds }, open: items.filter(item => !item.rechecked).length, counts, note, total: items.length, items: items.slice(0, 200).map(({ at, ...item }) => item) };
+    return { sessionId: id, audio: { dir, basis, seconds }, open: items.filter(item => !item.rechecked).length, counts, note, total: items.length, ...(() => { const after = Math.max(0, page.after ?? 0), limit = Math.min(500, Math.max(1, page.limit ?? 200)); return { after, items: items.slice(after, after + limit).map(({ at, ...item }) => item), next: after + limit < items.length ? after + limit : null }; })() };
   }
   openMeeting(input: string) {
     const { platform, meetingId, launch } = meetingLaunch(input);
@@ -1476,9 +1598,16 @@ export class MeetingRuntime extends EventEmitter {
     } catch (error) { if (own) this.db.exec('ROLLBACK'); throw error; }
     this.ping(); return { saved: checked.length, replaced, label: 'Claude dịch' };
   }
-  async close() {
+  // keepMeeting (the host is shut down, a signal): an open meeting is NOT ended (OWN-028, audit 10/11, T2). The recorder keeps
+  // recording (it outlives the host), takeover.json tells the next host to take the meeting over, and only the worker is stopped.
+  // Without it (tests, the host after a finished meeting) an open meeting is finished first, as before.
+  async close(opts: { keepMeeting?: boolean } = {}) {
     if (this.closing) return; this.closing = true;
-    if (this.session && !this.session.ended) await this.finish(this.session.id);
+    if (this.stallTimer) { clearInterval(this.stallTimer); this.stallTimer = null; }
+    if (this.session && !this.session.ended) {
+      if (opts.keepMeeting && (this.recorderAlive() || this.recorder.unverifiedPid)) await this.handOver();
+      else await this.finish(this.session.id);
+    }
     for (const timer of [this.recorder.watch, this.recorder.retry, this.workerRetry]) if (timer) clearTimeout(timer);
     this.releaseWhenIdle(); this.ping(); this.db.close();
   }

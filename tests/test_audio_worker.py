@@ -825,6 +825,7 @@ class FollowTests(unittest.TestCase):
         self.events = []
         self.calls = []
         self.fail_on = set()
+        self.hold_asr = None  # an Event: transcribe waits for it, as a long ASR call would
         self.stdin = FakeStdin()
         self.load_delay = 0.0
         self.thread = None
@@ -832,6 +833,8 @@ class FollowTests(unittest.TestCase):
 
         def transcribe(model, waveform16, languages, lao_model=None, vi_model=None, pick=None, beam=None):
             self.calls.append(len(waveform16) / 16000)
+            if self.hold_asr:
+                self.hold_asr.wait(15)
             if len(self.calls) in self.fail_on:
                 raise RuntimeError('CUDA error: out of memory')
             segment = type('Segment', (), {'text': f'đoạn {len(self.calls)}', 'no_speech_prob': 0.1, 'compression_ratio': 1.2, 'avg_logprob': -0.3})()
@@ -948,6 +951,50 @@ class FollowTests(unittest.TestCase):
         self.assertAlmostEqual(self.wall(gaps[0]), gaps[0]['start'], delta=0.05)
         self.assertIn('out of memory', gaps[0]['message'])
         self.assertEqual([s['text'] for s in self.sources()], ['đoạn 1', 'đoạn 3'])
+
+    def test_a_segment_the_reader_never_got_becomes_a_segment_not_read_gap(self):
+        self.session.segment(1, 'speaker', 0.0, [(1, 0.2)])
+        self.session.samples[(2, 'speaker')] = 0
+        self.session.write_header(2, 'speaker')  # WAV on disk, its open line absent
+        self.session.add(2, 'speaker', self.session.wave(1, 0.2), 2.0)
+        at = self.session.segment(3, 'speaker', 2.0, [(1, 0.2)])
+        self.session.end(at)
+        self.start()
+        self.finish()
+        gaps = [e for e in self.events if e.get('type') == 'gap']
+        self.assertEqual(len(gaps), 1)
+        self.assertEqual((gaps[0]['reason'], gaps[0]['channel'], gaps[0]['seg']), ('SEGMENT_NOT_READ', 'speaker', 2))
+        self.assertAlmostEqual(gaps[0]['start'], 1.0, delta=0.05)
+        self.assertAlmostEqual(gaps[0]['end'], 2.0, delta=0.05)
+        self.assertAlmostEqual(self.wall(gaps[0]), 1.0, delta=0.05)
+        self.assertEqual([s['seg'] for s in self.sources()], [1, 3])
+
+    def test_the_heartbeat_reports_each_reader_even_while_a_transcribe_call_is_running(self):
+        import threading
+        from unittest import mock
+        patcher = mock.patch.object(self.worker, 'HEARTBEAT_SECONDS', 0.05)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.hold_asr = threading.Event()
+        self.addCleanup(self.hold_asr.set)
+        at = self.session.segment(1, 'speaker', 0.0, [(4, 0.2), (1, 0)])
+        self.session.end(at)
+        self.start()
+
+        def beats():
+            return [e for e in list(self.events) if e.get('type') == 'status' and 'follow' in e]
+        self.until(lambda: any(b['asrBusySeconds'] > 0 for b in beats()), 'heartbeat during the transcribe call')
+        beat = [b for b in beats() if b['asrBusySeconds'] > 0][-1]
+        for name in ('speaker', 'mic'):
+            self.assertEqual(set(beat['follow'][name]), {'state', 'stateSeconds', 'seg', 'axisSeconds'})
+            self.assertIn(beat['follow'][name]['state'], ('reading', 'waiting_audio', 'held', 'waiting_asr'))
+        seen = len(beats())
+        self.until(lambda: len(beats()) > seen + 1, 'the heartbeat keeps coming')
+        self.hold_asr.set()
+        self.finish()
+        count = len(beats())
+        time.sleep(0.3)
+        self.assertEqual(len(beats()), count)  # it stops with the worker
 
     def test_pause_holds_asr_without_losing_position_and_resume_goes_on(self):
         self.load_delay = 0.3

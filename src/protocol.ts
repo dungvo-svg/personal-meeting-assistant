@@ -6,8 +6,11 @@
 //   context-receipt/1  brief --as <role> issues rcpt-…; the central drafts need it
 //   job-token/1        job start returns a token; job done/fail need it
 //   mic-session/1      an explicit mic choice is kept by the session
+//   mic-session/2      and is never silently dropped: prepare(mic:false) on an open meeting whose recorder records (or may record)
+//                      the mic is refused (MIC_OFF_NOT_APPLIED); a recorder taken over keeps its mic mode only with the same pid and
+//                      OS start time, else UNKNOWN (04/11). An 0.12.1 build with /1 only has the earlier, silent early return.
 export const PROTOCOL = 'pma-rpc/2';
-export const CAPABILITIES = ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1'] as const;
+export const CAPABILITIES = ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1', 'mic-session/2'] as const;
 // What attach() needs before it sends a draft; a job result also needs the job token.
 export const DRAFT_NEEDS: readonly string[] = ['draft-guard/1', 'context-receipt/1'];
 export const needsFor = (method: string): readonly string[] => method === 'job' ? [...DRAFT_NEEDS, 'job-token/1'] : DRAFT_NEEDS;
@@ -16,9 +19,10 @@ export const needsFor = (method: string): readonly string[] => method === 'job' 
 export const PICTURE_KEY = 'buc-tranh';
 // Requests sent through call() (not attach) that rely on a guarantee only a newer host gives. Everything else (status, read, finish,
 // shutdown, follow, notes under other keys ...) is not gated: an older host keeps serving it, and an explicit stop always reaches it.
-//   prepare with mic:false  an 0.11 prepare does not know `mic` and would record the microphone anyway
+//   prepare with mic:false  an 0.11 prepare does not know `mic` and records the microphone anyway; an older 0.12.1 (mic-session/1
+//                           only) returns an open meeting without applying it. Both are refused before the request is sent.
 export function callNeeds(method: string, args: any): readonly string[] {
-  if (method === 'prepare' && args?.mic === false) return ['mic-session/1'];
+  if (method === 'prepare' && args?.mic === false) return ['mic-session/2'];
   return [];
 }
 export const missingFrom = (pong: any, needs: readonly string[]) => { const have: unknown[] = Array.isArray(pong?.capabilities) ? pong.capabilities : []; return needs.filter(n => !have.includes(n)); };

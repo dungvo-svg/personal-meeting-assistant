@@ -4,6 +4,8 @@
 //   crash-recorder        recorder exits with code 5 once (the file is removed)
 //   crash-worker          worker emits one source and exits with code 3 (removed; with the text "always" it stays, so every run crashes)
 //   no-pause-ack          worker does not answer `pause`
+//   hang-worker           worker emits one source, then nothing more and never exits by itself (a hung ASR)
+//   exit0-worker          worker emits one source and exits with code 0 (it read to an `end`), once (the file is removed)
 //   tail.json             sources the worker still delivers after `stop` (JSON array of texts), 300 ms later
 //   recheck-result.json   what `--recheck` prints
 // Every spawn is logged to worker-log.jsonl / recorder-log.jsonl next to them (argv, stop, exit), with a timestamp.
@@ -37,6 +39,8 @@ const crashFile = path.join(dir, 'crash-worker');
 const run = () => {
   emit({ type: 'ready', device: 'Fake' }); speak();
   if (fs.existsSync(crashFile)) { if (fs.readFileSync(crashFile, 'utf8') !== 'always') fs.unlinkSync(crashFile); console.error('boom'); log('crash'); process.exit(3); }
+  const exit0 = path.join(dir, 'exit0-worker'); if (fs.existsSync(exit0)) { fs.unlinkSync(exit0); log('exit0'); process.exit(0); }
+  if (fs.existsSync(path.join(dir, 'hang-worker'))) { log('hang'); fs.unlinkSync(path.join(dir, 'hang-worker')); setInterval(() => {}, 1000); }
 };
 setTimeout(() => { emit({ type: 'warm', asr: { device: 'cuda' }, modelLoadSeconds: 15.3 }); if (!paused && !started) { started = true; run(); } }, 60);
 const rl = require('node:readline').createInterface({ input: process.stdin });
@@ -63,14 +67,16 @@ const seg = (fs.existsSync(timeline) ? fs.readFileSync(timeline, 'utf8').split('
 write({ type: 'open', seg, channel: 'speaker', rate: 16000, device: flag('--speaker-name') });
 console.log(JSON.stringify({ type: 'recording', speaker: flag('--speaker-name'), micDevice: 'Mic', micSelectedBy: 'windows_default' }));
 let stopping = false;
-const stop = () => { if (stopping) return; stopping = true; write({ type: 'end' }); log('end'); setTimeout(() => process.exit(0), 50); };
-process.stdin.on('data', data => { if (String(data).includes('stop')) { log('stop-line'); stop(); } });
+const stop = reason => { if (stopping) return; stopping = true; write({ type: 'end', reason }); log('end'); setTimeout(() => process.exit(0), 50); };
+process.stdin.on('data', data => { if (String(data).includes('stop')) { log('stop-line'); stop('stop'); } });
 setInterval(() => {
-  if (!stopping && fs.existsSync(path.join(dir, 'STOP'))) { log('stop-file'); stop(); }
+  if (!stopping && fs.existsSync(path.join(dir, 'STOP'))) { log('stop-file'); stop('STOP_file'); }
   const crash = path.join(dir, 'crash-recorder'); if (fs.existsSync(crash)) { fs.unlinkSync(crash); log('crash'); process.exit(5); }
 }, 40);
 `;
 
+// What a fake recorder's OS start time reads as: stable per pid, never a real OS query.
+export const FAKE_IDENTITY = pid => 'fake-start-' + pid;
 export async function until(condition, what, ms = 8000) {
   const end = Date.now() + ms;
   while (!condition()) { if (Date.now() > end) throw new Error('timeout: ' + what); await new Promise(resolve => setTimeout(resolve, 20)); }
@@ -93,7 +99,10 @@ export async function withFakes(fn, options = {}) {
   const saved = Object.fromEntries(Object.entries(process.env).filter(([key]) => key.startsWith('PMA_')));
   for (const key of Object.keys(saved)) delete process.env[key];
   Object.assign(process.env, { PMA_PYTHON: process.execPath, PMA_LOCK_DIR: lock, PMA_DATA_DIR: dir, PMA_STOP_HOOK: 'off' });
-  const r = new MeetingRuntime(root, dir, false);
+  // No OS query from a test: the recorder's start time (its identity for a takeover) is a fake, one per child pid (FAKE_IDENTITY), so
+  // a host after this one recognises the recorder it left; a test that needs an unknown or different identity passes its own.
+  const r = new MeetingRuntime(root, dir, false, undefined, { startedAt: options.startedAt ?? FAKE_IDENTITY });
+  r.persistRetryMs = 300;
   r.restartDelayMs = 30; r.mixer = () => {};
   let leftover = null;
   try { await fn(r, dir, root); } finally {

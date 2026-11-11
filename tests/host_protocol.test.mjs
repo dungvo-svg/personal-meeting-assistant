@@ -21,6 +21,8 @@ const PINGS = {
   legacy: { ok: true, version: '0.11.0', pid: process.pid, testMode: true },                                   // a771aeb's ping
   partial: { ok: true, version: '0.12.1', pid: process.pid, testMode: true, protocol: PROTOCOL, capabilities: ['context-receipt/1'] },
   current: { ok: true, version: '0.12.1', pid: process.pid, testMode: true, protocol: PROTOCOL, capabilities: [...CAPABILITIES] },
+  // An earlier 0.12.1 build: the same version string and every capability of its time, but mic-session/1 only.
+  v1only: { ok: true, version: '0.12.1', pid: process.pid, testMode: true, protocol: PROTOCOL, capabilities: ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1'] },
 };
 let mode = 'legacy'; const received = [];
 const server = createServer((req, res) => {
@@ -84,7 +86,7 @@ test('the current host is sent every draft unchanged', async () => {
 test('the real host says what it implements: its ping carries the protocol and exactly the listed capabilities (read as text)', () => {
   const daemon = readFileSync(resolve('src/daemon.ts'), 'utf8');
   assert.match(daemon, /ping: \(\) => \(\{ ok: true, version: VERSION, pid: process\.pid, testMode: runtime\.testMode, protocol: PROTOCOL, capabilities: \[\.\.\.CAPABILITIES\] \}\)/);
-  assert.deepEqual([...CAPABILITIES], ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1']);
+  assert.deepEqual([...CAPABILITIES], ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1', 'mic-session/2']);
 });
 
 // Writes that go through call(), not attach (Codex counterexample on the capability fence): the picture's reserved note key, and an
@@ -99,7 +101,7 @@ test('a note under the picture key never leaves the client; other notes, and a p
 
 test('prepare with mic:false is refused by an old host before it is sent, and sent to the current one', async () => {
   mode = 'legacy'; received.length = 0;
-  await assert.rejects(client.call('prepare', { title: 'Họp', mic: false }), /HOST_PROTOCOL_OLD: .*mic-session\/1.*prepare chưa được gửi/);
+  await assert.rejects(client.call('prepare', { title: 'Họp', mic: false }), /HOST_PROTOCOL_OLD: .*mic-session\/2.*prepare chưa được gửi/);
   assert.ok(received.every(r => r.method === 'ping'), 'the old host saw only pings');
   mode = 'current'; received.length = 0;
   assert.deepEqual(await client.call('prepare', { title: 'Họp', mic: false }), { accepted: 'prepare' });
@@ -112,7 +114,7 @@ test('PMA_MIC=0 without --no-mic: an old host gets zero prepare payloads; a curr
   const before = process.env.PMA_MIC; process.env.PMA_MIC = '0';
   try {
     mode = 'legacy'; received.length = 0;
-    await assert.rejects(client.call('prepare', { title: 'Họp' }), /HOST_PROTOCOL_OLD: .*mic-session\/1/);
+    await assert.rejects(client.call('prepare', { title: 'Họp' }), /HOST_PROTOCOL_OLD: .*mic-session\/2/);
     assert.ok(received.every(r => r.method === 'ping'), 'no prepare reached the old host');
     // select and listen take a mic flag on an 0.11 host too: they are sent, with the choice in them.
     assert.deepEqual(await client.call('select', { deviceIndex: 13 }), { accepted: 'select' });
@@ -126,4 +128,18 @@ test('PMA_MIC=0 without --no-mic: an old host gets zero prepare payloads; a curr
   mode = 'current'; received.length = 0;
   await client.call('prepare', { title: 'Họp' });
   assert.deepEqual(received.filter(r => r.method === 'prepare').map(r => r.args), [{ title: 'Họp' }]);
+});
+
+// Codex review of 4c21d07: the stronger no-mic contract (mic-session/2) is required before a no-mic prepare; an earlier 0.12.1 that
+// only has mic-session/1 (silent early return on an open meeting) is refused like 0.11, while its status, stop and drafts still work.
+test('prepare(mic:false) needs mic-session/2: an earlier 0.12.1 with /1 only gets no prepare payload; status, stop and drafts still reach it', async () => {
+  mode = 'v1only'; received.length = 0;
+  await assert.rejects(client.call('prepare', { title: 'Họp', mic: false }), /HOST_PROTOCOL_OLD: .*mic-session\/2.*prepare chưa được gửi/);
+  assert.ok(received.every(r => r.method === 'ping'), 'no prepare reached it');
+  assert.deepEqual(await client.call('prepare', { title: 'Họp' }), { accepted: 'prepare' }, 'a prepare without a no-mic choice is not gated');
+  assert.deepEqual(await client.reach('finish', {}), { accepted: 'finish' });
+  assert.deepEqual(await client.attach('summary', { markdown: '- Một.', sourceIds: [1], receipt: 'rcpt-0000000000000000', expectedRevision: 0 }), { accepted: 'summary' }, 'its draft contract (v1) is unchanged');
+  assert.equal((await client.inspect()).host.draftsAllowed, true);
+  mode = 'current'; received.length = 0;
+  assert.deepEqual(await client.call('prepare', { title: 'Họp', mic: false }), { accepted: 'prepare' });
 });
