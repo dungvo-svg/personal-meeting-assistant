@@ -1,7 +1,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import { EventEmitter, once } from 'node:events';
-import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { ProcessingLedger, contentHash } from './processing.js';
+import { resolveReportSources, reportCitation, type ReportRefInput, type ReportEvidence } from './report_provenance.js';
+import { applyProcessingArtifacts } from './processing_artifacts.js';
+import { randomUUID, createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, renameSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -10,7 +13,7 @@ import { canonicalOwner } from './participants.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, soundRanges, soundWindows, uncovered, type Range } from './timeline.js';
 
-export type TaskItem = { task: string; owner?: string; due?: string; sourceIds: number[] };
+export type TaskItem = { task: string; owner?: string; due?: string; sourceIds?: number[]; sourceRefs?: ReportRefInput[] };
 export type Opener = (url: string) => void;
 // Runs tools/mix_audio.py (python, [script, audio dir]) hidden, with no stdio, and resolves when it has exited. A caller that
 // must not wait (pause) just ignores the promise; finish waits for it before the host may exit.
@@ -82,6 +85,7 @@ const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, m
 export const PICTURE_KEY = 'buc-tranh';
 export class MeetingRuntime extends EventEmitter {
   db: DatabaseSync;
+  processing: ProcessingLedger;
   session: any = null;
   // The ASR worker (tools/audio_worker.py --follow <audio dir>): reads the recorder's files, never opens a device.
   capture: ChildProcess | null = null;
@@ -133,6 +137,8 @@ export class MeetingRuntime extends EventEmitter {
       CREATE TABLE IF NOT EXISTS sources(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, text TEXT NOT NULL, origin TEXT NOT NULL, start REAL NOT NULL, end REAL NOT NULL, created TEXT NOT NULL, boundary TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS notes(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, item_key TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, created TEXT NOT NULL, UNIQUE(session_id,item_key,revision));
       CREATE TABLE IF NOT EXISTS reports(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL, source_ids TEXT NOT NULL, created TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS report_evidence(report_id INTEGER PRIMARY KEY, input_key TEXT NOT NULL UNIQUE, source_refs TEXT NOT NULL, task_refs TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS report_file_projections(session_id TEXT NOT NULL,kind TEXT NOT NULL,desired_report_id INTEGER NOT NULL,completed_report_id INTEGER,content_hash TEXT,PRIMARY KEY(session_id,kind));
       CREATE TABLE IF NOT EXISTS translations(source_id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, text TEXT NOT NULL, created TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS rechecks(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, source_id INTEGER, from_wall TEXT NOT NULL, to_wall TEXT NOT NULL, channel TEXT NOT NULL, text TEXT NOT NULL, language TEXT NOT NULL, alternatives TEXT NOT NULL, silent INTEGER NOT NULL, created TEXT NOT NULL);`);
     const columns = (this.db.prepare('PRAGMA table_info(sources)').all() as any[]).map(c => c.name);
@@ -152,6 +158,7 @@ export class MeetingRuntime extends EventEmitter {
     this.db.prepare("UPDATE sessions SET ended=COALESCE((SELECT MAX(created) FROM sources WHERE session_id=sessions.id), created) WHERE ended IS NULL AND id<>?").run(survivor?.sessionId ?? '');
     try { this.context = JSON.parse(readFileSync(join(root, '.local', 'meeting-context.json'), 'utf8')); }
     catch { this.context = { title: 'Phiên họp cá nhân', language: 'vi', translation_required: false, topics: [] }; }
+    this.processing = new ProcessingLedger(this.db);
     if (survivor) this.reattach(survivor);
   }
   // Kept between sessions: the user's own name (`start --me`), how long the last model load took, and the last speaker/mic
@@ -272,7 +279,7 @@ export class MeetingRuntime extends EventEmitter {
   picture(id: string) {
     const row: any = this.db.prepare("SELECT revision,payload,created FROM notes WHERE session_id=? AND item_key=? ORDER BY revision DESC LIMIT 1").get(id, PICTURE_KEY);
     if (!row) return null;
-    const payload = JSON.parse(row.payload); return { revision: row.revision as number, text: payload.text as string, sourceIds: payload.sourceIds as number[], savedAt: row.created as string };
+    const payload = JSON.parse(row.payload); return { revision: row.revision as number, text: payload.text as string, sourceIds: payload.sourceIds as number[], savedAt: row.created as string, ...(payload.anchors ? {anchors:payload.anchors} : {}), ...(payload.recheckIds ? {recheckIds:payload.recheckIds} : {}) };
   }
   savePicture(id: string, text: string, sourceIds: number[]) {
     const revision = (this.picture(id)?.revision ?? 0) + 1;
@@ -280,12 +287,18 @@ export class MeetingRuntime extends EventEmitter {
   }
   publish(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[]) {
     this.requireSession(id);
-    if (!/^[\w-]{1,80}$/.test(key) || !Number.isSafeInteger(revision) || revision < 1 || text.length < 1 || text.length > 8000 || !['observation', 'decision', 'action', 'question', 'correction'].includes(kind) || !sourceIds.length || sourceIds.length > 50) throw new Error('INVALID_NOTE');
+    if (key===PICTURE_KEY && this.picture(id)?.anchors!==undefined) throw new Error('STRUCTURED_PICTURE_REQUIRES_PROCESSING_COMMIT');
+    return this.writeNote(id,key,revision,kind,text,sourceIds);
+  }
+  private writeNote(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], anchors?: any[], recheckIds?:number[]) {
+    this.sessionRow(id);
+    if (!/^[\w-]{1,80}$/.test(key) || !Number.isSafeInteger(revision) || revision < 1 || text.length < 1 || text.length > 8000 || !['observation', 'decision', 'action', 'question', 'correction'].includes(kind) || (!sourceIds.length&&!recheckIds?.length) || sourceIds.length+(recheckIds?.length ?? 0)>50) throw new Error('INVALID_NOTE');
     const ids = [...new Set(sourceIds)];
     for (const sourceId of ids) {
       if (!Number.isSafeInteger(sourceId) || !this.db.prepare('SELECT id FROM sources WHERE session_id=? AND id=?').get(id, sourceId)) throw new Error('SOURCE_OUTSIDE_SESSION');
     }
-    const payload = JSON.stringify({ text, sourceIds: ids, author: 'assistant', semanticStatus: 'UNVERIFIED_AGENT_NOTE' });
+    for(const ref of recheckIds ?? []) if(!Number.isSafeInteger(ref)||!this.db.prepare('SELECT 1 FROM rechecks WHERE id=? AND session_id=?').get(ref,id)) throw new Error('RECHECK_OUTSIDE_SESSION');
+    const payload = JSON.stringify({ text, sourceIds: ids, author: 'assistant', semanticStatus: 'UNVERIFIED_AGENT_NOTE', ...(anchors ? {anchors} : {}), ...(recheckIds ? {recheckIds} : {}) });
     const existing: any = this.db.prepare('SELECT payload,kind FROM notes WHERE session_id=? AND item_key=? AND revision=?').get(id, key, revision);
     if (existing) { if (existing.payload !== payload || existing.kind !== kind) throw new Error('REVISION_CONFLICT'); return { saved: true, duplicate: true }; }
     const previous: any = this.db.prepare('SELECT MAX(revision) AS revision FROM notes WHERE session_id=? AND item_key=?').get(id, key);
@@ -294,6 +307,19 @@ export class MeetingRuntime extends EventEmitter {
     if (count.n >= 2000) throw new Error('NOTE_CAPACITY_REACHED');
     this.db.prepare('INSERT INTO notes(session_id,item_key,revision,kind,payload,created) VALUES(?,?,?,?,?,?)').run(id, key, revision, kind, payload, new Date().toISOString());
     this.ping(); return { saved: true, duplicate: false, scope: 'LOCAL_PERSONAL_PANEL_ONLY' };
+  }
+  processingCommit(input: any) {
+    const result = this.processing.commit(input,(batch,data)=>applyProcessingArtifacts(this.db,batch,data,
+      id=>this.picture(id), (id,revision,text,sourceIds,anchors,recheckIds)=>this.writeNote(id,PICTURE_KEY,revision,'observation',text,sourceIds,anchors,recheckIds)));
+    this.ping(); return result;
+  }
+  processingPeek(id: string, role: 'chinh'|'dich') {
+    const result=this.processing.peek(id,role); const at=new Date().toISOString();
+    this.followers[role]={cursor:result.cursor,at};
+    if (role==='chinh') {this.agentCursor=result.cursor;this.lastFollowAt=at;}
+    return {...result,ended:!!this.sessionRow(id).ended,pictureRevision:this.picture(id)?.revision ?? 0,
+      health:{captureState:this.captureState,lastError:this.lastError,recorderState:this.recorder.state,recorderError:this.recorder.error,
+        lagSeconds:this.captureInfo?.lagSeconds ?? null,micDevice:this.captureInfo?.micDevice ?? null,micError:this.captureInfo?.micError ?? null,micDeviceChanged:this.captureInfo?.micDeviceChanged ?? null}};
   }
   snapshot() {
     const id = this.session?.id;
@@ -343,7 +369,7 @@ export class MeetingRuntime extends EventEmitter {
     if (!session) throw new Error('SESSION_NOT_FOUND');
     const rows: any[] = this.db.prepare('SELECT id,text,origin,start,end,capture_id FROM sources WHERE session_id=? ORDER BY id').all(id);
     const notes: any[] = this.db.prepare('SELECT item_key,revision,kind,payload FROM notes WHERE session_id=? ORDER BY id').all(id);
-    return [session.title, session.created, session.mode, 'Nguồn ASR/nhập tay chưa xác minh. Mốc giây tính trong từng capture ID, không phải timestamp từng từ. Không phải biên bản được chấp thuận. ' + this.audioNote(id), '', ...rows.map(s => `#${s.id} [${s.start.toFixed(1)}–${s.end.toFixed(1)}s] ${s.origin} capture=${s.capture_id || 'none'}\n${s.text}\n`), '\nGHI CHÚ CỦA TRỢ LÝ — nhận định chưa xác minh', ...notes.map(n => { const p=JSON.parse(n.payload); return `${n.item_key} r${n.revision} · ${n.kind} · nguồn ${p.sourceIds.join(', ')}\n${p.text}\n`; })].join('\n');
+    return [session.title, session.created, session.mode, 'Nguồn ASR/nhập tay chưa xác minh. Mốc giây tính trong từng capture ID, không phải timestamp từng từ. Không phải biên bản được chấp thuận. ' + this.audioNote(id), '', ...rows.map(s => `#${s.id} [${s.start.toFixed(1)}–${s.end.toFixed(1)}s] ${s.origin} capture=${s.capture_id || 'none'}\n${s.text}\n`), '\nGHI CHÚ CỦA TRỢ LÝ — nhận định chưa xác minh', ...notes.map(n => { const p=JSON.parse(n.payload); return `${n.item_key} r${n.revision} · ${n.kind} · nguồn ${[...(p.sourceIds ?? []).map((id:number)=>String(id)), ...(p.recheckIds ?? []).map((id:number)=>'recheck:'+id)].join(', ')}\n${p.text}\n`; })].join('\n');
   }
   history(id: string) {
     const session: any = this.db.prepare('SELECT id,title,created,ended,mode,context FROM sessions WHERE id=?').get(id);
@@ -895,6 +921,7 @@ export class MeetingRuntime extends EventEmitter {
     return parts.join(' · ') + '.';
   }
   writeRaw(id: string) {
+    const projectionRevision=this.processing.projection(id).revision;
     const session = this.sessionRow(id);
     const rows: any[] = this.db.prepare('SELECT s.id,s.text,s.origin,s.created,s.wall,s.capture_id,s.language,s.boundary,s.alternatives,t.text AS translation FROM sources s LEFT JOIN translations t ON t.source_id=s.id WHERE s.session_id=? ORDER BY s.id').all(id);
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
@@ -905,7 +932,7 @@ export class MeetingRuntime extends EventEmitter {
     const ghosts = rows.filter(isHallucination);
     const when = (row: any) => localTime(row.wall || row.created);
     // What Claude heard again from the WAV (`pma recheck`): the latest answer per source, and the ranges without a source.
-    const heardAgain: any[] = this.db.prepare('SELECT source_id,from_wall,to_wall,text,language,alternatives,silent FROM rechecks WHERE session_id=? ORDER BY id').all(id);
+    const heardAgain: any[] = this.db.prepare('SELECT id,source_id,from_wall,to_wall,text,language,alternatives,silent FROM rechecks WHERE session_id=? ORDER BY id').all(id);
     const phrase = (r: any) => { const others = (JSON.parse(r.alternatives) as any[]).map(a => `[${a.language}] ${a.text}`).join('; '); return `${r.silent ? 'không thấy tiếng nói' : `${r.language ? '[' + r.language + '] ' : ''}${r.text}`}${others ? ' — phương án khác: ' + others : ''}`; };
     const again = new Map<number, any>(); for (const r of heardAgain) if (r.source_id !== null) again.set(r.source_id, r);
     let capture: string | null = null;
@@ -917,37 +944,50 @@ export class MeetingRuntime extends EventEmitter {
         : `[${when(row)}] #${row.id} (${label(row)}) ${this.shown(row.text)}`);
       for (const other of parseAlternatives(row.alternatives)) lines.push(`  ↳ ${other.language} (cách nghe khác): ${other.text.replace(/\r?\n/g, ' ')}`);
       const rechecked = again.get(row.id); if (rechecked) lines.push(`  (đã nghe lại: ${phrase(rechecked).replace(/\r?\n/g, ' ')})`);
-      const translation = row.translation ?? group.last.translation; if (translation) lines.push(`  → (Claude dịch) ${translation.replace(/\r?\n/g, ' ')}`);
+      const translation = row.translation ?? group.last.translation;
+      if (translation) {
+        lines.push(`  → (Claude dịch) ${translation.replace(/\r?\n/g, ' ')}`);
+        const metadata=this.processing.translationMeta(id,row.id,translation);
+        if (metadata?.uncertainty?.state==='unclear') lines.push(`    [chưa nghe rõ: ${metadata.uncertainty.reason.replace(/\r?\n/g,' ')}]`);
+      }
     }
     if (!rows.length) lines.push('_Chưa có đoạn nào được ghi nhận._');
     const ranges = heardAgain.filter(r => r.source_id === null);
-    if (ranges.length) lines.push('', '## Nghe lại theo khoảng thời gian (từ bản ghi âm)', '', ...ranges.map(r => `[${localTime(r.from_wall)}–${localTime(r.to_wall)}] (đã nghe lại: ${phrase(r).replace(/\r?\n/g, ' ')})`));
+    if (ranges.length) lines.push('', '## Nghe lại theo khoảng thời gian (từ bản ghi âm)', '', ...ranges.flatMap(r => {
+      const translation=this.processing.rangeTranslation(id,r.id);
+      return [`[${localTime(r.from_wall)}–${localTime(r.to_wall)}] recheck:${r.id} (đã nghe lại: ${phrase(r).replace(/\r?\n/g, ' ')})`,
+        ...(translation?.kind==='translated' ? [`  → (Claude dịch) ${translation.payload.text.replace(/\r?\n/g,' ')}`,...(translation.payload.uncertainty?.state==='unclear'?[`    [chưa nghe rõ: ${translation.payload.uncertainty.reason.replace(/\r?\n/g,' ')}]`]:[])] : translation?.kind==='marked_unclear' ? ['  [chưa nghe rõ: '+translation.payload.reason.replace(/\r?\n/g,' ')+']'] : [])];
+    }));
     if (ghosts.length) lines.push('', '## Phụ lục — đoạn nghi câu ảo (thường do im lặng hoặc nhạc), không dùng làm nội dung họp', '', ...ghosts.map(row => `[${when(row)}] #${row.id} ${row.text}`));
-    const path = join(this.reportDir(id), 'RAW.md'); writeFileSync(path, lines.join('\n') + '\n', 'utf8');
-    return { path, sourceCount: rows.length, hallucinationCount: ghosts.length, firstSourceId: rows[0]?.id ?? null, lastSourceId: rows.at(-1)?.id ?? null };
+    const path = join(this.reportDir(id), 'RAW.md'); const content=lines.join('\n')+'\n';
+    const temp=path+'.'+randomUUID()+'.tmp'; writeFileSync(temp,content,'utf8'); renameSync(temp,path);
+    const contentHash=createHash('sha256').update(content).digest('hex');
+    const projected=projectionRevision>0 ? this.processing.projected(id,projectionRevision,contentHash) : true;
+    return { path, sourceCount: rows.length, hallucinationCount: ghosts.length, firstSourceId: rows[0]?.id ?? null, lastSourceId: rows.at(-1)?.id ?? null,
+      ...(projectionRevision>0 ? {rawProjection:{revision:projectionRevision,completed:projected,contentHash}} : {}) };
   }
-  private checkSources(id: string, sourceIds: number[]) {
-    const ids = [...new Set(sourceIds)];
-    if (!ids.length || ids.length > 200) throw new Error('SOURCE_IDS_REQUIRED');
-    for (const sourceId of ids) if (!Number.isSafeInteger(sourceId) || !this.db.prepare('SELECT id FROM sources WHERE session_id=? AND id=?').get(id, sourceId)) throw new Error('SOURCE_OUTSIDE_SESSION: ' + sourceId);
-    return ids;
+  reportSources(id: string, sourceIds: number[] = [], sourceRefs: ReportRefInput[] = []) {
+    this.sessionRow(id); return resolveReportSources(this.db, this.processing, id, sourceIds, sourceRefs);
   }
-  saveSummary(id: string, markdown: string, sourceIds: number[]) {
-    const session = this.sessionRow(id); const ids = this.checkSources(id, sourceIds);
+  saveSummary(id: string, markdown: string, sourceIds: number[] = [], sourceRefs: ReportRefInput[] = []) {
+    return this.saveReport(id, 'summary', 'SUMMARY.md', () => {
+    const session = this.sessionRow(id); const refs = this.reportSources(id, sourceIds, sourceRefs); const ids = refs.flatMap(r => r.sourceId === null ? [] : [r.sourceId]);
     markdown = markdown.trim(); if (!markdown || markdown.length > 40000) throw new Error('INVALID_SUMMARY');
-    const lines = [...this.header(session, 'Tóm tắt cuộc họp'), '> Trợ lý AI tóm tắt từ RAW transcript chưa xác minh, nguồn #' + ids.join(', #') + '. Không phải biên bản đã được duyệt.', '', markdown];
-    return this.saveReport(id, 'summary', 'SUMMARY.md', lines.join('\n') + '\n', ids);
+    const lines = [...this.header(session, 'Tóm tắt cuộc họp'), '> Trợ lý AI tóm tắt từ RAW transcript chưa xác minh, nguồn ' + refs.map(reportCitation).join(', ') + '. Không phải biên bản đã được duyệt.', '', markdown];
+    return {content: lines.join('\n') + '\n', ids, refs, taskRefs: []};
+    });
   }
   saveTasks(id: string, tasks: TaskItem[]) {
+    return this.saveReport(id, 'tasks', 'TASKS.md', () => {
     const session = this.sessionRow(id);
     if (!Array.isArray(tasks) || tasks.length > 200) throw new Error('INVALID_TASKS');
     // An owner written the way ASR spelt a participant becomes the participant's name (only listed variants match).
     tasks = tasks.map(t => ({ ...t, owner: canonicalOwner(session.context?.participants, t.owner) }));
-    const all: number[] = [];
+    const all: number[] = []; const allRefs: ReportEvidence[] = []; const taskRefs: ReportEvidence[][] = [];
     const rows = tasks.map((t, i) => {
       const task = String(t.task || '').trim(); if (!task || task.length > 2000) throw new Error('INVALID_TASK: ' + (i + 1));
-      const ids = this.checkSources(id, t.sourceIds || []); all.push(...ids);
-      return `| ${i + 1} | ${cell(task)} | ${cell(t.owner?.trim() || 'Chưa nêu trong họp')} | ${cell(t.due?.trim() || 'Chưa nêu trong họp')} | #${ids.join(', #')} |`;
+      const refs = this.reportSources(id, t.sourceIds || [], t.sourceRefs || []); taskRefs.push(refs); allRefs.push(...refs); const ids = refs.flatMap(r => r.sourceId === null ? [] : [r.sourceId]); all.push(...ids);
+      return `| ${i + 1} | ${cell(task)} | ${cell(t.owner?.trim() || 'Chưa nêu trong họp')} | ${cell(t.due?.trim() || 'Chưa nêu trong họp')} | ${refs.map(reportCitation).join(', ')} |`;
     });
     // "Việc của tôi" first when the user's name is known (audit 30/10: the user had to pick their own tasks by hand).
     const me = session.context?.me?.toLowerCase();
@@ -957,18 +997,71 @@ export class MeetingRuntime extends EventEmitter {
     const lines = [...this.header(session, 'Việc cần làm sau họp'), '> Trợ lý AI rút từ RAW transcript chưa xác minh. Người phụ trách/hạn chỉ ghi khi được nói trong họp; cần người dùng xác nhận trước khi giao việc.', '',
       ...(me ? [`## Việc của tôi (${session.context.me})`, '', ...(mine.length ? [...head, ...mine] : ['_Không có việc nào ghi rõ là của bạn._']), '', '## Tất cả việc', ''] : []),
       ...(rows.length ? [...head, ...rows] : ['_Không thấy việc cần làm nào được nêu rõ trong transcript._'])];
-    return this.saveReport(id, 'tasks', 'TASKS.md', lines.join('\n') + '\n', [...new Set(all)]);
+    return {content: lines.join('\n') + '\n', ids: [...new Set(all)], refs: allRefs, taskRefs};
+    });
   }
-  private saveReport(id: string, kind: string, file: string, content: string, ids: number[]) {
-    const count: any = this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE session_id=?').get(id);
-    if (count.n >= 200) throw new Error('REPORT_CAPACITY_REACHED');
-    this.db.prepare('INSERT INTO reports(session_id,kind,content,source_ids,created) VALUES(?,?,?,?,?)').run(id, kind, content, JSON.stringify(ids), new Date().toISOString());
-    const path = join(this.reportDir(id), file); writeFileSync(path, content, 'utf8'); this.ping();
-    return { saved: true, path, scope: 'LOCAL_FILE_ONLY_NOT_SENT' };
+  private saveReport(id: string, kind: string, file: string, build: () => {content:string;ids:number[];refs:ReportEvidence[];taskRefs:ReportEvidence[][]}) {
+    // The evidence read, validation, immutable report and its provenance commit together.
+    // The materialized file is a separate, retryable projection after SQLite commit.
+    this.db.exec('BEGIN IMMEDIATE');
+    let record:any; let duplicate=false;
+    try {
+      const {content,ids,refs,taskRefs}=build(); const inputKey=contentHash({id,kind,content,refs,taskRefs});
+      record=this.db.prepare('SELECT r.* FROM reports r JOIN report_evidence e ON e.report_id=r.id WHERE e.input_key=?').get(inputKey);
+      if(record) duplicate=true;
+      else {
+        const count:any=this.db.prepare('SELECT COUNT(*) AS n FROM reports WHERE session_id=?').get(id);
+        if(count.n>=200) throw new Error('REPORT_CAPACITY_REACHED');
+        const created=new Date().toISOString();
+        const inserted=this.db.prepare('INSERT INTO reports(session_id,kind,content,source_ids,created) VALUES(?,?,?,?,?)').run(id,kind,content,JSON.stringify(ids),created);
+        const reportId=Number(inserted.lastInsertRowid);
+        this.db.prepare('INSERT INTO report_evidence(report_id,input_key,source_refs,task_refs) VALUES(?,?,?,?)').run(reportId,inputKey,JSON.stringify(refs),JSON.stringify(taskRefs));
+        record={id:reportId,content};
+      }
+      const latest:any=this.db.prepare('SELECT id FROM reports WHERE session_id=? AND kind=? ORDER BY id DESC LIMIT 1').get(id,kind);
+      this.db.prepare('INSERT INTO report_file_projections VALUES(?,?,?,NULL,NULL) ON CONFLICT(session_id,kind) DO UPDATE SET desired_report_id=excluded.desired_report_id,completed_report_id=NULL,content_hash=NULL').run(id,kind,latest.id);
+      this.db.exec('COMMIT');
+    } catch(error) {this.db.exec('ROLLBACK');throw error;}
+    const projection=this.rebuildReport(id,kind);
+    return {saved:true,duplicate,reportId:record.id,...projection};
+  }
+  rebuildReport(id:string,kind:string) {
+    this.sessionRow(id);if(!['summary','tasks'].includes(kind)) throw new Error('UNKNOWN_REPORT');
+    // Repair only committed content, without reinterpreting possibly corrected sources.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const latest:any=this.db.prepare('SELECT id FROM reports WHERE session_id=? AND kind=? ORDER BY id DESC LIMIT 1').get(id,kind);
+      if(!latest) throw new Error('REPORT_NOT_CREATED_YET');
+      this.db.prepare('INSERT INTO report_file_projections VALUES(?,?,?,NULL,NULL) ON CONFLICT(session_id,kind) DO UPDATE SET desired_report_id=excluded.desired_report_id,completed_report_id=NULL,content_hash=NULL').run(id,kind,latest.id);
+      this.db.exec('COMMIT');
+    } catch(error) {this.db.exec('ROLLBACK');throw error;}
+    const file=kind==='summary'?'SUMMARY.md':'TASKS.md';
+    const path=join(this.reportDir(id),file);
+    // File projection is not atomic with the report commit. Its durable pending marker
+    // survives errors/crashes. Serialize projection with other report writers, then
+    // mark only the revision actually written; historical retry projects latest.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const latest:any=this.db.prepare('SELECT r.id,r.content FROM report_file_projections p JOIN reports r ON r.id=p.desired_report_id WHERE p.session_id=? AND p.kind=?').get(id,kind);
+      const temp=path+'.'+randomUUID()+'.tmp';writeFileSync(temp,latest.content,'utf8');renameSync(temp,path);
+      this.db.prepare('UPDATE report_file_projections SET completed_report_id=?,content_hash=? WHERE session_id=? AND kind=? AND desired_report_id=?').run(latest.id,createHash('sha256').update(latest.content).digest('hex'),id,kind,latest.id);
+      this.db.exec('COMMIT');
+    } catch(error) {this.db.exec('ROLLBACK');throw error;}
+    this.ping();
+    return {path,fileProjection:this.reportProjection(id,kind),scope:'LOCAL_FILE_ONLY_NOT_SENT'};
+  }
+  reportProjection(id:string,kind:string) {
+    const row:any=this.db.prepare('SELECT desired_report_id,completed_report_id,content_hash FROM report_file_projections WHERE session_id=? AND kind=?').get(id,kind);
+    return row ? {desiredReportId:row.desired_report_id,completedReportId:row.completed_report_id,contentHash:row.content_hash,pending:row.desired_report_id!==row.completed_report_id} : null;
+  }
+  reportHistory(id:string,kind?:string) {
+    this.sessionRow(id); if(kind!==undefined && !['summary','tasks'].includes(kind)) throw new Error('UNKNOWN_REPORT');
+    return this.db.prepare('SELECT r.*,e.source_refs,e.task_refs FROM reports r LEFT JOIN report_evidence e ON e.report_id=r.id WHERE r.session_id=? AND (? IS NULL OR r.kind=?) ORDER BY r.id').all(id,kind ?? null,kind ?? null).map((row:any)=>({reportId:row.id,kind:row.kind,content:row.content,createdAt:row.created,sourceIds:JSON.parse(row.source_ids),sourceRefs:row.source_refs?JSON.parse(row.source_refs):null,taskRefs:row.task_refs?JSON.parse(row.task_refs):null,legacyProvenance:!row.source_refs,fileProjection:this.reportProjection(id,row.kind)}));
   }
   reportFile(id: string, kind: string) {
     const file = ({ raw: 'RAW.md', summary: 'SUMMARY.md', tasks: 'TASKS.md' } as Record<string, string>)[kind]; if (!file) throw new Error('UNKNOWN_REPORT');
     if (kind === 'raw') this.writeRaw(id);
+    else { const latest:any=this.db.prepare('SELECT content FROM reports WHERE session_id=? AND kind=? ORDER BY id DESC LIMIT 1').get(id,kind); if(latest) return {name:file,content:latest.content,fileProjection:this.reportProjection(id,kind)}; }
     try { return { name: file, content: readFileSync(join(this.reportDir(id), file), 'utf8') }; } catch { throw new Error('REPORT_NOT_CREATED_YET'); }
   }
   // Vietnamese lines for Lao segments, written by the Claude session that follows the meeting (no other translator exists here).

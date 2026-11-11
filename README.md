@@ -25,3 +25,8 @@ Trợ lý họp chạy trên máy của owner. **Claude trong phiên làm việc
 Cần Node 24.14+, Python venv `.venv` và model trong `.local/models` (`config/asr-profile.example.json`). Chạy test: `npm test` và `.venv/Scripts/python.exe -m unittest discover -s tests -p "test_*.py"`.
 
 Dự án độc lập với AIOS. Chỉ Claude là AI; âm thanh và ASR là mã nguồn mở chạy trên máy.
+
+
+## Isolated receipt pilot (not released)
+
+Review `docs/PILOT_RECEIPTS.md` for the opt-in `follow --receipts` protocol, commit examples, correction replay, health and explicit acceptance gaps. Legacy plain follow remains the old transport cursor path. This snapshot does not start capture or change the two owner-selected session roles.

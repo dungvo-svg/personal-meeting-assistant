@@ -3,6 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { call } from './client.js';
 import { foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
+import { followProcessing } from './follow_processing.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
   pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
@@ -22,9 +23,12 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    Bản ghi âm (WAV) là hộp đen của cả buổi: ghi từ lúc có nguồn loa tới pma stop, giữ trên máy này (không gửi đi) cho tới
                                    khi bạn tự xoá bằng pma audio purge. Micro "Tôi" luôn ghi (tiếng loa lọt vào micro bị bỏ); không muốn thì pma select --no-mic
   pma follow [--batch 15] [--max 40] [--after N] [--as TÊN] [--no-notes]   in text mới theo lô (mỗi đoạn một dòng), dùng với Monitor; tự thoát ở phút 29 và in BẬT LẠI; phiên --as khác chinh gửi lô ngay khi có dòng lo/th
+                                    --receipts: pilot xử lý có receipt/replay, chỉ role chinh/dich; không dùng --after. Không mặc định bật cho caller cũ.
                                    --as: tên người theo dõi (mặc định chinh; hai phiên cùng theo dõi thì mỗi phiên một tên, vd. dich), mỗi tên giữ con trỏ đọc riêng
                                    --no-notes: bỏ nhắc ghi chú cuốn chiếu (phiên dịch không ghi chú); cảnh báo trễ và dòng micro vẫn giữ
   pma translate --source ID --text "tiếng Việt" | --file t.json   lưu bản dịch Claude cho đoạn tiếng Lào ([{"sourceId","text"}])
+  pma processing [--as chinh|dich] [--session ID]  xem pending/progress/RAW projection; commit --file f.json để lưu trọn batch nguyên tử
+  pma attribution --file a.json [--confirmed-by-owner]  sidecar có nguồn; không suy speaker/assignee từ tên được gọi
   pma status | pause | stop        trạng thái / tạm dừng CHỈ phần nhận dạng chữ (bộ ghi âm vẫn ghi; pma listen lại thì đuổi kịp) /
                                    kết thúc: dừng ghi, bộ nghe đọc nốt, ghép meeting-mix.wav, rồi mới ghi RAW.md (có thể mất vài phút)
   pma recheck <#id> | --from HH:MM:SS --to HH:MM:SS [--channel speaker|mic] [--beam 8] [--session ID]
@@ -34,8 +38,10 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    chỉ xoá khi bạn gõ lệnh này: --older-than N xoá phiên cũ hơn N ngày (0 = tất cả; phiên đang họp luôn được giữ)
   pma read [--after N] [--limit 100] [--session ID]
   pma note --text T --sources 1,2 [--kind observation]
-  pma summary --file SUMMARY.md --sources 1,2,3 [--session ID]
+  pma summary --file SUMMARY.md [--sources 1,2,3] [--refs-file refs.json] [--session ID]
   pma tasks --file tasks.json [--session ID]       [{"task","owner?","due?","sourceIds":[..]}]
+  pma citations [--sources 1,2] [--file refs.json] [--session ID]  typed evidence snapshots with hashes/times; sourceId or recheckId
+  pma reports [--kind summary|tasks] [--rebuild] [--session ID]  immutable report/evidence history
   pma raw [--session ID] | history | context
   pma glossary [list | add <Tên đúng> --variants "nghe sai 1,nghe sai 2" [--force] | remove <Tên đúng>]
   pma replay <file> [--speed 1] [--title T] [--agenda TEXT] [--languages vi,lo,th]
@@ -80,8 +86,9 @@ function agenda(flags: Record<string, string>) { return flags['agenda-file'] ? r
 function languagesOf(flags: Record<string, string>) { return flags.languages ? flags.languages.split(',').map(v => v.trim()) : undefined; }
 
 async function follow(flags: Record<string, string>) {
+  if (flags.receipts==='true') return followProcessing(flags,call,console.log,items=>lines(items).flatMap(wrapLine));
   // 15 s by default: the 60 s batches of 29–30/10 made Claude's answers lag the meeting by a minute or more.
-  const batchMs = Number(flags.batch || 15) * 1000; const maxLines = Number(flags.max || 40);
+  const batchMs = Number(flags.batch || 15) * 1000; const maxLines = Math.max(1,Math.min(40,Number(flags.max || 40)));
   let status = await call('status');
   if (!status.session || status.session.ended) { out({ error: 'NO_ACTIVE_SESSION' }); process.exitCode = 1; return; }
   const name = flags.as ?? 'chinh';
@@ -123,7 +130,7 @@ async function follow(flags: Record<string, string>) {
     let reply: any;
     // With a batch pending, wait no longer than what is left of its window.
     const waitMs = batch.length ? Math.max(200, batchMs - (Date.now() - batchStarted)) : 20000;
-    try { reply = await call('next', { after, waitMs: Math.min(20000, waitMs), limit: 100, follower: true, as: name }, 40000); failures = 0; }
+    try { reply = await call('next', { after, waitMs: Math.min(20000, waitMs), limit: Math.max(1,maxLines-batch.length), follower: true, as: name }, 40000); failures = 0; }
     catch (error) { if (++failures >= 5) { flush(); console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return; } await new Promise(r => setTimeout(r, 3000)); continue; }
     // A state change is reported before the text that arrived with it.
     if (reply.captureState !== state) {
@@ -190,6 +197,14 @@ async function main() {
       return out({ captureState: status.captureState, lastError: status.lastError, recorder: status.recorder, device: status.armedDevice?.name, mic: status.captureInfo?.micDevice ?? undefined, micWhy: status.captureInfo?.micDevice ? micWhy(status.captureInfo.micSelectedBy) : status.captureInfo?.micError, modelLoadSeconds: status.captureInfo?.modelLoadSeconds, audio: status.audio ? { dir: status.audio.dir, note: 'Bản ghi âm cả buổi nằm trên máy này (WAV ~0,8 GB/giờ), giữ cho tới khi bạn tự xoá bằng pma audio purge; meeting-mix.wav được ghép khi pma stop' } : 'chưa có file âm thanh: bộ ghi âm chưa chạy (cần pma select <index> trước)', next: status.captureState === 'LISTENING' ? 'Monitor "pma follow"' : 'kiểm tra nguồn' });
     }
     case 'follow': return follow(flags);
+    case 'processing': {
+      if (positional[0]==='commit') return out(await call('processingCommit',JSON.parse(readFileSync(flags.file,'utf8'))));
+      return out(await call('processingStatus',{...session,role:flags.as ?? 'chinh'}));
+    }
+    case 'attribution': {
+      const input=JSON.parse(readFileSync(flags.file,'utf8'));
+      return out(await call('attribution',{...session,...input,ownerConfirmation:flags['confirmed-by-owner']==='true'}));
+    }
     case 'translate': {
       const items = flags.file ? JSON.parse(readFileSync(flags.file, 'utf8')) : [{ sourceId: Number(flags.source), text: flags.text }];
       return out(await call('translate', { ...session, items }));
@@ -230,7 +245,9 @@ async function main() {
       return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}`);
     }
     case 'note': return out(await call('note', { ...session, key: flags.key || 'note-' + Date.now(), revision: Number(flags.revision || 1), kind: flags.kind || 'observation', text: flags.text, sourceIds: list(flags.sources) }));
-    case 'summary': return out(await call('summary', { ...session, markdown: readFileSync(flags.file, 'utf8'), sourceIds: list(flags.sources) }));
+    case 'summary': return out(await call('summary', { ...session, markdown: readFileSync(flags.file, 'utf8'), sourceIds: list(flags.sources), sourceRefs: flags['refs-file'] ? JSON.parse(readFileSync(flags['refs-file'], 'utf8')) : undefined }));
+    case 'citations': return out(await call('reportSources', { ...session, sourceIds: list(flags.sources), sourceRefs: flags.file ? JSON.parse(readFileSync(flags.file, 'utf8')) : undefined }));
+    case 'reports': return out(await call(flags.rebuild ? 'reportRebuild' : 'reportHistory', { ...session, kind: flags.kind }));
     case 'tasks': return out(await call('tasks', { ...session, tasks: JSON.parse(readFileSync(flags.file, 'utf8')) }));
     case 'raw': return out(await call('raw', session));
     case 'history': return out(await call('history'));

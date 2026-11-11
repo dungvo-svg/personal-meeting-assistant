@@ -2,7 +2,7 @@
   "schema": "personal-meeting-assistant-project@2",
   "name": "personal-meeting-assistant",
   "created_on": "2026-10-26",
-  "status": "PER_MEETING_RECORDER_LISTENER_VI_LO_TH_IMPLEMENTED_AWAITING_NEXT_REAL_MEETING",
+  "status": "ISOLATED_RECEIPT_PILOT_NOT_RELEASED_AWAITING_REAL_MEETING",
   "product_kind": "CLAUDE_USES_LOCAL_MEETING_TOOLS_FOR_OWNER",
   "workflow_owner": "USER_SELECTED_AI_AGENT",
   "audience": "SINGLE_USER_PERSONAL_ASSISTANT",
@@ -63,7 +63,10 @@
       "meeting-mix.wav"
     ],
     "primary_host": "claude_code_in_claude_desktop",
-    "acceptance": "NEXT_REAL_MEETING"
+    "acceptance": "NEXT_REAL_MEETING",
+    "receipt_path": "OPT_IN_FOLLOW_RECEIPTS",
+    "receipt_guide": "docs/PILOT_RECEIPTS.md",
+    "typed_report_provenance": "IMPLEMENTED_OFFLINE_VERIFIED_NOT_LIVE_ACCEPTED"
   },
   "runtime_runbook": ".claude/skills/hop/SKILL.md",
   "v1_meeting_mode": "USER_SENDS_ZOOM_OR_MEET_LINK_USER_CONFIRMS_JOIN",
@@ -71,7 +74,7 @@
   "text_history": "AUTO_SAVE_LOCAL",
   "audio_retention": "KEEP_UNTIL_USER_DELETES",
   "documentation_baseline": {
-    "version": "0.11.0",
+    "version": "0.11.1-pilot.2",
     "entry": "docs/PRODUCT_BASELINE.md",
     "decisions": "docs/DECISION_LOG.md",
     "lock_file": "baseline.lock.json",

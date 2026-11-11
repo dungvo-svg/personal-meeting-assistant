@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.1-pilot.2 - 31/10/2026 - isolated closegap2, not released
+
+Adds backward-compatible typed sourceRefs to SUMMARY/TASKS runtime, CLI and MCP. Same-meeting hash/time/capture validation, actual padded recheck windows, immutable report/evidence history, idempotent retry, durable per-file pending/completed/hash and committed-content rebuild. Numeric sourceIds remain numeric. Offline fixtures cover range-only/mixed/correction/history/projection failure; actual two-role Claude sessions and Monitor rehearsal remain blocked because role sessions do not yet exist. No new session/model/security override, audio inference, production host or deployment in this phase.
+
+## 0.11.1-pilot.1 - 31/10/2026 - isolated, not released
+
+User-authorized narrow Monday readiness pilot, based on a771aeb. Adds opt-in semantic receipts, immutable batch manifests and leased delivery attempts, atomic SQLite artifact/receipt/cursor commits, replay and source/range corrections, capped followers, health annotations, anchored picture CAS and attribution provenance. Recorder, ASR models, two-session roles, owner start/stop and WAV retention stay unchanged. RAW is a derived post-commit projection; final SUMMARY/TASKS range-only citations remain a limitation. No production run, live Monitor acceptance, merge or deployment. See docs/PILOT_RECEIPTS.md and external pilot test receipts.
+
 ## 0.11.0 —31/10/2026
 
 Audit thiết kế 31/10 (owner: "có vẻ bạn đang làm sai thiết kế").

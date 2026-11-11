@@ -9,11 +9,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { MeetingRuntime } from './runtime.js';
+import { reportSourcesShape, reportTaskSchema } from './report_provenance.js';
 import { composeBrief } from './brief.js';
 import { applyParticipants } from './participants.js';
 import { setMicState } from './mic.js';
 
-export const VERSION = '0.11.0';
+export const VERSION = '0.11.1-pilot.2';
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
 const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH'];
 for (let i = 2; i < process.argv.length - 1; i++) {
@@ -43,6 +44,13 @@ const languages = z.array(z.enum(['vi', 'lo', 'th'])).min(1).max(3).default(['vi
 const methods: Record<string, (input: any) => any> = {
   ping: () => ({ ok: true, version: VERSION, pid: process.pid, testMode: runtime.testMode }),
   status: () => runtime.compact(),
+  processingClaim: input => { const a=z.object({sessionId:sid.optional(),role:z.enum(['chinh','dich']),ownerId:z.string().min(1).max(150),processorRevision:z.string().min(1).max(120).optional(),generation:z.number().int().min(0).max(1000000).optional(),reason:z.string().min(1).max(500).optional()}).parse(input); return runtime.processing.claim(current(a.sessionId),a); },
+  processingDelivered: input => runtime.processing.delivered(z.object({attemptId:z.string().uuid()}).parse(input).attemptId),
+  processingStatus: input => { const a=z.object({sessionId:sid.optional(),role:z.enum(['chinh','dich'])}).parse(input); return runtime.processing.status(current(a.sessionId),a.role); },
+  processingPeek: input => { const a=z.object({sessionId:sid.optional(),role:z.enum(['chinh','dich'])}).parse(input); return runtime.processingPeek(current(a.sessionId),a.role); },
+  processingRelease: input => { const a=z.object({sessionId:sid.optional(),role:z.enum(['chinh','dich']),ownerId:z.string().min(1).max(150),epoch:z.number().int().positive(),processorRevision:z.string().min(1).max(120).optional(),generation:z.number().int().min(0).optional()}).parse(input); return runtime.processing.release(current(a.sessionId),a.role,a.ownerId,a.epoch,a.processorRevision,a.generation); },
+  processingCommit: input => runtime.processingCommit(input),
+  attribution: input => { const a=z.object({sessionId:sid.optional(),sourceId:z.number().int().positive(),expectedRevision:z.number().int().min(0),value:z.record(z.string(),z.unknown()),ownerConfirmation:z.boolean().default(false)}).parse(input); return runtime.processing.attribution(current(a.sessionId),a.sourceId,a.value,a.expectedRevision,a.ownerConfirmation); },
   prepare: input => { const a = z.object({ title: z.string().max(300).optional(), agenda: z.string().max(20000).optional(), languages, fixture: z.boolean().optional(), me: z.string().max(80).optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/).optional(), warm: z.boolean().optional() }).parse(input); runtime.prepare(a.title, a.fixture, a.agenda, a.languages, { me: a.me, at: a.at, warm: a.warm }); return { ...runtime.compact(), me: runtime.profile.me ?? null, expectedLoadSeconds: runtime.profile.lastModelLoadSeconds ?? null, rememberedSpeaker: runtime.profile.speaker?.name ?? null }; },
   open: input => runtime.openMeeting(z.object({ url: z.string().min(10).max(2000) }).parse(input).url),
   schedule: input => { const a = z.object({ sessionId: sid.optional(), at: z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/) }).parse(input); return runtime.setSchedule(current(a.sessionId), a.at); },
@@ -64,8 +72,11 @@ const methods: Record<string, (input: any) => any> = {
   coverage: input => { const a = z.object({ sessionId: sid.optional() }).parse(input); return runtime.coverage(sid.parse(a.sessionId ?? runtime.session?.id ?? runtime.latestSessionId())); },
   finish: input => runtime.finish(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
   raw: input => runtime.writeRaw(current(z.object({ sessionId: sid.optional() }).parse(input).sessionId)),
-  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), sourceIds: ids.min(1).max(200) }).parse(input); return runtime.saveSummary(current(a.sessionId), a.markdown, a.sourceIds); },
-  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(z.object({ task: z.string().min(1).max(2000), owner: z.string().max(200).optional(), due: z.string().max(200).optional(), sourceIds: ids.min(1).max(50) })).max(200) }).parse(input); return runtime.saveTasks(current(a.sessionId), a.tasks); },
+  summary: input => { const a = z.object({ sessionId: sid.optional(), markdown: z.string().min(1).max(40000), ...reportSourcesShape }).parse(input); return runtime.saveSummary(current(a.sessionId), a.markdown, a.sourceIds, a.sourceRefs); },
+  tasks: input => { const a = z.object({ sessionId: sid.optional(), tasks: z.array(reportTaskSchema).max(200) }).parse(input); return runtime.saveTasks(current(a.sessionId), a.tasks); },
+  reportSources: input => { const a=z.object({sessionId:sid.optional(),...reportSourcesShape}).parse(input);return runtime.reportSources(current(a.sessionId),a.sourceIds,a.sourceRefs); },
+  reportRebuild: input => {const a=z.object({sessionId:sid.optional(),kind:z.enum(['summary','tasks'])}).parse(input);return runtime.rebuildReport(current(a.sessionId),a.kind);},
+  reportHistory: input => {const a=z.object({sessionId:sid.optional(),kind:z.enum(['summary','tasks']).optional()}).parse(input);return runtime.reportHistory(current(a.sessionId),a.kind);},
   history: () => runtime.historyList(),
   glossary: input => {
     const a = z.object({ action: z.enum(['list', 'add', 'remove']).default('list'), name: z.string().max(80).optional(), variants: z.array(z.string().max(80)).max(20).default([]), force: z.boolean().default(false) }).parse(input);

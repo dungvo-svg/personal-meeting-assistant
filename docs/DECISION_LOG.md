@@ -117,3 +117,13 @@ Từ 0.11, điểm mở và nghiệm thu theo [PRODUCT_BASELINE.md](PRODUCT_BASE
 | OPEN-06 | Cách cài/package và đúng surface của Claude Desktop trên máy người dùng | FP-01; không đồng nhất plugin với desktop extension | Chặn tuyên bố cài được |
 
 Thay thế định hướng cũ: kiến trúc “app tự điều phối provider dịch” và cách dùng “ô hỏi trợ lý ngay trong V1” không còn là baseline. Lịch sử commit khởi tạo vẫn giữ nguyên để truy xuất.
+
+
+## ENG-PILOT-20261031 - engineering change, not a new owner lock
+
+Authority: owner explicitly requested narrow refactor for Monday in an isolated worktree, short authorized audio test, independent audit, no merge/deploy or live capture. Adopt opt-in receipt processing while preserving v0.11 product locks. Source/range corrections replay both roles; candidates never imply speaker identity or task ownership. Snapshot version 0.11.1-pilot.1 is review evidence only, not release or real-meeting acceptance. Full acceptance and remaining range-only SUMMARY/TASKS provenance are explicit in PILOT_RECEIPTS.md.
+
+
+## ENG-CLOSEGAP2-20261031 - additive typed report provenance
+
+Owner-authorized closure of range-only SUMMARY/TASKS citations in the existing isolated pilot. Keep legacy numeric sourceIds and additive typed sourceRefs; commit immutable report/evidence snapshots atomically in SQLite, project files with explicit pending/completed/hash, and allow rebuild from committed history without reinterpretation. Actual padded recheck windows differ from original source windows and are both retained. This closes an engineering provenance gap only; no new owner lock or live meeting acceptance. The two product Claude roles have not been instantiated/verified, so scripted logical roles do not constitute real Claude/Monitor rehearsal.
