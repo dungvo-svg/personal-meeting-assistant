@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.6 — 21/11/2026 (bảng phần cứng: cài đúng theo máy, không cho chạy khi không đủ)
+
+Owner 21/11: khi triển khai, người cài là Claude trên máy của từng người, nên bảng phần cứng phải nằm trong công cụ.
+
+- **`pma hardware [--json] [--languages …]`** (`tools/hardware.py`, chỉ đọc: nvidia-smi, RAM, đĩa, Windows, mô hình đã cài): bậc `day-du` (NVIDIA CUDA ≥ 6 GB VRAM, RAM ≥ 16 GB: tiếng Việt + Lào), `tieng-viet` (VRAM 4–6 GB hoặc RAM 8–16 GB: không tiếng Lào), `khong-du` (không NVIDIA CUDA / VRAM < 4 GB / RAM < 8 GB / đĩa < 10 GB / không phải Windows). Đã thử: RTX 3050 6 GB, i5-12400F, 16 GB.
+- **`pma start` từ chối** (`HARDWARE_NOT_ENOUGH`, trước khi có host hay phiên) khi máy `khong-du`, hoặc họp có tiếng Lào mà máy là `tieng-viet` hay chưa cài mô hình Lào; kèm cách sửa (`--languages vi`, `sh tools/setup_lao_gpu.sh`).
+- **`pma doctor`** có dòng `phần cứng` (bậc, máy, lý do); `khong-du` là THIẾU; JSON có `hardware`.
+- **`docs/CAI-DAT.md`**: các bước cài cho Claude của người dùng theo bậc máy; `CLAUDE.md` trỏ tới.
+
 ## 0.12.5 — 21/11/2026 (nghe lại: bỏ câu ảo từng câu, chọn bản tự tin hơn)
 
 Nghe lại buổi 21/11 bằng mô hình Lào mới dựng: đoạn 09:26:30–09:27:15 có lời Lào thật, BuzzASR đọc đúng ("ລາຄາຖືກ… ເພິ່ນເລືອກສອງແບບນີ້ເວລາປະເມີນ", điểm −0,32), nhưng chữ chính vẫn là bản tiếng Việt có đuôi bịa "Hãy subscribe cho kênh Ghiền Mì Gõ…", và cả bản tiếng Việt cưỡng bức bị bỏ hẳn chỉ vì đuôi đó.

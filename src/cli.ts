@@ -20,7 +20,9 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --base N: bản đã đọc (lần đầu 0), BẮT BUỘC cho picture/summary/tasks; có bản mới hơn thì báo xung đột;
                                    --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
-  pma doctor [--json]               máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
+  pma hardware [--json] [--languages vi,lo]   bảng phần cứng + bậc của máy này (day-du / tieng-viet / khong-du), ngôn ngữ họp dùng được;
+                                   pma start từ chối khi máy không đủ hoặc họp có tiếng Lào mà máy không chạy được mô hình Lào
+  pma doctor [--json]             máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
   pma screen start|stop|status     canh cửa sổ Zoom (chỉ đọc, chạy trên máy): ai chia sẻ màn hình và lúc nào, ai Zoom đánh dấu đang nói
                                    (tên vào dòng chữ: [Tên]), ảnh màn hình chia sẻ khi nội dung đổi; lưu cạnh WAV trong screen/
   pma screen name "<tên máy đọc>" "<tên đúng>"   sửa tên OCR đọc sai/mất dấu cho cuộc họp này (các biến thể gần giống cũng theo)
@@ -98,6 +100,15 @@ function guide(part?: string) {
   else if (part) throw new Error('pma guide [dich]');
   text = text.replaceAll('{{PMA}}', `"${ROOT}/pma"`).replaceAll('{{PMA_CMD}}', `"${ROOT}/pma.cmd"`).replaceAll('{{ROOT}}', ROOT);
   return `<!-- pma ${version} · ${ROOT} -->\n${text}`;
+}
+const venvPython = () => { const venv = `${ROOT}/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`; return existsSync(venv) ? venv : process.env.PMA_PYTHON || 'python'; };
+// tools/hardware.py's verdict for a meeting in these languages. PMA_HARDWARE_JSON gives a verdict (tests); a test-mode client
+// (PMA_TEST_MODE=1) skips the check; no Python or no answer is 'unknown', which `start` refuses.
+function hardwareVerdict(languages: string[]): any | null {
+  if (process.env.PMA_HARDWARE_JSON) return JSON.parse(process.env.PMA_HARDWARE_JSON);
+  if (process.env.PMA_TEST_MODE === '1') return null;
+  const r = spawnSync(venvPython(), ['-I', `${ROOT}/tools/hardware.py`, '--json', '--languages', languages.join(',')], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  try { return JSON.parse(r.stdout); } catch { return { tier: 'unknown', error: r.error?.message || (r.stderr ?? '').trim().slice(-300) || 'tools/hardware.py không trả lời' }; }
 }
 // `--file -` reads the text from stdin (0.12.1): the agent hands drafts (picture, translations, summary, tasks, participants) straight to
 // the host through a pipe, so it writes no draft file of its own anywhere; the host stores them as before.
@@ -303,6 +314,18 @@ async function main() {
     case 'start': {
       // The participants file is read first: a bad file stops here, before any session exists.
       const listed = flags.participants ? JSON.parse(input(flags.participants)) : undefined;
+      // The machine must serve the meeting (owner 21/11, tools/hardware.py): not enough hardware, or Lao wanted where the Lao model
+      // cannot run or is not installed, refuses here, before any session or recording exists.
+      const hw = hardwareVerdict(languagesOf(flags) ?? ['vi', 'lo', 'th']);
+      if (hw && (hw.tier === 'khong-du' || hw.tier === 'unknown' || hw.meeting?.ok === false)) {
+        const lao = (hw.meeting?.refused ?? []).includes('lo');
+        const hint = hw.tier === 'unknown' ? 'pma doctor để xem thiếu gì'
+          : hw.tier === 'khong-du' ? 'máy không đủ cho họp trực tiếp (xem bảng: pma hardware); dùng máy khác'
+          : lao && hw.tier === 'day-du' ? 'máy đủ nhưng chưa cài mô hình Lào: sh tools/setup_lao_gpu.sh; họp không có tiếng Lào thì thêm --languages vi,th'
+          : 'máy chỉ đủ tiếng Việt: họp không có tiếng Lào thì thêm --languages vi (lời Lào sẽ ra chữ Thái phiên âm, không đáng tin)';
+        out({ error: 'HARDWARE_NOT_ENOUGH', tier: hw.tier, label: hw.label, reasons: hw.reasons ?? [hw.error], refusedLanguages: hw.meeting?.refused ?? [], hint });
+        process.exitCode = 1; return;
+      }
       const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}) });
       // Right after the session exists; a list the runtime refuses is reported, the session stays open.
       const people = listed ? await attach('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
@@ -318,10 +341,15 @@ async function main() {
     }
     // The meeting procedure belongs to the tool and its version; the hop skill of any project only points here (owner 10/11).
     case 'guide': return process.stdout.write(guide(positional[0]));
+    // The hardware table and this machine's tier (tools/hardware.py, read only): what to install, which languages a meeting may use.
+    case 'hardware': {
+      const done = spawnSync(venvPython(), ['-I', `${ROOT}/tools/hardware.py`, ...(flags.json ? ['--json'] : []), ...(flags.languages ? ['--languages', flags.languages] : [])], { stdio: 'inherit' });
+      if (done.error) { console.log(`THIẾU python: không chạy được (${done.error.message}) → tạo .venv theo README`); process.exitCode = 1; return; }
+      process.exitCode = done.status ?? 1; return;
+    }
     // What this machine has for the meeting tool (tools/doctor.py, read-only): the same list on every machine.
     case 'doctor': {
-      const venv = `${ROOT}/.venv/${process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'}`;
-      const python = existsSync(venv) ? venv : process.env.PMA_PYTHON || 'python';
+      const python = venvPython();
       const done = spawnSync(python, ['-I', `${ROOT}/tools/doctor.py`, '--project', process.cwd(), ...(flags.json ? ['--json'] : [])], { stdio: 'inherit' });
       if (done.error) { console.log(`THIẾU python: không chạy được ${python} (${done.error.message}) → tạo .venv theo README`); process.exitCode = 1; return; }
       process.exitCode = done.status ?? 1; return;

@@ -82,6 +82,18 @@ for role in ('main', 'vi', 'lo'):
         check(f'mô hình {role}', there, detail, fix, required=role == 'main')
 lao_missing = any(c['name'] == 'mô hình lo' and not c['ok'] for c in checks)
 
+# The hardware tier (tools/hardware.py, owner 21/11): the installer — the person's own Claude — installs the models of that tier,
+# and `pma start` refuses what the machine cannot serve.
+sys.path.insert(0, str(root / 'tools'))
+import hardware  # noqa: E402
+tier = hardware.assess()
+m = tier['measured']
+machine = f"{', '.join(g['name'] + ' ' + str(g['vramMiB']) + ' MiB' for g in m['gpus']) or 'không có NVIDIA'}, RAM {m['ramGiB'] or 0:.1f} GB"
+check('phần cứng', tier['tier'] != 'khong-du', f"{tier['tier']} — {tier['label']} ({machine})" + (f": {'; '.join(tier['reasons'])}" if tier['reasons'] else ''),
+      'không dùng máy này cho họp trực tiếp; bảng yêu cầu: pma hardware')
+if tier['tier'] == 'tieng-viet':
+    lao_missing = True  # the card cannot hold the Lao model: Lao meetings are refused whatever is installed
+
 # Sound sources (listed, never opened for capture)
 if venv.is_file():
     code, out, err = run([str(venv), str(root / 'tools/audio_worker.py'), '--list'], timeout=30)
@@ -130,10 +142,10 @@ check('Stop hook', hook, project.as_posix(), f'thêm Stop hook "node {(root / "t
 
 failed = [c for c in checks if c['required'] and not c['ok']]
 if args.json:
-    print(json.dumps({'ready': not failed, 'laoReady': not lao_missing, 'checks': checks, 'meaning': 'Files, packages, devices listed and configuration only; nothing was recorded, transcribed or started.'}, ensure_ascii=False, indent=2))
+    print(json.dumps({'ready': not failed, 'laoReady': not lao_missing, 'hardware': {k: tier[k] for k in ('tier', 'label', 'allowedLanguages', 'reasons')}, 'checks': checks, 'meaning': 'Files, packages, devices listed and configuration only; nothing was recorded, transcribed or started.'}, ensure_ascii=False, indent=2))
 else:
     for c in checks:
         mark = 'OK  ' if c['ok'] else ('THIẾU' if c['required'] else 'chú ý')
         print(f"{mark} {c['name']}: {c['detail']}" + (f"  → {c['fix']}" if c.get('fix') else ''))
-    print(('SẴN SÀNG' + (' cho tiếng Việt; CHƯA cho tiếng Lào (thiếu mô hình Lào)' if lao_missing else '')) if not failed else f"CHƯA SẴN SÀNG: thiếu {', '.join(c['name'] for c in failed)}")
+    print(('SẴN SÀNG' + ((' cho tiếng Việt; máy CHỈ đủ tiếng Việt (bậc tieng-viet)' if tier['tier'] == 'tieng-viet' else ' cho tiếng Việt; CHƯA cho tiếng Lào (thiếu mô hình Lào)') if lao_missing else '')) if not failed else f"CHƯA SẴN SÀNG: thiếu {', '.join(c['name'] for c in failed)}")
 sys.exit(1 if failed else 0)
