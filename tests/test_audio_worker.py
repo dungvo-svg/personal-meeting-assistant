@@ -1297,6 +1297,23 @@ class RecheckTests(unittest.TestCase):
         self.assertEqual(result['text'], 'xin chào vi/lo/th')
         self.assertEqual(set(result), {'text', 'language', 'alternatives', 'silent', 'seconds'})
 
+    def test_an_invented_tail_is_dropped_and_a_clearly_more_confident_reading_becomes_the_text(self):
+        # 21/11: the pick was Vietnamese ending in "Hãy subscribe cho kênh…", while BuzzASR read the real Lao at -0.32.
+        from unittest import mock
+        self.session.segment(1, 'speaker', 0.0, [(5, 0.2)])
+        self.session.end(5.0)
+        seg = lambda text, logprob: type('Segment', (), {'text': text, 'avg_logprob': logprob, 'tokens': [1, 2, 3]})()
+
+        def transcribe(model, waveform16, langs, lao_model=None, vi_model=None, pick=None, beam=None):
+            if langs[0] == 'lo' and len(langs) == 1:
+                return [seg('ລາຄາຖືກ ແຕ່ວ່າຄຸນນະພາບພໍໃຊ້', -0.3)], 'lo', None
+            return [seg('Chào tô khoảng 2 tốp', -0.6), seg('Hãy subscribe cho kênh Ghiền Mì Gõ', -0.6)], 'vi', None
+        with mock.patch.object(self.worker, 'transcribe_chunk', transcribe):
+            result = self.worker.recheck_window(object(), None, None, self.tmp.name, self.session.iso(0.0), self.session.iso(4.0), 'speaker', ('vi', 'lo'), 8)
+        vi = next(a for a in result['alternatives'] if a['language'] == 'vi')
+        self.assertEqual(vi['text'], 'Chào tô khoảng 2 tốp')
+        self.assertEqual((result['language'], result['text'], result.get('pickedBy')), ('lo', 'ລາຄາຖືກ ແຕ່ວ່າຄຸນນະພາບພໍໃຊ້', 'score'))
+
     def test_a_window_with_no_sound_is_silent_and_costs_no_transcription(self):
         self.session.segment(1, 'speaker', 0.0, [(2, 0), (3, 0.2)])
         self.session.end(5.0)

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.5 — 21/11/2026 (nghe lại: bỏ câu ảo từng câu, chọn bản tự tin hơn)
+
+Nghe lại buổi 21/11 bằng mô hình Lào mới dựng: đoạn 09:26:30–09:27:15 có lời Lào thật, BuzzASR đọc đúng ("ລາຄາຖືກ… ເພິ່ນເລືອກສອງແບບນີ້ເວລາປະເມີນ", điểm −0,32), nhưng chữ chính vẫn là bản tiếng Việt có đuôi bịa "Hãy subscribe cho kênh Ghiền Mì Gõ…", và cả bản tiếng Việt cưỡng bức bị bỏ hẳn chỉ vì đuôi đó.
+
+- `recheck`: câu bịa của Whisper (`SILENCE_PHRASES`, câu chào trống, `no_speech_prob` cao) bị bỏ từng câu, phần còn lại của bản đọc được giữ.
+- `recheck`: bản cưỡng bức theo một ngôn ngữ tự tin hơn bản máy chọn ít nhất 0,1 (log-prob trung bình) thì thành chữ chính, kèm `pickedBy: "score"`.
+- Mô hình đã dựng lại trên máy (không thuộc git): `whisper-large-v3-turbo-ct2` (chính), `buzzasr-lao-ct2` (Lào); FLEURS Lào: CER 20% khi chọn đúng Lào, 49% tính cả các khúc bị chọn sang Thái.
+
 ## 0.12.4 — 21/11/2026 (tiếng Lào khi thiếu mô hình Lào: nói rõ, không im lặng)
 
 Họp thầu BV chung 21/11 có người nói tiếng Lào; máy chỉ có large-v3 (mô hình Lào mất 11/11 chưa dựng lại). 57/594 dòng ra chữ Thái, kể cả nhánh `lo`; chị Oanh báo đó là phiên âm chữ Thái, nghĩa sai (khớp ENG-13: CER 100%). Không chỗ nào cảnh báo ngoài một dòng "chú ý" của doctor.

@@ -272,6 +272,9 @@ def tai_is_decisive(primary, lo_score, th_score, seconds):
     return th_score >= LANG_TAI_TH_DECISIVE_SCORE and lo_score - th_score < LANG_TAI_TH_DECISIVE_DIFF
 
 
+RECHECK_PICK_MARGIN = 0.1  # mean log-probability by which a forced reading must beat the detector's language to replace it
+
+
 def segment_range(segment, chunk_seconds):
     """`; SEG_RANGE a-b`: where this sentence lies inside its chunk, in seconds from the chunk start, from Whisper's own segment
     timestamps (not word timestamps). start/end of a source stay the chunk's range, so the host and the database are unchanged;
@@ -1071,8 +1074,15 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
     if result['silent']:
         return result
 
-    def text_of(segments):
-        return collapse_repeats(' '.join(segment.text.strip() for segment in segments if segment.text.strip()))
+    def text_of(segments, code):
+        # Sentence by sentence: a stock phrase Whisper invents on quiet audio ("Hãy subscribe cho kênh…", "สวัสดีครับทุกคน") is
+        # dropped where it stands, the rest of the reading is kept (21/11: a whole Vietnamese reading was lost to one such tail).
+        def invented(segment):
+            text = segment.text.strip()
+            whole = re.sub(r'[^\w\s]', '', text.lower()).strip()
+            return any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or getattr(segment, 'no_speech_prob', 0.0) > 0.6
+        kept = [segment.text.strip() for segment in segments if segment.text.strip() and not invented(segment)]
+        return collapse_repeats(' '.join(kept))
 
     for code in languages:
         try:
@@ -1081,17 +1091,22 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
         except Exception:
             continue  # a language this build cannot decode (th before it is wired in) is left out, not fatal
         score = segments_score(segments)
-        text = text_of(segments)
-        if any(phrase in text.lower() for phrase in SILENCE_PHRASES):
-            continue  # a decode forced into the wrong language invents a stock phrase ("subscribe…"); it is not a reading
+        text = text_of(segments, code)
+        if not text:
+            continue  # nothing but invented phrases in that language: not a reading
         result['alternatives'].append({'language': code, 'text': text, 'score': round(score, 3) if score > float('-inf') else None})
+    best = max(result['alternatives'], key=lambda item: item['score'] if item['score'] is not None else float('-inf'), default=None)
     try:
         segments, language, _ = transcribe_chunk(model, waveform, list(languages), lao_model, vi_model, beam=beam)
-        result.update(text=text_of(list(segments)), language=language)
+        result.update(text=text_of(list(segments), language), language=language)
     except Exception:
-        best = max(result['alternatives'], key=lambda item: item['score'] if item['score'] is not None else float('-inf'), default=None)
         if best:
             result.update(text=best['text'], language=best['language'])
+    # The detector's pick loses to a forced reading that is clearly more confident (21/11: real Lao read by BuzzASR at -0.32 while
+    # the pick was Vietnamese with an invented tail): that reading becomes the text, and says why.
+    same = next((a for a in result['alternatives'] if a['language'] == result['language']), None)
+    if best and best['language'] != result['language'] and best['score'] is not None and (same is None or same['score'] is None or best['score'] - same['score'] >= RECHECK_PICK_MARGIN):
+        result.update(text=best['text'], language=best['language'], pickedBy='score')
     return result
 
 
