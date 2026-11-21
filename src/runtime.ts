@@ -18,7 +18,8 @@ import { CoworkLedger, seatStatus, type HandledKind } from './cowork.js';
 import { applyCorrections, bindingKey, bindRole, buildPack, CONTEXT_TABLES_SQL, readiness, type Bindings, type ContextPack } from './context_pack.js';
 
 // ownerBasis (0.12.1): how the owner of a task is known: said in the meeting, confirmed by the user afterwards, or only inferred.
-export type TaskItem = { task: string; owner?: string; due?: string; ownerBasis?: 'stated' | 'confirmed' | 'inferred'; sourceIds: number[] };
+// certainty (0.12.3): 'tentative' tasks (agreed for now, "nếu được", awaiting approval) are shown "(tạm)".
+export type TaskItem = { task: string; owner?: string; due?: string; ownerBasis?: 'stated' | 'confirmed' | 'inferred'; certainty?: 'firm' | 'tentative'; sourceIds: number[] };
 const BASIS_NOTE: Record<string, string> = { confirmed: ' (người dùng xác nhận)', inferred: ' (suy luận, cần xác nhận)' };
 export type Opener = (url: string) => void;
 // Runs tools/mix_audio.py (python, [script, audio dir]) hidden, with no stdio, and resolves when it has exited. A caller that
@@ -1474,7 +1475,7 @@ export class MeetingRuntime extends EventEmitter {
       const task = String(t.task || '').trim(); if (!task || task.length > 2000) throw new Error('INVALID_TASK: ' + (i + 1));
       const ids = this.checkSources(id, t.sourceIds || []); all.push(...ids);
       const owner = t.owner?.trim() ? t.owner.trim() + (BASIS_NOTE[t.ownerBasis ?? ''] ?? '') : 'Chưa nêu trong họp';
-      return `| ${i + 1} | ${cell(task)} | ${cell(owner)} | ${cell(t.due?.trim() || 'Chưa nêu trong họp')} | #${ids.join(', #')} |`;
+      return `| ${i + 1} | ${t.certainty === 'tentative' ? '(tạm) ' : ''}${cell(task)} | ${cell(owner)} | ${cell(t.due?.trim() || 'Chưa nêu trong họp')} | #${ids.join(', #')} |`;
     });
     // "Việc của tôi" first when the user's name is known (audit 30/10: the user had to pick their own tasks by hand).
     const me = session.context?.me?.toLowerCase();

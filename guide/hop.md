@@ -164,8 +164,17 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
    2. Ai chủ trì, ai được giao việc nào (nếu bạn không chắc)?
    3. Tài liệu được nhắc là của ai lập, ai chỉ chuyển?
 5. Viết báo cáo:
-   - SUMMARY, dựng từ bức tranh cuối cùng (`{{PMA}} picture`) và RAW đã nghe lại: tổng quan, diễn tiến, ý chính, điều đã thống nhất, câu hỏi mở, đối chiếu với context trước họp, các chỗ `[chưa nghe rõ]`. Lưu bằng `{{PMA}} summary --file - --sources <id,…> <<'MD'` … `MD`.
-   - Việc: `[{"task","owner","due","ownerBasis","sourceIds"}]`. `ownerBasis`: `stated` (nói rõ trong họp), `confirmed` (người dùng xác nhận sau họp) hoặc `inferred` (bạn suy ra, chưa ai xác nhận). Hạn chỉ ghi khi được nói rõ. Lưu bằng `{{PMA}} tasks --file - <<'JSON'` … `JSON`. Việc có người phụ trách `inferred` hiện kèm "(suy luận, cần xác nhận)" và không vào "Việc của tôi".
+   - SUMMARY, dựng từ bức tranh cuối cùng (`{{PMA}} picture`), RAW đã nghe lại và ảnh màn hình chia sẻ. Theo thứ tự (owner 21/11, lấy chỗ mạnh của ghi chú họp Claude 18/11, giữ `#id` mà ghi chú đó không có):
+     1. **Tóm tắt**: một đoạn 5–8 câu: họp về những gì, kết luận chính, ai làm gì tiếp.
+     2. **Quyết định**: mỗi dòng một quyết định, mở đầu bằng mức của nó: `Chốt:` (đã quyết), `Tạm:` (làm trước rồi xem lại, "tạm thời", "nếu được"), `Đồng ý nguyên tắc:` (đồng ý hướng, chưa có cách làm); kèm `#id`. Không nâng "tạm" thành "chốt".
+     3. **Câu hỏi mở**: điều được hỏi mà chưa có câu trả lời; ý được đưa ra mà chưa ai quyết thì mở đầu `Đề xuất:`.
+     4. **Sự kiện & số liệu**: gom theo chủ đề; mỗi dòng MỘT sự kiện đọc riêng vẫn hiểu (ai/cái gì, con số, trạng thái, nguyên nhân), giữ nguyên con số và tên hệ thống như đã nói hoặc chiếu, kèm `#id` hoặc ảnh. Đừng bỏ số vì nhỏ: sau họp người ta hỏi lại chính những số đó. Đây là phần dài nhất của báo cáo.
+     5. **Màn hình chia sẻ** (`{{PMA}} screen status --session <id>`, ảnh trong `screen/frames/`; mở ảnh để đọc): ai chia sẻ, lúc nào, tài liệu/bảng gì, ý chính đọc được; ý đã dùng ở mục 4 thì dẫn ảnh ở đó.
+     6. **Diễn tiến** (các chủ đề theo thứ tự, một dòng mỗi chủ đề), **đối chiếu với context trước họp**, **chưa làm xong**, các chỗ `[chưa nghe rõ]`.
+
+     Tên không chắc thì ghi ngay tại chỗ: `Pui (tên chưa chắc, có thể Vui)`. Người nói lấy từ `[Tên]` (viền Zoom) là tài khoản có micro đang có tiếng, không phải bằng chứng chắc chắn. Giá vốn, công nợ, lương, danh sách khách hàng chỉ ở trong báo cáo trên máy.
+     Lưu bằng `{{PMA}} summary --file - --sources <id,…> <<'MD'` … `MD`.
+   - Việc: `[{"task","owner","due","ownerBasis","certainty","sourceIds"}]`. Mỗi việc mở đầu bằng động từ, đủ cụ thể để làm mà không cần hỏi lại. `ownerBasis`: `stated` (nói rõ trong họp), `confirmed` (người dùng xác nhận sau họp) hoặc `inferred` (bạn suy ra, chưa ai xác nhận). `certainty`: `tentative` cho việc tạm / "nếu được" / chờ duyệt (hiện "(tạm)"), bỏ trống khi đã chốt. Việc được nêu mà chưa rõ ai làm vẫn ghi, để trống `owner` (hiện "Chưa nêu trong họp"); đừng bỏ việc. Hạn chỉ ghi khi được nói rõ. Lưu bằng `{{PMA}} tasks --file - <<'JSON'` … `JSON`. Việc có người phụ trách `inferred` hiện kèm "(suy luận, cần xác nhận)" và không vào "Việc của tôi".
 6. Trả lời người dùng:
    - đường dẫn RAW.md, SUMMARY.md, TASKS.md và `meeting-mix.wav`;
    - tóm tắt ngắn;

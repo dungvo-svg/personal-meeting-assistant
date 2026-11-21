@@ -320,3 +320,20 @@ test('a task owner says how it is known: an inferred owner is marked and never c
     const mine = table.split('## Tất cả việc')[0]; assert.ok(mine.includes('Gửi mẫu') && !mine.includes('Gửi báo giá'), 'an inferred owner is not promoted to my task');
   } finally { await r.close(); rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
 });
+
+test('0.12.3: a tentative task shows "(tạm)", a task with no owner stays listed; the drafts schema takes certainty and refuses other values', async () => {
+  const { mkdtempSync: mk, rmSync: rm, readFileSync: rd } = await import('node:fs'); const { tmpdir: tmp } = await import('node:os'); const { join: jn, resolve: rs } = await import('node:path');
+  const { MeetingRuntime } = await import('../dist/runtime.js'); const { validateDraft } = await import('../dist/drafts.js');
+  const dir = mk(jn(tmp(), 'pma-tentative-')); const r = new MeetingRuntime(rs('.'), dir, true);
+  try {
+    r.prepare('Họp', true); const id = r.session.id; const s1 = r.ingest('nếu được thì đề xuất sếp tái cấu trúc', 'synthetic_fixture');
+    const saved = r.saveTasks(id, [{ task: 'Đề xuất sếp tái cấu trúc quy trình theo AI', owner: 'Dũng', ownerBasis: 'stated', certainty: 'tentative', sourceIds: [s1] }, { task: 'Hướng dẫn Sơn dùng Claude', sourceIds: [s1] }]);
+    const table = rd(saved.path, 'utf8');
+    assert.match(table, /\| 1 \| \(tạm\) Đề xuất sếp tái cấu trúc quy trình theo AI \| Dũng \|/);
+    assert.match(table, /\| 2 \| Hướng dẫn Sơn dùng Claude \| Chưa nêu trong họp \|/);
+    const good = validateDraft('tasks', { tasks: [{ task: 'x', sourceIds: [1], certainty: 'tentative' }] });
+    assert.equal(good.ok, true); assert.equal(good.content.tasks[0].certainty, 'tentative');
+    const bad = validateDraft('tasks', { tasks: [{ task: 'x', sourceIds: [1], certainty: 'maybe' }] });
+    assert.equal(bad.ok, false); assert.match(JSON.stringify(bad), /BAD_VALUE/);
+  } finally { await r.close(); rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
+});

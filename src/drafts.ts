@@ -62,7 +62,9 @@ export type ParticipantItem = { name: string; role?: string; languages?: string[
 export type ParticipantsContent = { participants: ParticipantItem[] };
 export type SummaryContent = { markdown: string; sourceIds: number[] };
 export type TaskBasis = 'stated' | 'confirmed' | 'inferred';
-export type TaskItem = { task: string; owner?: string; due?: string; ownerBasis?: TaskBasis; sourceIds: number[] };
+// certainty (0.12.3): 'tentative' = agreed only for now / "nếu được" / not yet approved (the Claude meeting notes of 18/11 mark these).
+export type TaskCertainty = 'firm' | 'tentative';
+export type TaskItem = { task: string; owner?: string; due?: string; ownerBasis?: TaskBasis; certainty?: TaskCertainty; sourceIds: number[] };
 export type TasksContent = { tasks: TaskItem[] };
 export type DraftContent = PictureContent | TranslationsContent | ParticipantsContent | SummaryContent | TasksContent;
 
@@ -165,13 +167,14 @@ function validateTasks(value: unknown): TasksContent {
   const o = obj(value, 'content', ['tasks']);
   const seen = new Set<string>();
   const tasks = arr(o.tasks, 'content.tasks', 0, DRAFT_LIMITS.tasks).map((raw, i) => {
-    const p = 'content.tasks[' + i + ']'; const item = obj(raw, p, ['task', 'sourceIds'], ['owner', 'due', 'ownerBasis']);
+    const p = 'content.tasks[' + i + ']'; const item = obj(raw, p, ['task', 'sourceIds'], ['owner', 'due', 'ownerBasis', 'certainty']);
     const task = str(item.task, p + '.task', 1, DRAFT_LIMITS.taskChars);
     if (seen.has(lower(task))) throw new Invalid('DUPLICATE_ENTRY', p + '.task'); seen.add(lower(task));
     const out: TaskItem = { task, sourceIds: sourceIds(item.sourceIds, p + '.sourceIds', DRAFT_LIMITS.taskSources) };
     const owner = optStr(item.owner, p + '.owner', DRAFT_LIMITS.ownerChars); if (owner) out.owner = owner;
     const due = optStr(item.due, p + '.due', DRAFT_LIMITS.dueChars); if (due) out.due = due;
     if (item.ownerBasis !== undefined) out.ownerBasis = oneOf<TaskBasis>(item.ownerBasis, p + '.ownerBasis', TASK_BASES);
+    if (item.certainty !== undefined) out.certainty = oneOf<TaskCertainty>(item.certainty, p + '.certainty', ['firm', 'tentative'] as const);
     return out;
   });
   return { tasks };

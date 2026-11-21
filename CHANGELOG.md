@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.12.3 — 21/11/2026 (báo cáo sau họp theo chỗ mạnh của ghi chú họp Claude 18/11)
+
+Owner 21/11 so ghi chú họp Claude trong Meet (18/11) với SUMMARY/TASKS của pma. Ghi chú đó mạnh hơn ở: mức của quyết định, đề xuất tách khỏi câu hỏi, một danh sách dài sự kiện và số liệu tự hiểu được, nội dung màn hình chia sẻ, việc "tạm" và việc chưa rõ người làm vẫn được ghi. pma giữ chỗ mạnh của mình: mỗi ý dẫn `#id` về đoạn transcript và WAV, nghe lại, độ phủ.
+
+- **SUMMARY** (`pma guide`, mục 6): Tóm tắt một đoạn; Quyết định có mức `Chốt:` / `Tạm:` / `Đồng ý nguyên tắc:`; Câu hỏi mở với `Đề xuất:` cho ý chưa quyết; **Sự kiện & số liệu** (mỗi dòng một sự kiện, giữ nguyên số, kèm `#id`/ảnh); **Màn hình chia sẻ** từ `pma screen`; tên không chắc ghi tại chỗ "(tên chưa chắc, có thể …)".
+- **TASKS**: trường mới `certainty: "tentative"` hiện "(tạm)" trước việc; việc chưa rõ người làm vẫn ghi ("Chưa nêu trong họp"); việc mở đầu bằng động từ.
+
 ## 0.12.2 — 21/11/2026 (canh màn hình Zoom: ai nói, ai chia sẻ; dựng và thử ngay trong họp thầu BV chung)
 
 Owner 21/11: dùng cuộc họp thật làm nơi dựng và kiểm. Mọi thứ dưới đây chạy trong buổi "Họp thầu BV chung 21/11" với host 0.12.1 đang chạy (chỉ CLI đổi, host không khởi động lại).
