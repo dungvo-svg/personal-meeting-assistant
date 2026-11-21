@@ -20,7 +20,9 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --base N: bản đã đọc (lần đầu 0), BẮT BUỘC cho picture/summary/tasks; có bản mới hơn thì báo xung đột;
                                    --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
-  pma hardware [--json] [--languages vi,lo]   bảng phần cứng + bậc của máy này (day-du / tieng-viet / khong-du), ngôn ngữ họp dùng được;
+  pma transcribe <file…> [--out f.md] [--languages vi,lo,th]   file ghi âm (WhatsApp .opus/.ogg, .m4a, .mp3, .wav) thành chữ, chạy trên máy;
+                                   không mở cuộc họp; câu bịa bị bỏ và đếm; mặc định ghi <file>-chu.md cạnh file đầu
+  pma hardware [--json] [--languages vi,lo] bảng phần cứng + bậc của máy này (day-du / tieng-viet / khong-du), ngôn ngữ họp dùng được;
                                    pma start từ chối khi máy không đủ hoặc họp có tiếng Lào mà máy không chạy được mô hình Lào
   pma doctor [--json]             máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
   pma screen start|stop|status     canh cửa sổ Zoom (chỉ đọc, chạy trên máy): ai chia sẻ màn hình và lúc nào, ai Zoom đánh dấu đang nói
@@ -341,6 +343,16 @@ async function main() {
     }
     // The meeting procedure belongs to the tool and its version; the hop skill of any project only points here (owner 10/11).
     case 'guide': return process.stdout.write(guide(positional[0]));
+    // Recordings to text on this machine (tools/transcribe_recording.py): WhatsApp voice notes, app recordings, meeting files.
+    // Not a meeting: no host, no session. Owner 21/11 (for Lê Hoàng Duy). Default output: <first file>-chu.md next to it.
+    case 'transcribe': {
+      if (!positional.length) throw new Error('pma transcribe <file…> [--out f.md] [--title T] [--languages vi,lo,th]');
+      const outFile = flags.out || positional[0].replace(/\.[^./\\]+$/, '') + '-chu.md';
+      const done = spawnSync(venvPython(), ['-I', `${ROOT}/tools/transcribe_recording.py`, ...positional, '--out', outFile, '--title', flags.title || positional.map(f => f.split(/[\\/]/).pop()).join(', '), ...(flags.languages ? ['--languages', flags.languages] : [])], { stdio: 'inherit' });
+      if (done.error) { console.log(`THIẾU python: ${done.error.message} → pma doctor`); process.exitCode = 1; return; }
+      if (done.status === 0) console.log(`CHỮ: ${outFile}  (chưa xác minh; lời Lào/Thái do Claude dịch khi đọc file này)`);
+      process.exitCode = done.status ?? 1; return;
+    }
     // The hardware table and this machine's tier (tools/hardware.py, read only): what to install, which languages a meeting may use.
     case 'hardware': {
       const done = spawnSync(venvPython(), ['-I', `${ROOT}/tools/hardware.py`, ...(flags.json ? ['--json'] : []), ...(flags.languages ? ['--languages', flags.languages] : [])], { stdio: 'inherit' });

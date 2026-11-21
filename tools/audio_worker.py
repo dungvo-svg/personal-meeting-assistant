@@ -142,6 +142,17 @@ MIC_STATE_GRACE_SECONDS = 1.5
 GROWTH_LIMIT_SECONDS = MAX_CHUNK_SECONDS + 10
 LANG_UNSURE_BELOW = 0.65
 LAO_LOW_LOGPROB = -1.0
+# BuzzASR was trained on Lao news: on a short or quiet chunk it invents a news sentence ("ທ່ານກ່າວວ່າ…" he said that…,
+# "…ໄດ້ຮັບຜົນກະທົບ…" was affected, elections, ministers). 21/11: 34 such lines in a meeting where nobody spoke Lao, all at
+# mean log-prob -0.6 to -0.9, while real Lao read by the same model scored -0.32. A Lao segment holding one of these openers
+# and scoring below LAO_STOCK_LOGPROB_BELOW is treated as invented.
+LAO_STOCK_PHRASES = ('ທ່ານກ່າວວ່າ', 'ທ່ານກ່າວຕື່ມວ່າ', 'ທ່ານໄດ້ກ່າວ', 'ທ່ານກ່າວອ້າງ', 'ຂ້າພະເຈົ້າໄດ້ຮັບ', 'ໄດ້ຮັບຜົນກະທົບ', 'ການເລືອກຕັ້ງ', 'ລັດຖະມົນຕີ',
+                     'ບັນດາເຈົ້າໜ້າທີ່ກ່າວວ່າ', 'ມັນເປັນສິ່ງທີ່ສຸດ', 'ມັນເປັນສິ່ງທີ່ຈະເຮັດໃຫ້ທ່ານ', 'ຂ້າພະເຈົ້າໄດ້ຍິນ', 'ວິດີໂອ')
+LAO_STOCK_LOGPROB_BELOW = -0.55
+
+
+def lao_stock_phrase(text, segment):
+    return any(phrase in text for phrase in LAO_STOCK_PHRASES) and getattr(segment, 'avg_logprob', 0.0) < LAO_STOCK_LOGPROB_BELOW
 # Mixed sessions: when the detector does not hear Vietnamese (probability below LANG_VI_SURE) the chunk is decoded by both
 # the main and the Lao model and the more confident transcript wins. Measured on FLEURS cut to 1.5-3 s, the detector alone
 # calls ~22% of Lao clips Vietnamese (the main model then invents "Hãy subscribe cho kênh..."); its Vietnamese side is
@@ -183,7 +194,8 @@ def segment_flags(text, segment, language, language_probability=None):
         flags.append('LAO_WRITTEN_IN_THAI_SCRIPT')
     whole = re.sub(r'[^\w\s]', '', text.lower()).strip()
     doubtful = segment.no_speech_prob > THANKS_NO_SPEECH_ABOVE or getattr(segment, 'avg_logprob', 0.0) < THANKS_LOGPROB_BELOW
-    if any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or (whole in SILENCE_THANKS and doubtful) or segment.no_speech_prob > 0.6:
+    if any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or (whole in SILENCE_THANKS and doubtful) or segment.no_speech_prob > 0.6 \
+            or (language == 'lo' and lao_stock_phrase(text, segment)):
         flags.append('LIKELY_HALLUCINATION')
     if segment.compression_ratio > 2.4 or any(pattern.search(text) for _, pattern in REPEAT_PATTERNS):
         flags.append('REPETITION')
@@ -350,7 +362,8 @@ def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None
             chosen = tai
         if pair and chosen == tai:
             other = 'lo' if tai == 'th' else 'th'
-            if not tai_is_decisive(tai, segments_score(cache['lo']), segments_score(cache['th']), seconds):
+            invented = other == 'lo' and any(lao_stock_phrase(getattr(s, 'text', '') or '', s) for s in cache['lo'])
+            if not invented and not tai_is_decisive(tai, segments_score(cache['lo']), segments_score(cache['th']), seconds):
                 alternatives = [{'language': other, 'text': collapse_repeats(segments_text(cache[other])), 'score': round(segments_score(cache[other]), 3)}]
     else:
         chosen = 'vi'
@@ -1080,7 +1093,8 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
         def invented(segment):
             text = segment.text.strip()
             whole = re.sub(r'[^\w\s]', '', text.lower()).strip()
-            return any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or getattr(segment, 'no_speech_prob', 0.0) > 0.6
+            return any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or getattr(segment, 'no_speech_prob', 0.0) > 0.6 \
+                or (code == 'lo' and lao_stock_phrase(text, segment))
         kept = [segment.text.strip() for segment in segments if segment.text.strip() and not invented(segment)]
         return collapse_repeats(' '.join(kept))
 

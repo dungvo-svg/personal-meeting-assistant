@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.8 — 21/11/2026 (chuyển file ghi âm thành chữ; chặn câu Lào bịa)
+
+Họp định kỳ 21/11 (anh Quân chủ trì): giao tìm công cụ chuyển ghi âm WhatsApp / app của Lê Hoàng Duy thành chữ; cùng buổi, 34 dòng chữ Lào là câu bịa của mô hình Lào trên mẩu ngắn trong khi không ai nói tiếng Lào.
+
+- **`pma transcribe <file…> [--out f.md] [--languages vi,lo,th]`** (`tools/transcribe_recording.py`): file ghi âm (.opus/.ogg WhatsApp, .m4a, .mp3, .wav, .mp4) thành chữ trên máy, không mở cuộc họp. Câu bịa bị bỏ và đếm; đoạn Lào/Thái không chắc in kèm bản đọc khác (`↳ lo`); mặc định vi,lo,th (trước đây lỗi khi máy chọn tiếng Thái). Thử 21/11: tiếng Lào thật có bản Lào đúng nghĩa dưới dòng chữ Thái phiên âm; mẩu ngắn 4 giây ra đúng tiếng Việt.
+- **Câu tin tức tiếng Lào bị coi là bịa** (`LAO_STOCK_PHRASES`, log-prob < −0,55): "ທ່ານກ່າວວ່າ…", "…ໄດ້ຮັບຜົນກະທົບ…", bầu cử, bộ trưởng… — trong họp trực tiếp, nghe lại và chuyển file; phương án phụ `↳ lo` như vậy không còn in ra. Lời Lào thật (−0,32 ngày 21/11) không bị chạm.
+- `docs/GHI-AM-THANH-CHU.md`: tài liệu cho anh Duy (làm được gì, kết quả thử, cách dùng, câu hỏi cần trả lời).
+
 ## 0.12.7 — 21/11/2026 (host báo đúng phiên bản; doctor --project)
 
 - Host đọc phiên bản từ `package.json`: trước đây viết cứng `0.12.1`, host 0.12.5 vẫn báo 0.12.1 nên không phân biệt được host cũ/mới (`pma status`, `daemon.json`, `pma doctor`).
