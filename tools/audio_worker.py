@@ -272,6 +272,20 @@ def tai_is_decisive(primary, lo_score, th_score, seconds):
     return th_score >= LANG_TAI_TH_DECISIVE_SCORE and lo_score - th_score < LANG_TAI_TH_DECISIVE_DIFF
 
 
+def segment_range(segment, chunk_seconds):
+    """`; SEG_RANGE a-b`: where this sentence lies inside its chunk, in seconds from the chunk start, from Whisper's own segment
+    timestamps (not word timestamps). start/end of a source stay the chunk's range, so the host and the database are unchanged;
+    readers that want the sentence's time (speaker names from the screen watcher, 21/11) read this flag. Nothing when the
+    segment has no usable times."""
+    try:
+        a, b = float(segment.start), float(segment.end)
+    except (AttributeError, TypeError, ValueError):
+        return ''
+    top = max(0.0, float(chunk_seconds))
+    a, b = min(max(a, 0.0), top), min(max(b, 0.0), top)
+    return f'; SEG_RANGE {a:.2f}-{b:.2f}' if b > a else ''
+
+
 def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None, pick=None, beam=None):
     """Returns (segments, language, language_probability). `segments` is a ChunkSegments when the routing decoded more than
     one reading: `chunk_alternatives(segments)` gives [{language, text, score}] for the other Tai reading (th <-> lo), and the
@@ -988,6 +1002,7 @@ def capture(args):
                                     # The audio going on is not proof the mic reader is: it must have been seen alive through the chunk too.
                                     if horizon is not None and horizon >= until and share_ok(states, begin_wall, until):
                                         marks += '; MIC_SHARE_OK'
+                            marks += segment_range(segment, end - begin)
                             emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place, **({'alternatives': others} if others else {})})
                             others = None
                 except Exception as exc:

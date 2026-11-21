@@ -8,7 +8,7 @@ import { pieces, RECHECK_PIECE_SECONDS } from './ranges.js';
 import { randomBytes } from 'node:crypto';
 import { attach, call, inspect, reach } from './client.js';
 import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
-import { screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
+import { loadNames, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
   pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
@@ -23,6 +23,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma doctor [--json]               máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
   pma screen start|stop|status     canh cửa sổ Zoom (chỉ đọc, chạy trên máy): ai chia sẻ màn hình và lúc nào, ai Zoom đánh dấu đang nói
                                    (tên vào dòng chữ: [Tên]), ảnh màn hình chia sẻ khi nội dung đổi; lưu cạnh WAV trong screen/
+  pma screen name "<tên máy đọc>" "<tên đúng>"   sửa tên OCR đọc sai/mất dấu cho cuộc họp này (các biến thể gần giống cũng theo)
   pma guide [dich]               quy trình họp của bản pma đang cài (kỹ năng hop chỉ trỏ tới đây); dich: phần cho agent dịch nền
   pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
   pma me --on | --off | --auto     micro "Tôi" đang bật/tắt khi máy không tự đọc được (ghi vào timeline, by:manual); --auto trả lại cho máy đọc
@@ -131,7 +132,7 @@ function line(item: any) {
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
 // A group keeps the mic label (foldRuns never joins different ones): `#3–#5 Tôi (mic bật) lặp ×3: …`.
-const lines = (items: any[]) => (SPEAKERS = speakersOf(items, screenEvents(AUDIO_DIR), item => !!micLabel(item.boundary)), foldRuns(items)).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id}${micLabel(g.first.boundary) ? ' ' + micLabel(g.first.boundary) : ''} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
+const lines = (items: any[]) => (SPEAKERS = speakersOf(items, screenEvents(AUDIO_DIR), item => !!micLabel(item.boundary), loadNames(AUDIO_DIR)), foldRuns(items)).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id}${micLabel(g.first.boundary) ? ' ' + micLabel(g.first.boundary) : ''} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
 
 function agenda(flags: Record<string, string>) { return flags['agenda-file'] ? readFileSync(flags['agenda-file'], 'utf8') : flags.agenda; }
 function languagesOf(flags: Record<string, string>) { return flags.languages ? flags.languages.split(',').map(v => v.trim()) : undefined; }
@@ -403,7 +404,8 @@ async function main() {
       if (action === 'start') return out(startWatcher(ROOT, dir, s.session.id, flags.interval));
       if (action === 'stop') return out(stopWatcher(dir));
       if (action === 'status') return out(screenStatus(dir));
-      throw new Error('pma screen [start|stop|status]');
+      if (action === 'name') return out(saveName(dir, positional[1] ?? '', positional.slice(2).join(' ')));
+      throw new Error('pma screen [start|stop|status|name "<tên máy đọc>" "<tên đúng>"]');
     }
     case 'pause': return out(await call('pause', session));
     case 'audio': {
