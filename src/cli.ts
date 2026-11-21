@@ -8,6 +8,7 @@ import { pieces, RECHECK_PIECE_SECONDS } from './ranges.js';
 import { randomBytes } from 'node:crypto';
 import { attach, call, inspect, reach } from './client.js';
 import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
+import { screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
   pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
@@ -20,7 +21,9 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
   pma doctor [--json]               máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
-  pma guide [dich]                 quy trình họp của bản pma đang cài (kỹ năng hop chỉ trỏ tới đây); dich: phần cho agent dịch nền
+  pma screen start|stop|status     canh cửa sổ Zoom (chỉ đọc, chạy trên máy): ai chia sẻ màn hình và lúc nào, ai Zoom đánh dấu đang nói
+                                   (tên vào dòng chữ: [Tên]), ảnh màn hình chia sẻ khi nội dung đổi; lưu cạnh WAV trong screen/
+  pma guide [dich]               quy trình họp của bản pma đang cài (kỹ năng hop chỉ trỏ tới đây); dich: phần cho agent dịch nền
   pma brief [--session ID]         context trước họp cho phiên Claude mới (≤ 2 KB): tôi là ai, họp gì, người dự, tên dễ nghe sai, một dòng tình trạng; chỉ đọc
   pma me --on | --off | --auto     micro "Tôi" đang bật/tắt khi máy không tự đọc được (ghi vào timeline, by:manual); --auto trả lại cho máy đọc
   pma at HH:MM [--session ID]      sửa giờ họp theo lịch của phiên đang mở (độ phủ tính lại; phiên đã kết thúc thì chạy pma raw lại)
@@ -111,12 +114,16 @@ pma glossary remove <Tên đúng>    xoá tên khỏi bảng
 Bảng chỉ đổi cách hiển thị ("MISA (nghe: mì da)"), không sửa chữ gốc. Biến thể quá ngắn, là từ thông dụng
 (vd. "Ta") hoặc đã thuộc tên khác sẽ bị từ chối; thêm --force nếu chắc chắn.`;
 
+// The meeting's audio folder (its screen/ watcher output gives speaker names) and the names for the lines being printed.
+let AUDIO_DIR: string | undefined;
+let SPEAKERS = new Map<number, string>();
 function line(item: any) {
   if (item.origin === 'system_gap') return `#${item.id} [KHOẢNG TRỐNG] ${item.text}`;
   // Câu ảo khi im lặng chỉ để lại số đoạn, không đưa chữ vào để Claude không đọc nhầm thành nội dung.
   if (isHallucination(item)) return `#${item.id} [bỏ: nghi câu ảo]`;
   const flags = Object.entries(FLAG_LABELS).filter(([code]) => item.boundary?.includes(code)).map(([, label]) => label);
-  const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : '';
+  // Microphone: the owner. Otherwise the tile Zoom outlined as speaking (tools/meeting_screen.ps1), in brackets.
+  const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : SPEAKERS.has(item.id) ? ` [${SPEAKERS.get(item.id)}]` : '';
   // The other Lao/Thai reading of an unsure chunk, for the translation session to read both (owner 31/10).
   const others = (item.alternatives ?? []).map((a: any) => `\n  ↳ ${a.language}: ${a.text}`).join('');
   const translated = item.translation ? `\n  → (Claude dịch) ${item.translation}` : '';
@@ -124,7 +131,7 @@ function line(item: any) {
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
 // A group keeps the mic label (foldRuns never joins different ones): `#3–#5 Tôi (mic bật) lặp ×3: …`.
-const lines = (items: any[]) => foldRuns(items).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id}${micLabel(g.first.boundary) ? ' ' + micLabel(g.first.boundary) : ''} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
+const lines = (items: any[]) => (SPEAKERS = speakersOf(items, screenEvents(AUDIO_DIR), item => !!micLabel(item.boundary)), foldRuns(items)).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id}${micLabel(g.first.boundary) ? ' ' + micLabel(g.first.boundary) : ''} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
 
 function agenda(flags: Record<string, string>) { return flags['agenda-file'] ? readFileSync(flags['agenda-file'], 'utf8') : flags.agenda; }
 function languagesOf(flags: Record<string, string>) { return flags.languages ? flags.languages.split(',').map(v => v.trim()) : undefined; }
@@ -143,6 +150,7 @@ async function follow(flags: Record<string, string>) {
   // This process follows this meeting only: every call names it, so once it ends and another one opens, the old follower never
   // reads, claims or acknowledges the new meeting (the host refuses an ID that is not the open session).
   const sessionId: string = status.session.id;
+  AUDIO_DIR = status.audio?.dir;
   const name = flags.as ?? 'chinh';
   if (!/^[a-z0-9-]{1,24}$/.test(name)) { out({ error: 'INVALID_FOLLOWER_NAME', hint: '--as chỉ gồm a-z, 0-9, dấu gạch ngang, tối đa 24 ký tự' }); process.exitCode = 1; return; }
   // One lease per process: it is what keeps two followers of the same role from printing the same lines twice.
@@ -199,8 +207,21 @@ async function follow(flags: Record<string, string>) {
   };
   // Sau mỗi lô: báo khi chữ ra chậm hơn lời nói, và nhắc ghi chú cuốn chiếu mỗi 10 phút nghe.
   let lastReminder = 0; let lastCheck = 0; let micDevice: string | undefined; let micChanged: string | undefined; let micError: string | undefined; let recorderError: string | undefined;
+  // What the meeting window showed since the last check (share on/off, frames): the synthesis session only. Starts at the end of
+  // what is already there, so a restarted follow does not replay the morning.
+  let screenSeen = name === MAIN ? screenEvents(AUDIO_DIR).length : 0;
+  const checkScreen = () => {
+    if (name !== MAIN || !AUDIO_DIR) return;
+    const events = screenEvents(AUDIO_DIR);
+    for (const event of events.slice(screenSeen)) {
+      const text = screenLine(event, AUDIO_DIR);
+      if (text) console.log(text);
+    }
+    screenSeen = events.length;
+  };
   const checkHealth = async () => {
     lastCheck = Date.now();
+    checkScreen();
     const s = await call('status').catch(() => null); if (!s) return;
     if (s.recorder?.error && s.recorder.error !== recorderError) { recorderError = s.recorder.error; console.log(`GHI ÂM ${s.recorder.state}: ${s.recorder.error}`); }
     // The context changed (participants or agenda added): bind again by itself, and say so once.
@@ -373,6 +394,17 @@ async function main() {
       return out(await attach('translate', { ...session, items, ...(flags.key ? { idempotencyKey: flags.key } : {}) }));
     }
     case 'status': return out(await inspect());
+    case 'screen': {
+      // The screen watcher of the open meeting (Zoom window, read only): who shares, who Zoom outlines as speaking, frames.
+      const action = positional[0] || 'status';
+      const s = await call('status');
+      const dir: string | undefined = s.audio?.dir;
+      if (!s.session || s.session.ended || !dir) { out({ error: 'NO_ACTIVE_SESSION', hint: 'pma screen chạy cho cuộc họp đang mở' }); process.exitCode = 1; return; }
+      if (action === 'start') return out(startWatcher(ROOT, dir, s.session.id, flags.interval));
+      if (action === 'stop') return out(stopWatcher(dir));
+      if (action === 'status') return out(screenStatus(dir));
+      throw new Error('pma screen [start|stop|status]');
+    }
     case 'pause': return out(await call('pause', session));
     case 'audio': {
       const action = positional[0] || 'list';
@@ -410,6 +442,10 @@ async function main() {
       return console.log(r.total > r.items.length ? `CÒN ${r.total - r.items.length} mục nữa (xem --json)` : r.total ? 'HẾT DANH SÁCH' : 'KHÔNG CÓ CHỖ NÀO CẦN NGHE LẠI');
     }
     case 'read': {
+      // Speaker names come from the screen watcher's file in that meeting's audio folder (data dir/audio/<session id>/screen).
+      const st = await call('status').catch(() => null);
+      const dir: string | undefined = st?.audio?.dir;
+      AUDIO_DIR = dir && flags.session && st?.session?.id !== flags.session ? dir.replace(/[^\\/]+$/, flags.session) : dir;
       const r = await call('read', { ...session, after: Number(flags.after || 0), limit: Number(flags.limit || 100), ...(flags.as ? { as: flags.as } : {}) });
       if (flags.json) return out(r);
       for (const text of lines(r.items)) console.log(text);

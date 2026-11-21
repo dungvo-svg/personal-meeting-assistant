@@ -35,6 +35,7 @@ Thiếu thông tin thì để trống, không đoán.
   - Chạy `{{PMA}} sources`, nói với người dùng nguồn `suggested` và lý do.
   - Người dùng đồng ý thì `{{PMA}} select <index>`. Bộ ghi chạy từ lúc này.
 - Nhắc người dùng vào họp và bật âm thanh (Zoom: **Join** + **Join Audio**; Meet: **Tham gia ngay**).
+- **Zoom: bật canh màn hình** ngay khi cửa sổ họp Zoom mở trên máy này: `{{PMA}} screen start` (chỉ đọc cửa sổ Zoom, không bấm gì). Từ đó dòng chữ có `[Tên]` người Zoom đánh dấu đang nói, và `follow` của phiên trung tâm in `MÀN HÌNH …` khi ai bắt đầu/dừng chia sẻ, kèm đường dẫn ảnh màn hình chia sẻ: mở ảnh đó để biết đang trình bày gì, đưa vào bức tranh. Cửa sổ Zoom không được thu nhỏ (bị che thì vẫn chụp được). `{{PMA}} screen status` xem tình trạng; `{{PMA}} screen stop` sau khi kết thúc. Google Meet chưa có.
 - `{{PMA}} brief` in context trước họp + một dòng tình trạng. Đọc nó ngay khi mở phiên, và mỗi khi bạn là phiên mới vào giữa họp.
 
 **Micro "Tôi"** luôn ghi, không phụ thuộc nền tảng.
@@ -202,6 +203,8 @@ Mỗi dòng có dạng `#id HH:MM:SS [Tôi …] ngôn ngữ⚠cờ: nội dung`.
 | `[bỏ: nghi câu ảo]` | Câu Whisper bịa khi im lặng. Bỏ qua. |
 | `lặp` / `#a–#b lặp ×N` | Vòng lặp nhận dạng, đã gộp. Coi như một lần nói. |
 | `Tên (nghe: …)` | Tên đã sửa theo bảng tên / người dự; chữ trong ngoặc là chữ máy nghe được. |
+| `[Tên]` / `[A→B]` | Tài khoản Zoom có viền "đang nói" lúc đó (`pma screen`). Là micro của tài khoản đó có tiếng, không chắc chắn là người đó: nhiều người chung một micro thì chỉ ra một tên; viền có thể trễ khoảng 1 giây. `A→B`: viền đổi giữa câu. Không có ngoặc = không có viền trong 30 giây trước, không đoán. Tên tiếng Việt có thể mất dấu khi máy chưa có gói OCR tiếng Việt. |
+| `MÀN HÌNH hh:mm:ss: …` | Ai bắt đầu/dừng chia sẻ màn hình, và đường dẫn ảnh màn hình chia sẻ khi nội dung đổi. Ảnh là dữ liệu nội bộ, chỉ trên máy. |
 | `Tôi (mic bật)` / `Tôi (mic tắt — nói riêng)` / `Tôi (?)` | Lời nói vào micro của máy này, theo trạng thái mic trong Zoom/Meet. Đây là **kênh** micro, không phải bằng chứng ai đang nói. Chỉ phiên trung tâm thấy `mic tắt` và `?`. |
 | `BỎ QUA #a–#b` | Vai dịch bật lại sau lúc lâu: phần cũ không đưa lại, phiên trung tâm vẫn có đủ. |
 | `GIỚI HẠN: đang phát lại file đã trộn…` | Phát lại một file trộn: vai dịch không nhận chữ, vì không tách được giọng người dùng khỏi loa. |

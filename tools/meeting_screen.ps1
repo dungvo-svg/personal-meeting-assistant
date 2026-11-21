@@ -19,7 +19,8 @@ param(
   [Parameter(Mandatory = $true)][string]$OutDir,
   [double]$Interval = 2,
   [int]$FrameDiff = 12,     # mean absolute grey difference (0-255) that counts as new shared content
-  [int]$MaxMinutes = 0      # 0 = until stopped
+  [int]$MaxMinutes = 0,     # 0 = until stopped
+  [int]$IdleExitMinutes = 15  # no Zoom meeting window this long = the meeting is over: exit
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes, System.Runtime.WindowsRuntime
@@ -80,7 +81,11 @@ public static class MeetingScreen {
 [void][Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
 $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
 function Await($op, [Type]$t) { $task = $asTask.MakeGenericMethod($t).Invoke($null, @($op)); $task.Wait(-1) | Out-Null; $task.Result }
-$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+# Vietnamese names keep their marks only with the Vietnamese OCR pack (Windows Settings > Language > Vietnamese); live 21/11 the
+# en-US engine read "Mr Đức - NNC Hà Nội" as "Mr Dirc - NNC Hå Nöi".
+$vi = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages | Where-Object { $_.LanguageTag -like 'vi*' } | Select-Object -First 1
+$engine = if ($vi) { [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($vi) } else { [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
+$ocrLanguage = if ($vi) { $vi.LanguageTag } else { 'en-US (tên tiếng Việt mất dấu)' }
 $tmp = Join-Path $env:TEMP ("pma-ocr-" + $PID + ".png")
 function Ocr($bmp) {
   if (-not $bmp) { return '' }
@@ -116,13 +121,15 @@ function Emit([hashtable]$e) {
 }
 
 $state = @{ zoom = $null; share = $false; by = $null; speaker = $null; sig = $null; tileX = $null; ocrAt = [datetime]::MinValue; black = 0 }
-$started = Get-Date
-Emit @{ type = 'start'; interval = $Interval; out = $OutDir }
+$started = Get-Date; $lastSeen = Get-Date
+Emit @{ type = 'start'; interval = $Interval; out = $OutDir; ocr = $ocrLanguage }
 while ($MaxMinutes -le 0 -or ((Get-Date) - $started).TotalMinutes -lt $MaxMinutes) {
   try {
     $h = [MeetingScreen]::FindMeeting()
     $zoom = if ($h -eq [IntPtr]::Zero) { 'none' } elseif ([MeetingScreen]::Minimized($h)) { 'minimized' } else { 'visible' }
     if ($zoom -ne $state.zoom) { Emit @{ type = 'zoom'; window = $zoom }; $state.zoom = $zoom }
+    if ($zoom -ne 'none') { $lastSeen = Get-Date }
+    elseif (((Get-Date) - $lastSeen).TotalMinutes -ge $IdleExitMinutes) { Emit @{ type = 'end'; reason = "no Zoom meeting window for $IdleExitMinutes min" }; exit 0 }
     if ($zoom -ne 'visible') {
       if ($zoom -eq 'none' -and $state.share) { Emit @{ type = 'share_stop'; by = $state.by; reason = 'no meeting window' }; $state.share = $false }
       Start-Sleep -Seconds $Interval; continue
