@@ -400,12 +400,24 @@ async function main() {
       const action = positional[0] || 'status';
       const s = await call('status');
       const dir: string | undefined = s.audio?.dir;
-      if (!s.session || s.session.ended || !dir) { out({ error: 'NO_ACTIVE_SESSION', hint: 'pma screen chạy cho cuộc họp đang mở' }); process.exitCode = 1; return; }
-      if (action === 'start') return out(startWatcher(ROOT, dir, s.session.id, flags.interval));
-      if (action === 'stop') return out(stopWatcher(dir));
-      if (action === 'status') return out(screenStatus(dir));
-      if (action === 'name') return out(saveName(dir, positional[1] ?? '', positional.slice(2).join(' ')));
-      throw new Error('pma screen [start|stop|status|name "<tên máy đọc>" "<tên đúng>"]');
+      const open = s.session && !s.session.ended && dir;
+      if (action === 'start') {
+        if (!open) { out({ error: 'NO_ACTIVE_SESSION', hint: 'pma screen start chạy cho cuộc họp đang mở' }); process.exitCode = 1; return; }
+        return out(startWatcher(ROOT, dir, s.session.id, flags.interval));
+      }
+      // After the meeting (live 21/11 the watcher outlived `pma stop`): stop/status/name work on --session or the latest meeting's audio.
+      let target: string | undefined = open && !flags.session ? dir : undefined;
+      if (!target) {
+        const meetings: any[] = await call('audio', { action: 'list' });
+        const pick = flags.session ? meetings.find(m => m.sessionId === flags.session) : [...meetings].sort((a, b) => String(b.savedAt ?? '').localeCompare(String(a.savedAt ?? '')))[0];
+        target = pick?.dir;
+      }
+      if (!target) { out({ error: 'NO_MEETING_AUDIO', hint: 'không thấy thư mục âm thanh của cuộc họp (--session ID)' }); process.exitCode = 1; return; }
+      const dirFor = target;
+      if (action === 'stop') return out(stopWatcher(dirFor));
+      if (action === 'status') return out(screenStatus(dirFor));
+      if (action === 'name') return out(saveName(dirFor, positional[1] ?? '', positional.slice(2).join(' ')));
+      throw new Error('pma screen [start|stop|status|name "<tên máy đọc>" "<tên đúng>"] [--session ID]');
     }
     case 'pause': return out(await call('pause', session));
     case 'audio': {

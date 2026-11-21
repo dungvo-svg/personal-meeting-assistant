@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.2 — 21/11/2026 (canh màn hình Zoom: ai nói, ai chia sẻ; dựng và thử ngay trong họp thầu BV chung)
+
+Owner 21/11: dùng cuộc họp thật làm nơi dựng và kiểm. Mọi thứ dưới đây chạy trong buổi "Họp thầu BV chung 21/11" với host 0.12.1 đang chạy (chỉ CLI đổi, host không khởi động lại).
+
+- **`pma screen start|stop|status|name`** (`tools/meeting_screen.ps1`, chỉ đọc, chạy trên máy): mỗi 2 giây chụp cửa sổ họp Zoom bằng PrintWindow (bị che vẫn chụp được, thu nhỏ thì không), biết đang chia sẻ qua khung `Share Content` trong cây trợ năng, đọc tên người chia sẻ ("<tên>'s screen") và tên ô có viền "đang nói" #00FF91 bằng OCR có sẵn của Windows, lưu ảnh màn hình chia sẻ khi nội dung đổi. Ghi `screen/screen.jsonl` + `screen/frames/` cạnh WAV. Tự thoát sau 15 phút không thấy cửa sổ họp. `stop`/`status`/`name` dùng được sau khi họp đã đóng (`--session` hoặc cuộc họp gần nhất).
+- **`[Tên]` trên dòng chữ** (`read`, `follow`): tài khoản Zoom có viền "đang nói" trong lúc câu đó được nói; `[A→B]` khi viền đổi giữa câu; không viền trong 30 giây thì không ghi tên; dòng micro vẫn là `Tôi`. Tên OCR được làm sạch (biểu tượng micro đọc thành "%"), các biến thể của một người gộp làm một, `pma screen name "<máy đọc>" "<tên đúng>"` sửa dấu (máy chưa có gói OCR tiếng Việt).
+- **`MÀN HÌNH …` trong `follow` vai chinh**: ai bắt đầu/dừng chia sẻ, đường dẫn ảnh màn hình chia sẻ để Claude mở và đưa vào bức tranh.
+- **Giờ từng câu** (`SEG_RANGE a-b` trong boundary): bộ nghe ghi chỗ của câu trong khúc theo giờ đoạn của Whisper; start/end và host không đổi. Câu cũ không có thì ước theo độ dài chữ.
+- Lỗi gặp khi chạy thật, đã sửa: ảnh vùng chia sẻ đôi khi đen (bỏ qua, báo `frame_unreadable`); tiến trình nền khởi bằng Node `detached` chết ngay (dùng `Start-Process`); bộ canh chạy tiếp sau `pma stop`.
+- Chưa có: Google Meet; OCR tiếng Việt cần gói ngôn ngữ của Windows; viền xanh là micro của tài khoản, nhiều người chung micro chỉ ra một tên.
+
 ## 0.12.1 — 10/11/2026 (gộp: audit A1, không tự tắt, quy trình trong công cụ)
 
 Audit 10/11 (owner U31, OWN-033, OWN-034): 5/8 buổi họp 04–10/11 mất nguyên một file thu 10 phút có tiếng mà không ra chữ, không báo gì.
