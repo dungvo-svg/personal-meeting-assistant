@@ -6,7 +6,7 @@
 // through the `manual` RPC (`pma say`).
 import { z } from 'zod';
 import { createServer } from 'node:http';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
@@ -18,7 +18,8 @@ import { setMicState } from './mic.js';
 import { validateDraft, type DraftKind } from './drafts.js';
 import { CAPABILITIES, PROTOCOL } from './protocol.js';
 
-export const VERSION = '0.12.1';
+// From package.json (21/11: a hard-coded '0.12.1' kept saying 0.12.1 on 0.12.5 hosts, so nobody could tell an old host from a new one).
+export const VERSION: string = (() => { try { return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version; } catch { return 'unknown'; } })();
 // Settings arrive as `--env KEY=VALUE` when started through WMI (no inherited environment); allowlisted keys only.
 const ALLOWED_ENV = ['PMA_PORT', 'PMA_DATA_DIR', 'PMA_TEST_MODE', 'PMA_IDLE_MINUTES', 'PMA_PYTHON', 'PMA_EXIT_AFTER_FINISH', 'PMA_LOCK_DIR', 'PMA_MIC'];
 for (let i = 2; i < process.argv.length - 1; i++) {

@@ -350,7 +350,7 @@ async function main() {
     // What this machine has for the meeting tool (tools/doctor.py, read-only): the same list on every machine.
     case 'doctor': {
       const python = venvPython();
-      const done = spawnSync(python, ['-I', `${ROOT}/tools/doctor.py`, '--project', process.cwd(), ...(flags.json ? ['--json'] : [])], { stdio: 'inherit' });
+      const done = spawnSync(python, ['-I', `${ROOT}/tools/doctor.py`, '--project', flags.project || process.cwd(), ...(flags.json ? ['--json'] : [])], { stdio: 'inherit' });
       if (done.error) { console.log(`THIẾU python: không chạy được ${python} (${done.error.message}) → tạo .venv theo README`); process.exitCode = 1; return; }
       process.exitCode = done.status ?? 1; return;
     }

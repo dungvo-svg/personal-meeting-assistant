@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.7 — 21/11/2026 (host báo đúng phiên bản; doctor --project)
+
+- Host đọc phiên bản từ `package.json`: trước đây viết cứng `0.12.1`, host 0.12.5 vẫn báo 0.12.1 nên không phân biệt được host cũ/mới (`pma status`, `daemon.json`, `pma doctor`).
+- `pma doctor --project <thư mục>` kiểm đúng thư mục đó (trước đây luôn kiểm thư mục đang đứng).
+- Thư mục BidOps vẫn còn bản chép kỹ năng hop cũ (PMA 0.11, 04/11): cần thay bằng bản chỉ đường tới `pma guide` thì `/hop` ở đó mới theo quy trình mới.
+
 ## 0.12.6 — 21/11/2026 (bảng phần cứng: cài đúng theo máy, không cho chạy khi không đủ)
 
 Owner 21/11: khi triển khai, người cài là Claude trên máy của từng người, nên bảng phần cứng phải nằm trong công cụ.
