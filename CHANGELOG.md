@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.4 — 21/11/2026 (tiếng Lào khi thiếu mô hình Lào: nói rõ, không im lặng)
+
+Họp thầu BV chung 21/11 có người nói tiếng Lào; máy chỉ có large-v3 (mô hình Lào mất 11/11 chưa dựng lại). 57/594 dòng ra chữ Thái, kể cả nhánh `lo`; chị Oanh báo đó là phiên âm chữ Thái, nghĩa sai (khớp ENG-13: CER 100%). Không chỗ nào cảnh báo ngoài một dòng "chú ý" của doctor.
+
+- Bộ nghe: dòng `lo`/`th` khi không có mô hình Lào mang cờ `LAO_MODEL_MISSING`; `read`/`follow` hiện "thiếu mô hình Lào: chữ Thái phiên âm, nghĩa chưa tin"; RAW ghi "chưa có mô hình Lào: chữ Thái phiên âm, nghĩa chưa đáng tin"; `coverage` đưa các dòng đó vào danh sách cần nghe lại.
+- `follow` in một lần `CẢNH BÁO TIẾNG LÀO …` ở dòng Lào đầu tiên như vậy.
+- `pma doctor`: thiếu mô hình Lào thì dòng cuối là `SẴN SÀNG cho tiếng Việt; CHƯA cho tiếng Lào`, chỉ lệnh `sh tools/setup_lao_gpu.sh`; JSON có `laoReady`.
+- `pma guide`: họp có người nói Lào mà doctor báo chưa sẵn sàng tiếng Lào thì báo người dùng trước họp.
+- Dòng của buổi 21/11 (trước bản này) không có cờ; nghe lại sau khi dựng mô hình Lào.
+
 ## 0.12.3 — 21/11/2026 (báo cáo sau họp theo chỗ mạnh của ghi chú họp Claude 18/11)
 
 Owner 21/11 so ghi chú họp Claude trong Meet (18/11) với SUMMARY/TASKS của pma. Ghi chú đó mạnh hơn ở: mức của quyết định, đề xuất tách khỏi câu hỏi, một danh sách dài sự kiện và số liệu tự hiểu được, nội dung màn hình chia sẻ, việc "tạm" và việc chưa rõ người làm vẫn được ghi. pma giữ chỗ mạnh của mình: mỗi ý dẫn `#id` về đoạn transcript và WAV, nghe lại, độ phủ.

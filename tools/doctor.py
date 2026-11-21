@@ -75,7 +75,12 @@ except (OSError, ValueError):
 for role in ('main', 'vi', 'lo'):
     name = profile.get(role) or {'main': 'small', 'lo': 'buzzasr-lao-ct2'}.get(role)
     if name:
-        check(f'mô hình {role}', (models / name).is_dir(), name, f'tải hoặc chuyển đổi mô hình vào {(models / name).as_posix()} (tools/fetch_model.py, tools/convert_*.py)', required=role == 'main')
+        there = (models / name).is_dir()
+        # 21/11 (owner + Oanh): without the Lao model, spoken Lao comes out as a Thai-script transliteration (ENG-13: CER 100%).
+        detail = name if there or role != 'lo' else f'{name}: KHÔNG CÓ, tiếng Lào sẽ ra chữ Thái phiên âm, nghĩa/số/tên không đáng tin'
+        fix = 'sh tools/setup_lao_gpu.sh (tải ~3 GB, chuyển đổi 30 phút tới vài giờ; chạy ngoài giờ họp)' if role == 'lo' else f'tải hoặc chuyển đổi mô hình vào {(models / name).as_posix()} (tools/fetch_model.py, tools/convert_*.py)'
+        check(f'mô hình {role}', there, detail, fix, required=role == 'main')
+lao_missing = any(c['name'] == 'mô hình lo' and not c['ok'] for c in checks)
 
 # Sound sources (listed, never opened for capture)
 if venv.is_file():
@@ -125,10 +130,10 @@ check('Stop hook', hook, project.as_posix(), f'thêm Stop hook "node {(root / "t
 
 failed = [c for c in checks if c['required'] and not c['ok']]
 if args.json:
-    print(json.dumps({'ready': not failed, 'checks': checks, 'meaning': 'Files, packages, devices listed and configuration only; nothing was recorded, transcribed or started.'}, ensure_ascii=False, indent=2))
+    print(json.dumps({'ready': not failed, 'laoReady': not lao_missing, 'checks': checks, 'meaning': 'Files, packages, devices listed and configuration only; nothing was recorded, transcribed or started.'}, ensure_ascii=False, indent=2))
 else:
     for c in checks:
         mark = 'OK  ' if c['ok'] else ('THIẾU' if c['required'] else 'chú ý')
         print(f"{mark} {c['name']}: {c['detail']}" + (f"  → {c['fix']}" if c.get('fix') else ''))
-    print('SẴN SÀNG' if not failed else f"CHƯA SẴN SÀNG: thiếu {', '.join(c['name'] for c in failed)}")
+    print(('SẴN SÀNG' + (' cho tiếng Việt; CHƯA cho tiếng Lào (thiếu mô hình Lào)' if lao_missing else '')) if not failed else f"CHƯA SẴN SÀNG: thiếu {', '.join(c['name'] for c in failed)}")
 sys.exit(1 if failed else 0)

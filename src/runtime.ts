@@ -1346,8 +1346,8 @@ export class MeetingRuntime extends EventEmitter {
       }
       if (row.origin !== 'local_asr_unverified') continue;
       heard++; if (span) { withWall++; covers.push({ from: span.from - 1500, to: span.to + 1500 }); }
-      const doubts = ['LANG_UNSURE', 'LAO_LOW_CONFIDENCE', 'LAO_WRITTEN_IN_THAI_SCRIPT'].filter(flag => row.boundary.includes(flag));
-      if (span && doubts.length && !isHallucination(row)) add('UNSURE', span, doubts.map(flag => ({ LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'tiếng Lào nhận dạng kém', LAO_WRITTEN_IN_THAI_SCRIPT: 'tiếng Lào ra chữ Thái' } as Record<string, string>)[flag]).join(', '), { sourceId: row.id, rechecked: row.boundary.includes('RECHECKED') });
+      const doubts = ['LAO_MODEL_MISSING', 'LANG_UNSURE', 'LAO_LOW_CONFIDENCE', 'LAO_WRITTEN_IN_THAI_SCRIPT'].filter(flag => row.boundary.includes(flag));
+      if (span && doubts.length && !isHallucination(row)) add('UNSURE', span, doubts.map(flag => ({ LAO_MODEL_MISSING: 'chưa có mô hình Lào (chữ Thái phiên âm)', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'tiếng Lào nhận dạng kém', LAO_WRITTEN_IN_THAI_SCRIPT: 'tiếng Lào ra chữ Thái' } as Record<string, string>)[flag]).join(', '), { sourceId: row.id, rechecked: row.boundary.includes('RECHECKED') });
     }
     for (const event of events) {
       const at = Date.parse(event.t);
@@ -1427,7 +1427,7 @@ export class MeetingRuntime extends EventEmitter {
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
     const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là giờ thật của lời nói theo bản ghi âm (đoạn không có giờ thật thì là lúc text được ghi nhận, trễ vài giây). Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. ' + this.audioNote(id), ''];
     if (rows.some(row => row.translation)) lines.push('> Dòng "→ (Claude dịch)" là bản dịch tiếng Việt do Claude viết cho đoạn tiếng Lào, chưa ai kiểm; chữ Lào ở trên mới là nguồn.', '');
-    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${(mic => mic ? ' · ' + mic : '')(micLabel(row.boundary, session.context?.me))}`;
+    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_MODEL_MISSING') ? ' · chưa có mô hình Lào: chữ Thái phiên âm, nghĩa chưa đáng tin' : row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${(mic => mic ? ' · ' + mic : '')(micLabel(row.boundary, session.context?.me))}`;
     // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
     const ghosts = rows.filter(isHallucination);
     const when = (row: any) => localTime(row.wall || row.created);

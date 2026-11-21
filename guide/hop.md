@@ -35,6 +35,7 @@ Thiếu thông tin thì để trống, không đoán.
   - Chạy `{{PMA}} sources`, nói với người dùng nguồn `suggested` và lý do.
   - Người dùng đồng ý thì `{{PMA}} select <index>`. Bộ ghi chạy từ lúc này.
 - Nhắc người dùng vào họp và bật âm thanh (Zoom: **Join** + **Join Audio**; Meet: **Tham gia ngay**).
+- **Tiếng Lào**: người dự có nói tiếng Lào mà `{{PMA}} doctor` báo `CHƯA cho tiếng Lào` thì nói ngay với người dùng trước họp: lời Lào sẽ ra chữ Thái phiên âm, nghĩa/số/tên không đáng tin (21/11). Dòng như vậy có cờ `thiếu mô hình Lào`; đừng dịch chúng như chữ Thái thật, sau khi dựng mô hình thì `recheck`.
 - **Zoom: bật canh màn hình** ngay khi cửa sổ họp Zoom mở trên máy này: `{{PMA}} screen start` (chỉ đọc cửa sổ Zoom, không bấm gì). Từ đó dòng chữ có `[Tên]` người Zoom đánh dấu đang nói, và `follow` của phiên trung tâm in `MÀN HÌNH …` khi ai bắt đầu/dừng chia sẻ, kèm đường dẫn ảnh màn hình chia sẻ: mở ảnh đó để biết đang trình bày gì, đưa vào bức tranh. Cửa sổ Zoom không được thu nhỏ (bị che thì vẫn chụp được). `{{PMA}} screen status` xem tình trạng; `{{PMA}} screen stop` sau khi kết thúc. Google Meet chưa có.
 - `{{PMA}} brief` in context trước họp + một dòng tình trạng. Đọc nó ngay khi mở phiên, và mỗi khi bạn là phiên mới vào giữa họp.
 

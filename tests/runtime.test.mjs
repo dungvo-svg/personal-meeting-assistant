@@ -321,6 +321,14 @@ test('a task owner says how it is known: an inferred owner is marked and never c
   } finally { await r.close(); rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
 });
 
+test('0.12.4: a Lao/Thai line heard without the Lao model says so in RAW and in coverage', async () => {
+  await withRuntime(async r => {
+    r.prepare();
+    r.ingest('ไอ้สาวโน่น', 'local_asr_unverified', 0, 3, 'SILENCE_BOUNDARY_HEURISTIC; LANG_UNSURE; LAO_MODEL_MISSING', 'cap', 'th');
+    assert.match(readFileSync(r.writeRaw(r.session.id).path, 'utf8'), /th · chưa có mô hình Lào: chữ Thái phiên âm, nghĩa chưa đáng tin/);
+  });
+});
+
 test('0.12.3: a tentative task shows "(tạm)", a task with no owner stays listed; the drafts schema takes certainty and refuses other values', async () => {
   const { mkdtempSync: mk, rmSync: rm, readFileSync: rd } = await import('node:fs'); const { tmpdir: tmp } = await import('node:os'); const { join: jn, resolve: rs } = await import('node:path');
   const { MeetingRuntime } = await import('../dist/runtime.js'); const { validateDraft } = await import('../dist/drafts.js');

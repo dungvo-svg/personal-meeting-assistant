@@ -104,7 +104,7 @@ function guide(part?: string) {
 const input = (file?: string) => { if (!file) throw new Error('--file <đường dẫn> hoặc --file - (đọc từ stdin)'); return file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8'); };
 const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
-const FLAG_LABELS: Record<string, string> = { LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được' };
+const FLAG_LABELS: Record<string, string> = { LAO_MODEL_MISSING: 'thiếu mô hình Lào: chữ Thái phiên âm, nghĩa chưa tin', LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được' };
 const MAIN = 'chinh';
 const NOTE_EVERY_MS = 10 * 60000; const LAG_WARN_SECONDS = 10;
 const micWhy = (by?: string) => !by ? '' : by.startsWith('meeting_app:') ? `micro ${by.slice(12)} đang dùng` : ({ windows_default: 'micro mặc định của Windows', selected: 'micro đã chọn', NO_MICROPHONE_FOUND: 'không thấy micro nào' } as Record<string, string>)[by] ?? by;
@@ -161,7 +161,7 @@ async function follow(flags: Record<string, string>) {
   const resumeAt = (s: any) => s.followers?.[name]?.committed ?? s.followers?.[name]?.cursor ?? s.agentCursor;
   // `after`: scanned up to here (hidden lines included). `batch`: visible lines not yet printed. `ack` sent to the host is ackOf(batch, after).
   let after = flags.after ? Number(flags.after) : resumeAt(status);
-  let batch: any[] = []; let batchStarted = 0; let state = status.captureState; let failures = 0;
+  let batch: any[] = []; let batchStarted = 0; let state = status.captureState; let failures = 0; let laoWarned = false;
   // Monitor ends a command after 30 minutes; leaving at 29 on our own terms tells Claude to start the same command again.
   const followStarted = Date.now(); const followMs = Number(flags.minutes || 29) * 60000;
   // A side follower (the raw translation session) hands a batch over as soon as it holds a Lao/Thai line.
@@ -172,6 +172,8 @@ async function follow(flags: Record<string, string>) {
   const flush = () => {
     if (!batch.length) return;
     console.log(`LÔ #${batch[0].id}–#${batch.at(-1).id} (${batch.length} đoạn):`);
+    // Once per follow: Lao heard without the Lao model is a Thai-script transliteration (owner + Oanh 21/11).
+    if (!laoWarned && batch.some(item => item.boundary?.includes('LAO_MODEL_MISSING'))) { laoWarned = true; console.log('CẢNH BÁO TIẾNG LÀO: máy chưa có mô hình Lào, lời Lào đang ra chữ Thái PHIÊN ÂM, nghĩa, số và tên không đáng tin. Báo người dùng; sau họp dựng mô hình (pma doctor chỉ cách) rồi pma recheck các dòng này.'); }
     for (const text of lines(batch)) for (const part of wrapLine(text)) console.log(part);
     // The synthesis session keeps the whole meeting in view: after each batch it rewrites the picture, not a batch summary.
     if (name === MAIN && flags['no-notes'] !== 'true') console.log(`CẬP NHẬT BỨC TRANH: viết lại bức tranh CẢ cuộc họp tới #${batch.at(-1).id} (đang bàn · đã chốt · việc–người–hạn · câu hỏi mở · chỗ chưa nghe rõ), lưu: pma picture --file <f.md> --sources <id lô này>; trả lời người dùng chỉ phần mới.`);

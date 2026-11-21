@@ -1003,6 +1003,10 @@ def capture(args):
                                     if horizon is not None and horizon >= until and share_ok(states, begin_wall, until):
                                         marks += '; MIC_SHARE_OK'
                             marks += segment_range(segment, end - begin)
+                            # No Lao model loaded: Whisper writes spoken Lao as a Thai-script transliteration, meaning not reliable
+                            # (ENG-13: CER 100%; owner + Oanh 21/11). Every Lao/Thai line says so, whatever branch it came from.
+                            if lao_model is None and 'lo' in languages and language in ('lo', 'th'):
+                                marks += '; LAO_MODEL_MISSING'
                             emit({'type': 'source', 'text': collapse_repeats(text), 'start': begin, 'end': end, 'boundary': boundary + '; CHUNK_RANGE_NOT_WORD_TIMESTAMPS' + marks, 'language': language, 'languageProbability': language_probability, 'channel': channel, **place, **({'alternatives': others} if others else {})})
                             others = None
                 except Exception as exc:
