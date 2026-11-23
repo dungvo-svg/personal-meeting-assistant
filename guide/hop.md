@@ -57,6 +57,7 @@ Thiếu thông tin thì để trống, không đoán.
 | **Trung tâm** (`chinh`) = phiên này | Sonnet | Monitor `{{PMA}} follow --batch 60` | xúc tiến cuộc họp, giữ bức tranh cả buổi, trả lời người dùng, tự nghe lại chỗ chưa rõ, sau họp làm báo cáo |
 | **Dịch thô** (`dich`), tuỳ chọn | agent nền Haiku (không phải phiên chat) | `{{PMA}} follow --batch 15 --as dich --no-notes --minutes 9`, lặp | dịch dòng `lo`/`th` sang tiếng Việt, lưu bằng `{{PMA}} translate`. Không in ra chat nào |
 
+- **Độ trễ** (owner 23/11): giữ lô 60 giây; trễ 35–45 giây tới bản Việt dùng được là chấp nhận được, ưu tiên đúng hơn nhanh. Khi người dùng chiếu cửa sổ Claude cho cả phòng đọc thì có thể chạy `{{PMA}} follow --batch 20`. Ghi con số trễ `follow` báo lúc đầu, giữa và cuối buổi vào mục "Diễn tiến" của SUMMARY để so giữa các buổi.
 - Phiên này nên chạy Sonnet. Nếu đang là model khác, nói người dùng chọn trong menu model (không tự đổi model của chính phiên này).
 - **Dịch thô mặc định tắt.** Bật khi người dùng yêu cầu. Khi context có người nói `lo`/`th`, hỏi người dùng một câu lúc mở phiên: "Bật dịch thô Lào/Thái chạy nền không?".
 - **Bật dịch thô:** ngay sau `LISTENING`, chạy một agent nền bằng công cụ Agent:
