@@ -20,6 +20,8 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma purpose <giá trị> [--session ID]   đặt/đổi mục đích họp của phiên đang mở (context đổi bản: các vai đọc lại pma brief); pma brief in mục đích ở dòng đầu
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
                                    variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
+                                   bảng tên theo context: thêm "kind":"attendee"(mặc định)|"mentioned"(được nhắc, không dự)|"alias"(biệt danh, kèm "of":tên thật)|"system"(tên hệ thống);
+                                   "weakVariants":[chữ sai cũng là từ thường] chỉ được sửa khi đứng trước động từ giao việc, có cờ (sửa theo bảng tên); tên đi tới bộ nghe làm từ khóa
   pma picture update --file - --base N --receipt rcpt-… [--key K]   CẬP NHẬT bức tranh cộng dồn mỗi lô: chỉ gửi một JSON {"add":[{kind,text,sourceIds,certainty?,person?,deadline?}],
                                    "fix":[{targetId,expectedOld,replacement:{text,...},sourceIds,reason}],"dangBan":"…"}; kind: decision|task|number|question|fact; host giữ các mục và dựng bức tranh;
                                    mục cũ không bao giờ mất (sửa = "đã sửa: cũ → mới"); xong việc/đã trả lời = fix với replacement.status done|cancelled|resolved; một lần lưu là một giao dịch
@@ -182,7 +184,12 @@ let SPEAKERS = new Map<number, string>();
 function line(item: any) {
   if (item.origin === 'system_gap') return `#${item.id} [KHOẢNG TRỐNG] ${item.text}`;
   // Câu ảo khi im lặng chỉ để lại số đoạn, không đưa chữ vào để Claude không đọc nhầm thành nội dung.
-  if (isHallucination(item)) return `#${item.id} [bỏ: nghi câu ảo]`;
+  if (isHallucination(item)) {
+    // The ghost filter judged the main reading only. When another reading of the same audio has words, it is not hidden (item 1b).
+    const spared = (item.alternatives ?? []).filter((a: any) => a.rv !== undefined && !a.picked && a.status === 'ok');
+    // The main reading's line carries its signals only (no text), so the ghost phrase is still never printed.
+    return spared.length ? `#${item.id} [bỏ: nghi câu ảo ở dòng chính; còn cách nghe khác]\n${readingLines(item.alternatives).join('\n')}` : `#${item.id} [bỏ: nghi câu ảo]`;
+  }
   const flags = Object.entries(FLAG_LABELS).filter(([code]) => item.boundary?.includes(code)).map(([, label]) => label);
   // Microphone: the owner. Otherwise the tile Zoom outlined as speaking (tools/meeting_screen.ps1), in brackets.
   const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : SPEAKERS.has(item.id) ? ` [${SPEAKERS.get(item.id)}]` : '';

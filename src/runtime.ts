@@ -7,6 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { applyGlossary, collapseLoops, foldRuns, hasReadings, isHallucination, micLabel, readingFacts, readingLines, riskyVariants, segmentTimesProblem, shareable, type GlossaryEntry, type Reading } from './text.js';
 import { canonicalOwner } from './participants.js';
+import { applyWeakNames, historyNames, nameTable, weakNameRules, writeHotwordsFile, HOTWORDS_FILE } from './names.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
 import { claimMachine, machineHolder, processStartedAt, releaseMachine } from './machine_lock.js';
@@ -324,14 +325,35 @@ export class MeetingRuntime extends EventEmitter {
     const entry = this.glossary.find(e => e.name.toLowerCase() === name.toLowerCase());
     if (entry) entry.variants = [...new Set([...entry.variants, ...variants])]; else if (this.glossary.length < 500) this.glossary.push({ name, variants }); else throw new Error('GLOSSARY_FULL');
     writeFileSync(join(this.dataDir, 'glossary.json'), JSON.stringify(this.glossary, null, 1), 'utf8'); this.ping();
+    if (this.session && !this.session.ended) this.writeHotwords(this.session.id);
     return this.glossary;
   }
   glossaryRemove(name: string) {
     this.glossary = this.glossary.filter(e => e.name.toLowerCase() !== name.trim().toLowerCase());
     writeFileSync(join(this.dataDir, 'glossary.json'), JSON.stringify(this.glossary, null, 1), 'utf8'); this.ping();
+    if (this.session && !this.session.ended) this.writeHotwords(this.session.id);
     return this.glossary;
   }
-  shown(text: string) { return applyGlossary(collapseLoops(text), this.glossary); }
+  // What is shown: loops folded, wrong spellings of names that the sentence itself shows to be names corrected (names.ts, flagged), then the glossary.
+  shown(text: string, sessionId?: string) { return applyGlossary(applyWeakNames(collapseLoops(text), this.weakRules(sessionId)), this.glossary); }
+  private weakCache: { id: string; context: unknown; rules: ReturnType<typeof weakNameRules> } | null = null;
+  private weakRules(sessionId?: string) {
+    const id = sessionId ?? this.session?.id; if (!id) return [];
+    let context: any = this.session?.id === id ? this.session.context : undefined;
+    if (!context) { try { const row: any = this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id); context = row ? JSON.parse(row.context) : undefined; } catch { return []; } }
+    const cached = this.weakCache; if (cached && cached.id === id && cached.context === context) return cached.rules;
+    const rules = weakNameRules([...(context?.participants ?? []), ...(context?.names ?? [])]);
+    this.weakCache = { id, context, rules }; return rules;
+  }
+  // The name table of a session as hotwords for the ASR worker (tools/audio_worker.py reads <audio dir>/hotwords.json for every chunk): this
+  // meeting's attendees, mentioned people, nicknames and system names, the glossary, and names of earlier meetings on this machine.
+  writeHotwords(id: string) {
+    try {
+      const row: any = this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id); if (!row) return null;
+      const context = this.session?.id === id ? this.session.context : JSON.parse(row.context);
+      return writeHotwordsFile(audioDir(this.dataDir, id), nameTable(context, this.glossary, historyNames(this.db, id)));
+    } catch { return null; }
+  }
   ping() { this.emit('change'); }
   claim(sessionId: string | null) { if (this.machine) claimMachine({ token: this.machine.token, dataDir: this.dataDir, root: this.root, port: this.machine.port, sessionId }); }
   unclaim() { if (this.machine) releaseMachine(this.machine.token); }
@@ -409,7 +431,7 @@ export class MeetingRuntime extends EventEmitter {
   sources(id: string, after = 0, limit = 20): Source[] {
     if (!Number.isSafeInteger(after) || after < 0) throw new Error('INVALID_CURSOR');
     const rows = this.db.prepare('SELECT id,session_id AS sessionId,text,origin,start,end,created AS createdAt,boundary,capture_id AS captureId,language,wall,seg,alternatives FROM sources WHERE session_id=? AND id>? ORDER BY id LIMIT ?').all(id, after, Math.max(1, Math.min(100, limit))) as any[];
-    return rows.map(row => ({ ...row, alternatives: parseAlternatives(row.alternatives), shown: this.shown(row.text) }));
+    return rows.map(row => ({ ...row, alternatives: parseAlternatives(row.alternatives), shown: this.shown(row.text, id) }));
   }
   ingest(text: string, origin: 'operator_text' | 'local_asr_unverified' | 'synthetic_fixture' | 'system_gap', start = 0, end = 0, boundary = '', captureId = '', language = '', wall = '', seg: number | null = null, alternatives: unknown = undefined) {
     this.requireSession(this.session?.id, true);
@@ -653,7 +675,7 @@ export class MeetingRuntime extends EventEmitter {
   packOf(id: string, store = false): ContextPack | null {
     const row: any = this.db.prepare('SELECT title,context FROM sessions WHERE id=?').get(id); if (!row) return null;
     const c = JSON.parse(row.context);
-    const pack = buildPack({ sessionId: id, title: row.title, scheduledStart: c.scheduledStart, me: c.me, purpose: c.purpose, agenda: c.agenda, participants: c.participants, glossary: this.glossary, docs: c.docs, corrections: c.corrections, createdAt: new Date(this.now()).toISOString() });
+    const pack = buildPack({ sessionId: id, title: row.title, scheduledStart: c.scheduledStart, me: c.me, purpose: c.purpose, agenda: c.agenda, participants: c.participants, glossary: [...this.glossary, ...(Array.isArray(c.names) ? c.names.map((n: any) => ({ name: n.name, kind: n.kind, variants: n.variants ?? [], source: 'names' })) : [])], docs: c.docs, corrections: c.corrections, createdAt: new Date(this.now()).toISOString() });
     if (store) this.db.prepare('INSERT OR IGNORE INTO context_packs(session_id,version,created,json) VALUES(?,?,?,?)').run(id, pack.version, pack.createdAt, JSON.stringify(pack));
     return pack;
   }
@@ -1095,7 +1117,8 @@ export class MeetingRuntime extends EventEmitter {
   }
   private spawnWorker(id: string, workerArgs: string[], follow: boolean) {
     const captureId = randomUUID(); this.captureId = captureId; this.captureInfo = { captureId }; this.followMode = follow; this.lastWorkerEventAt = Date.now();
-    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), ...(follow ? [] : ['--capture']), ...workerArgs, ...(follow ? [] : ['--capture-id', captureId]), '--parent', String(process.pid), '--languages', (this.session.languages || ['vi']).join(','), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.writeHotwords(id);  // the worker reads <audio dir>/hotwords.json for every chunk
+    const child = spawn(this.python(), [join(this.root, 'tools', 'audio_worker.py'), ...(follow ? [] : ['--capture']), ...workerArgs, ...(follow ? [] : ['--capture-id', captureId, '--hotwords-file', join(audioDir(this.dataDir, id), HOTWORDS_FILE)]), '--parent', String(process.pid), '--languages', (this.session.languages || ['vi']).join(','), ...this.laoModelArgs()], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     this.capture = child; child.stdin!.on('error', () => {});
     if (follow) this.asrLog(id, { type: 'spawn', pid: child.pid ?? null, args: workerArgs });
     const lines = createInterface({ input: child.stdout! });
@@ -1435,7 +1458,7 @@ export class MeetingRuntime extends EventEmitter {
     try { return await this.recheckRun(id, sourceId, channel, fromIso, toIso, input.beam, session, input.job); } finally { this.rechecking--; if (borrowed && !(this.session && !this.session.ended)) this.releaseWhenIdle(); }
   }
   private async recheckRun(id: string, sourceId: number | null, channel: string | undefined, fromIso: string, toIso: string, beam: number | undefined, session: any, job?: number) {
-    const dir = audioDir(this.dataDir, id);
+    const dir = audioDir(this.dataDir, id); this.writeHotwords(id);
     const args = [join(this.root, 'tools', 'audio_worker.py'), '--recheck', dir, '--from', fromIso, '--to', toIso, ...(channel ? ['--channel', channel] : []), '--beam', String(beam ?? 8), '--languages', (session.context.languages ?? ['vi', 'lo', 'th']).join(','), ...this.laoModelArgs()];
     const child = this.spawnRecheck(this.python(), args);
     const active: ActiveRecheck = { sessionId: id, child, yielded: false }; this.activeRechecks.add(active);
@@ -1502,7 +1525,7 @@ export class MeetingRuntime extends EventEmitter {
   // doubted, and what the recorder lost. Times are real (wall-clock). Everything here can be fixed by `pma recheck`.
   coverage(id: string, page: { after?: number; limit?: number } = {}) {
     const session = this.sessionRow(id); const dir = audioDir(this.dataDir, id); const events = readTimeline(dir);
-    const rows: any[] = this.db.prepare('SELECT id,text,origin,boundary,wall,start,end FROM sources WHERE session_id=? ORDER BY id').all(id);
+    const rows: any[] = this.db.prepare('SELECT id,text,origin,boundary,wall,start,end,alternatives FROM sources WHERE session_id=? ORDER BY id').all(id);
     const rechecks = (this.db.prepare('SELECT from_wall,to_wall FROM rechecks WHERE session_id=?').all(id) as any[]).map(r => ({ from: Date.parse(r.from_wall), to: Date.parse(r.to_wall) }));
     const clock = (ms: number) => new Date(ms).toLocaleTimeString('vi-VN', { hour12: false });
     const items: (CoverageItem & { at: number })[] = [];
@@ -1521,8 +1544,10 @@ export class MeetingRuntime extends EventEmitter {
       }
       if (row.origin !== 'local_asr_unverified') continue;
       heard++; if (span) { withWall++; covers.push({ from: span.from - 1500, to: span.to + 1500 }); }
-      const doubts = ['LAO_MODEL_MISSING', 'LANG_UNSURE', 'LAO_LOW_CONFIDENCE', 'LAO_WRITTEN_IN_THAI_SCRIPT'].filter(flag => row.boundary.includes(flag));
-      if (span && doubts.length && !isHallucination(row)) add('UNSURE', span, doubts.map(flag => ({ LAO_MODEL_MISSING: 'chưa có mô hình Lào (chữ Thái phiên âm)', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'tiếng Lào nhận dạng kém', LAO_WRITTEN_IN_THAI_SCRIPT: 'tiếng Lào ra chữ Thái' } as Record<string, string>)[flag]).join(', '), { sourceId: row.id, rechecked: row.boundary.includes('RECHECKED') });
+      const doubts = ['LAO_MODEL_MISSING', 'LANG_UNSURE', 'LAO_LOW_CONFIDENCE', 'LAO_WRITTEN_IN_THAI_SCRIPT', 'READINGS_UNDECIDED'].filter(flag => row.boundary.includes(flag));
+      // A line the ghost filter set aside still counts when two readings were left undecided and the other one has words (item 1b): it is not a silence phrase there.
+      const otherReadingHasWords = row.boundary.includes('READINGS_UNDECIDED') && parseAlternatives(row.alternatives).some(a => a.rv !== undefined && !a.picked && a.status === 'ok');
+      if (span && doubts.length && (!isHallucination(row) || otherReadingHasWords)) add('UNSURE', span, doubts.map(flag => ({ LAO_MODEL_MISSING: 'chưa có mô hình Lào (chữ Thái phiên âm)', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'tiếng Lào nhận dạng kém', LAO_WRITTEN_IN_THAI_SCRIPT: 'tiếng Lào ra chữ Thái', READINGS_UNDECIDED: 'hai cách nghe (Việt, Lào) chưa phân định: đọc cả hai rồi nghe lại từ WAV' } as Record<string, string>)[flag]).join(', '), { sourceId: row.id, rechecked: row.boundary.includes('RECHECKED') });
     }
     for (const event of events) {
       const at = Date.parse(event.t);
@@ -1616,8 +1641,8 @@ export class MeetingRuntime extends EventEmitter {
       const row = group.first;
       if (row.capture_id !== capture) { capture = row.capture_id; lines.push('', `— ${capture ? 'Lượt nghe ' + capture.slice(0, 8) : 'Không qua bộ tai'} —`, ''); }
       lines.push(group.count > 1
-        ? `[${when(row)}] #${row.id}–#${group.last.id} (${label(row)} · lặp ${group.count} đoạn liền) ${this.shown(row.text)} [×${group.count}]`
-        : `[${when(row)}] #${row.id} (${label(row)}) ${this.shown(row.text)}`);
+        ? `[${when(row)}] #${row.id}–#${group.last.id} (${label(row)} · lặp ${group.count} đoạn liền) ${this.shown(row.text, id)} [×${group.count}]`
+        : `[${when(row)}] #${row.id} (${label(row)}) ${this.shown(row.text, id)}`);
       lines.push(...readingLines(parseAlternatives(row.alternatives)));
       const rechecked = again.get(row.id); if (rechecked) lines.push(`  (đã nghe lại: ${phrase(rechecked).replace(/\r?\n/g, ' ')})`);
       const translation = row.translation ?? group.last.translation; if (translation) lines.push(`  → (Claude dịch) ${translation.replace(/\r?\n/g, ' ')}`);
@@ -1645,7 +1670,7 @@ export class MeetingRuntime extends EventEmitter {
     const session = this.sessionRow(id);
     if (!Array.isArray(tasks) || tasks.length > 200) throw new Error('INVALID_TASKS');
     // An owner written the way ASR spelt a participant becomes the participant's name (only listed variants match).
-    tasks = tasks.map(t => ({ ...t, owner: canonicalOwner(session.context?.participants, t.owner) }));
+    tasks = tasks.map(t => ({ ...t, owner: canonicalOwner(session.context?.participants, t.owner, session.context?.names) }));
     const all: number[] = [];
     const rows = tasks.map((t, i) => {
       const task = String(t.task || '').trim(); if (!task || task.length > 2000) throw new Error('INVALID_TASK: ' + (i + 1));

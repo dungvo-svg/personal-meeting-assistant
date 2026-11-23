@@ -66,6 +66,9 @@ export function buildBrief(input: BriefInput, maxBytes = BRIEF_MAX_BYTES) {
   const agenda = typeof context.agenda === 'string' && context.agenda.trim() ? clipBytes(oneLine(context.agenda), AGENDA_MAX_BYTES) : '';
   const participants: Participant[] = Array.isArray(context.participants) ? context.participants : [];
   const people = participants.map(p => `- ${[p.name, p.role].filter(Boolean).join(' — ')}${p.languages?.length ? ' · ' + p.languages.join('/') : ''}`);
+  // The rest of the name table (item 8): people spoken about but not in the meeting, nicknames ("Ta = Tar"), system names.
+  const NAME_LABELS: Record<string, string> = { mentioned: 'được nhắc, không dự', system: 'hệ thống' };
+  const others: string[] = (Array.isArray(context.names) ? context.names as Participant[] : []).map(n => n.kind === 'alias' ? `${n.name} = ${n.of ?? '?'}` : `${n.name} (${NAME_LABELS[n.kind ?? ''] ?? n.kind})`);
   // People first, then everything else the glossary knows, as "Name (hay nghe: a, b)".
   const named = new Set(participants.map(p => p.name.toLowerCase()));
   const terms = [...glossary.filter(e => named.has(e.name.toLowerCase())), ...glossary.filter(e => !named.has(e.name.toLowerCase()))]
@@ -78,6 +81,10 @@ export function buildBrief(input: BriefInput, maxBytes = BRIEF_MAX_BYTES) {
   if (people.length) {
     const shown = take(people, Math.max(0, Math.floor(room * 0.6)), '\n'); room -= bytes(shown.text);
     if (shown.text) body.push(`**Người dự (${people.length}):**\n${shown.text}${shown.left ? `\n- … và ${shown.left} người nữa (pma context)` : ''}`);
+  }
+  if (others.length) {
+    const shown = take(others, Math.max(0, Math.floor(room * 0.5)), '; '); room -= bytes(shown.text);
+    if (shown.text) body.push(`**Được nhắc / biệt danh / hệ thống (${others.length}):** ${shown.text}${shown.left ? `; … +${shown.left}` : ''}`);
   }
   if (terms.length) {
     const shown = take(terms, Math.max(0, room), '; ');

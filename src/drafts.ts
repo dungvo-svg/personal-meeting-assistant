@@ -58,7 +58,7 @@ export const DRAFT_LIMITS = {
 export type PictureContent = { text: string; sourceIds: number[] };
 export type TranslationsContent = { items: { sourceId: number; text: string }[] };
 export type ParticipantBasis = 'user_confirmed' | 'owner_stated' | 'inferred';
-export type ParticipantItem = { name: string; role?: string; languages?: string[]; variants?: string[]; basis?: ParticipantBasis };
+export type ParticipantItem = { name: string; role?: string; languages?: string[]; variants?: string[]; basis?: ParticipantBasis; kind?: string; of?: string; weakVariants?: string[] };
 export type ParticipantsContent = { participants: ParticipantItem[] };
 export type SummaryContent = { markdown: string; sourceIds: number[] };
 export type TaskBasis = 'stated' | 'confirmed' | 'inferred';
@@ -84,6 +84,8 @@ const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/;
 const HASH_RE = /^[0-9a-f]{64}$/;
 const LANGS: readonly string[] = ['vi', 'lo', 'th'];
 const PARTICIPANT_BASES: readonly string[] = ['user_confirmed', 'owner_stated', 'inferred'];
+// Kinds of an entry in the name table (src/participants.ts NAME_KINDS): who attends, who is only mentioned, a nickname, a system/product name.
+const NAME_KINDS_DRAFT: readonly string[] = ['attendee', 'mentioned', 'alias', 'system'];
 const TASK_BASES: readonly string[] = ['stated', 'confirmed', 'inferred'];
 
 // A closed plain object: own, enumerable-by-listing, DATA properties only (no getters that could answer differently the second
@@ -150,14 +152,17 @@ function validateParticipants(value: unknown): ParticipantsContent {
   const o = obj(value, 'content', ['participants']);
   const seen = new Set<string>();
   const people = arr(o.participants, 'content.participants', 1, DRAFT_LIMITS.participants).map((raw, i) => {
-    const p = 'content.participants[' + i + ']'; const item = obj(raw, p, ['name'], ['role', 'languages', 'variants', 'basis']);
+    const p = 'content.participants[' + i + ']'; const item = obj(raw, p, ['name'], ['role', 'languages', 'variants', 'basis', 'kind', 'of', 'weakVariants']);
     const name = str(item.name, p + '.name', 1, DRAFT_LIMITS.nameChars);
     if (seen.has(lower(name))) throw new Invalid('DUPLICATE_ENTRY', p + '.name'); seen.add(lower(name));
     const out: ParticipantItem = { name };
     const role = optBlank(item.role, p + '.role', DRAFT_LIMITS.roleChars); if (role) out.role = role;
     if (item.languages !== undefined) { const languages = [...new Set(arr(item.languages, p + '.languages', 0, LANGS.length).map((v, j) => oneOf<string>(v, p + '.languages[' + j + ']', LANGS)))].sort(); if (languages.length) out.languages = languages; }
     if (item.variants !== undefined) { const variants = [...new Set(arr(item.variants, p + '.variants', 0, DRAFT_LIMITS.variants).map((v, j) => str(v, p + '.variants[' + j + ']', 1, DRAFT_LIMITS.variantChars)))].sort(byText); if (variants.length) out.variants = variants; }
+    if (item.weakVariants !== undefined) { const weak = [...new Set(arr(item.weakVariants, p + '.weakVariants', 0, DRAFT_LIMITS.variants).map((v, j) => str(v, p + '.weakVariants[' + j + ']', 1, DRAFT_LIMITS.variantChars)))].sort(byText); if (weak.length) out.weakVariants = weak; }
     if (item.basis !== undefined) out.basis = oneOf<ParticipantBasis>(item.basis, p + '.basis', PARTICIPANT_BASES);
+    if (item.kind !== undefined) out.kind = oneOf<string>(item.kind, p + '.kind', NAME_KINDS_DRAFT);
+    if (item.of !== undefined) out.of = str(item.of, p + '.of', 1, DRAFT_LIMITS.nameChars);
     return out;
   });
   return { participants: people.sort((a, b) => byText(lower(a.name), lower(b.name))) };

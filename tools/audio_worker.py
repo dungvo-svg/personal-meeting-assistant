@@ -366,11 +366,10 @@ def transcribe_readings(model, waveform16, lao_model, vi_model=None, beam=None, 
     picked reading, `.alternatives` the list of readings (picked first) and `.undecided` True when the pick was not clear. Vietnamese is decoded by the
     Vietnamese model when there is one, else by the main model forced to vi; Lao by the Lao model. Sequential: the GPU runs one decoder at a time."""
     names = model_names or {}
-    options = decode_options(model, beam)
     started = time.perf_counter()
-    vi_segments = list((vi_model or model).transcribe(waveform16, language='vi', **options)[0])
+    vi_segments = list((vi_model or model).transcribe(waveform16, language='vi', **decode_options(model, beam, 'vi'))[0])
     middle = time.perf_counter()
-    lo_segments = list(lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)[0])
+    lo_segments = list(lao_model.transcribe(waveform16, language='lo', **decode_options(model, beam, 'lo'), **LAO_OPTIONS)[0])
     finished = time.perf_counter()
     vi = build_reading('vi', names.get('vi') or names.get('main'), vi_segments)
     lo = build_reading('lo', names.get('lo'), lo_segments)
@@ -400,9 +399,45 @@ def segment_range(segment, chunk_seconds):
     return f'; SEG_RANGE {a:.2f}-{b:.2f}' if b > a else ''
 
 
-def decode_options(model, beam=None):
+class Hotwords:
+    """Names for the recogniser (item 8, 0.13.3): the host writes <audio dir>/hotwords.json ({"vi": "Dũng, Claude, ...", "lo": "..."}) from the
+    name table of the meeting. The file is looked at again for every chunk (by its modification time), so a name added in the middle of a meeting is
+    used from the next chunk. A missing, unreadable or empty file means no hotwords: decoding is then exactly as before."""
+
+    def __init__(self, path=None):
+        self.path = Path(path) if path else None
+        self._stamp = None
+        self._terms = {}
+
+    def terms(self, language):
+        if not self.path or language not in ('vi', 'lo'):
+            return None
+        try:
+            stamp = self.path.stat().st_mtime_ns
+        except OSError:
+            self._stamp, self._terms = None, {}
+            return None
+        if stamp != self._stamp:
+            self._stamp = stamp
+            try:
+                data = json.loads(self.path.read_text(encoding='utf-8'))
+                self._terms = {code: ' '.join(str(data.get(code) or '').split())[:HOTWORDS_MAX_CHARS] for code in ('vi', 'lo')}
+            except (OSError, ValueError, AttributeError):
+                self._terms = {}
+        return self._terms.get(language) or None
+
+
+HOTWORDS_MAX_CHARS = 300
+HOTWORDS = Hotwords()  # set by capture() and recheck() when a session folder is known
+
+
+def decode_options(model, beam=None, language=None):
     # max_new_tokens stops repetition loops on noisy or misdetected chunks.
-    return {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': beam_for(model, beam), 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
+    options = {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': beam_for(model, beam), 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
+    words = HOTWORDS.terms(language)  # faster-whisper puts hotwords in front of the decoded text as a short prompt
+    if words:
+        options['hotwords'] = words
+    return options
 
 
 def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None, pick=None, beam=None):
@@ -411,14 +446,15 @@ def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None
     probability is then capped at LANG_TAI_UNSURE_PROB so segment_flags marks LANG_UNSURE. Languages are any subset of vi, lo, th.
     Tai chunks of a session with both lo and th are decoded twice (main model with th, Lao model with lo) and the primary is
     the more confident one; see LANG_TAI_* for when the other is dropped."""
-    options = decode_options(model, beam)
+    options = decode_options(model, beam)  # language detection: no hotwords (the language is not known yet)
 
     def decode(code):
+        with_names = decode_options(model, beam, code)
         if code == 'lo' and lao_model:
-            return lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)[0]
+            return lao_model.transcribe(waveform16, language='lo', **with_names, **LAO_OPTIONS)[0]
         if code == 'vi' and vi_model:
-            return vi_model.transcribe(waveform16, language='vi', **options)[0]
-        return model.transcribe(waveform16, language=code, **options)[0]
+            return vi_model.transcribe(waveform16, language='vi', **with_names)[0]
+        return model.transcribe(waveform16, language=code, **with_names)[0]
 
     if len(languages) == 1:
         return decode(languages[0]), languages[0], None
@@ -445,7 +481,7 @@ def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None
     def segments_of(code):
         if code not in cache:
             # The detection pass already decoded the language it heard; reuse it instead of decoding twice (a dedicated model for that language is used as before).
-            reusable = detected is not None and info.language == code and not (code == 'vi' and vi_model) and not (code == 'lo' and lao_model)
+            reusable = detected is not None and info.language == code and not (code == 'vi' and vi_model) and not (code == 'lo' and lao_model) and not HOTWORDS.terms(code)
             cache[code] = list(detected if reusable else decode(code))
         return cache[code]
 
@@ -844,6 +880,8 @@ def open_input(audio, index, expected_name):
 def capture(args):
     import numpy as np
     import av
+    global HOTWORDS
+    HOTWORDS = hotwords_for(args)
     threading.Thread(target=parent_watch, args=(args.parent,), daemon=True).start()
     languages = args.languages.split(',')
     if not languages or any(code not in ('vi', 'lo', 'th') for code in languages):
@@ -1334,7 +1372,16 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
     return result
 
 
+def hotwords_for(args):
+    # The host writes the name table next to the recorder's files; --follow and --recheck are given that folder.
+    explicit = getattr(args, 'hotwords_file', None)
+    folder = getattr(args, 'follow', None) or getattr(args, 'recheck', None)
+    return Hotwords(explicit or (Path(folder) / 'hotwords.json' if folder else None))
+
+
 def recheck(args):
+    global HOTWORDS
+    HOTWORDS = hotwords_for(args)
     languages = (args.languages or 'vi,lo,th').split(',')
     if not args.from_ or not args.to or args.channel not in ('speaker', 'mic'):
         raise ValueError('--recheck needs --from, --to (ISO times) and --channel speaker or mic')
@@ -1362,6 +1409,7 @@ def build_parser():
     parser.add_argument('--lao-model')
     parser.add_argument('--one-reading', action='store_true', help='decode one language per chunk as before 0.13 (no second reading)')
     parser.add_argument('--vi-model')
+    parser.add_argument('--hotwords-file', help='names for the recogniser (JSON {vi, lo}); default <session audio dir>/hotwords.json with --follow and --recheck')
     parser.add_argument('--wait-source', action='store_true')
     parser.add_argument('--mic-device', type=int)
     parser.add_argument('--mic-name')
