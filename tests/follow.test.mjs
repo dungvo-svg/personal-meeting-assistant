@@ -128,6 +128,7 @@ test('FOLLOWER_BUSY: wait (saying so once), look at the cursor the holder left b
   await withHost((method, args) => {
     if (method === 'status') return status({ followers: { chinh: { cursor, at: null, unread: 0 } } });
     if (method === 'release') return { released: true };
+    if (method === 'questions') return { due: [] };   // the synthesis role asks the host for due questions after each health check (ENG-46)
     if (args.limit === 1) { if (claimBusy-- > 0) throw new Error('FOLLOWER_BUSY: vai chinh đang có tiến trình theo dõi khác'); return reply([], args.after); }
     if (++nextCalls === 1) return reply([row(1, 'cũ một.')], 1);
     if (nextCalls === 2) { cursor = 1; claimBusy = 1; throw new Error('FOLLOWER_BUSY: vai chinh đang có tiến trình theo dõi khác'); }
@@ -238,7 +239,7 @@ test('a real host: lease, ack, release and read --as through /rpc; a second foll
     assert.deepEqual(await call('release', { as: 'dich', lease: 'zzzzzzzz1', ack: 0 }), { released: false }); assert.equal((await call('status')).followers.dich.cursor, second2);
     await call('finish'); await stopped; assert.match(held, /KẾT THÚC/);
     // the final release after the meeting ended still lands (same meeting, role, lease): the role is free, at the last line printed
-    const { committed, ...dich } = (await call('status')).followers.dich; assert.deepEqual(dich, { cursor: second2, at: null, unread: 0 }); assert.ok(committed <= second2);
+    const { committed, context, ...dich } = (await call('status')).followers.dich; assert.ok(context && typeof context.state === 'string', 'status also carries the context readiness of the role (ENG-45)'); assert.deepEqual(dich, { cursor: second2, at: null, unread: 0 }); assert.ok(committed <= second2);
     // a new meeting: a follower of it works as usual
     await call('prepare', { title: 'Phiên sau', fixture: true }); const b1 = (await call('fixture', { text: 'Cuộc họp B.' })).id;
     const next = await run('follow', '--as', 'dich', '--no-notes', '--minutes', '0.00002'); assert.match(next.out, new RegExp(`#${b1} .*Cuộc họp B\\.`));

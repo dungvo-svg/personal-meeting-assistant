@@ -53,7 +53,7 @@ test('local: this data dir\'s daemon.json answers, so that host is used (via loc
     writeDaemon(localDir, { url: host.url, pid: process.pid, token: 'tok-local' });
     assert.equal((await ensureDaemon()).url, host.url);
     const status = await inspect();
-    assert.equal(status.host, 'FAKE'); assert.deepEqual(status.attached, { via: 'local', dataDir: resolve(localDir), port: host.port, pid: process.pid });
+    assert.equal(status.host.version, 'fake'); assert.deepEqual(status.attached, { via: 'local', dataDir: resolve(localDir), port: host.port, pid: process.pid });
     assert.equal((await call('status')).answeredBy, process.pid);
     assert.equal(launches.length, 0);
   } finally { await host.close(); }
@@ -66,7 +66,7 @@ test('machine: no daemon.json here, but the lock holder (another data dir) has o
     writeLock({ dataDir: otherDir, port: host.port });
     assert.equal((await ensureDaemon()).url, host.url);
     const status = await inspect();
-    assert.equal(status.host, 'FAKE'); assert.deepEqual(status.attached, { via: 'machine', dataDir: resolve(otherDir), port: host.port, pid: process.pid });
+    assert.equal(status.host.version, 'fake'); assert.deepEqual(status.attached, { via: 'machine', dataDir: resolve(otherDir), port: host.port, pid: process.pid });
     const reply = await call('status');   // a command from this checkout lands on the host of the other one
     assert.equal(reply.method, 'status'); assert.ok(host.requests.some(r => r.method === 'status' && r.authorization === 'Bearer tok-machine'));
     assert.equal(launches.length, 0);
@@ -134,7 +134,7 @@ test('a host that comes up while we wait for a starting holder is attached (grac
 // Astra review of 75feff5: a test client must never drive the user's real host. Two walls: its lock namespace is its own, and it
 // uses only a host that says it is a test host.
 test('a test-mode client never uses a host that is not a test host, even one its own data folder points to; nothing but ping reaches it', async () => {
-  const { launches } = fresh();
+  const launches = fresh();
   const real = await fakeHost('real-token', process.pid, false);
   try {
     writeDaemon(localDir, { url: real.url, pid: process.pid, token: 'real-token' });

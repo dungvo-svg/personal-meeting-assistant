@@ -4,6 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -20,7 +21,7 @@ test.after(async () => {
 });
 
 // A fake host: answers ping (as configured) and anything else, records every request. `shutdown` removes daemon.json like the real one.
-async function fakeHost(w, { pong = {}, daemon = {}, token = TOKEN } = {}) {
+async function fakeHost(w, { pong = {}, daemon = {}, token = TOKEN, pid = process.pid, onShutdown = null } = {}) {
   const requests = [];
   const server = createServer((request, response) => {
     let body = ''; request.on('data', c => { body += c; });
@@ -28,14 +29,14 @@ async function fakeHost(w, { pong = {}, daemon = {}, token = TOKEN } = {}) {
       const { method } = JSON.parse(body || '{}'); requests.push({ method, authorization: request.headers.authorization });
       if (request.headers.authorization !== `Bearer ${token}`) { response.writeHead(401).end('{"ok":false}'); return; }
       let result;
-      if (method === 'ping') result = { ok: true, version: 'fake', pid: process.pid, testMode: true, ...pong };
-      else { result = { method, stopping: method === 'shutdown' }; if (method === 'shutdown') rmSync(join(w.env.PMA_DATA_DIR, 'daemon.json'), { force: true }); }
+      if (method === 'ping') result = { ok: true, version: 'fake', pid, testMode: true, ...pong };
+      else { result = { method, stopping: method === 'shutdown' }; if (method === 'shutdown') { rmSync(join(w.env.PMA_DATA_DIR, 'daemon.json'), { force: true }); onShutdown?.(); } }
       response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, result }));
     });
   });
   await new Promise(r => server.listen(0, '127.0.0.1', r)); servers.push(server);
   const url = `http://127.0.0.1:${server.address().port}`;
-  const write = more => writeFileSync(join(w.env.PMA_DATA_DIR, 'daemon.json'), JSON.stringify({ url, pid: process.pid, token, version: 'fake', startedAt: new Date().toISOString(), ...daemon, ...more }));
+  const write = more => writeFileSync(join(w.env.PMA_DATA_DIR, 'daemon.json'), JSON.stringify({ url, pid, token, version: 'fake', startedAt: new Date().toISOString(), ...daemon, ...more }));
   write({});
   return { url, requests, write, methods: () => [...new Set(requests.map(r => r.method))] };
 }
@@ -109,25 +110,33 @@ test('ownedShutdown after a thrown assertion (in finally, as in test.after) stil
   try { assert.equal(1, 2, 'an assertion of the test failed'); }
   catch (error) { thrown = error; }
   finally { outcome = await ownedShutdown(foreign.env); }
-  assert.ok(thrown instanceof assert.AssertionError); assert.match(outcome.skipped, /not recorded as started by this test/); assert.equal(host.requests.length, 0);
+  // a daemon.json pid this test never recorded is never contacted and always pending (d28389b): nothing is sent, the root would be kept
+  assert.ok(thrown instanceof assert.AssertionError); assert.match(outcome.note, /names a host this test did not record/); assert.deepEqual(outcome.pending, [process.pid]); assert.equal(host.requests.length, 0);
   // recorded, but it says it is not a test host (a real host that took the port): nothing but a ping, and still no throw
   const real = await world('after-real'); const user = await fakeHost(real, { pong: { testMode: false } }); recordHost(real.env);
-  try { assert.equal(1, 2); } catch { /* the failure is the test's own business */ } finally { outcome = await ownedShutdown(real.env); }
+  try { assert.equal(1, 2); } catch { /* the failure is the test's own business */ } finally { outcome = await ownedShutdown(real.env, { waitMs: 300 }); }
   assert.match(outcome.skipped, /testMode/); assert.deepEqual(user.methods(), ['ping']);
   // no host at all (it already left): benign
-  const gone = await world('after-gone'); assert.deepEqual(await ownedShutdown(gone.env), { skipped: 'no daemon.json in the data dir' });
-  assert.deepEqual(await ownedShutdown({ ...gone.env, PMA_DATA_DIR: tmpdir() }), { skipped: 'the data dir was not made by isolatedEnv' });
+  const gone = await world('after-gone'); assert.deepEqual(await ownedShutdown(gone.env), { exited: [] }, 'nothing recorded and no daemon.json: nothing to wait for');
+  assert.deepEqual(await ownedShutdown({ ...gone.env, PMA_DATA_DIR: tmpdir() }), { exited: [] }, 'a folder that is no world of the harness: nothing recorded, nothing contacted');
 });
 
 test('a host this test started: proof passes, the request carries the bearer token, ownedShutdown stops it and waits for it to go', async () => {
-  const w = await world('owned'); const host = await fakeHost(w);
-  assert.equal(await recordingHost(w.env, async () => 'started'), 'started'); assert.equal(recordHost(w.env), process.pid);
-  assert.deepEqual(await guardedCall(w.env)('status'), { method: 'status', stopping: false });
-  assert.ok(host.requests.every(r => r.authorization === `Bearer ${TOKEN}`));
-  assert.deepEqual(await ownedShutdown(w.env), { stopped: process.pid });
-  assert.deepEqual(host.methods(), ['ping', 'status', 'shutdown']); assert.ok(!existsSync(join(w.env.PMA_DATA_DIR, 'daemon.json')));
-  await assert.rejects(recordingHost(w.env, async () => { throw new Error('the start failed'); }), /the start failed/, 'recordingHost does not swallow errors');
-  const done = await teardown(w); assert.deepEqual(done.cleanup, { removed: true }); assert.ok(!existsSync(w.root));
+  // The host's pid must be one that can exit: a child this test spawns and closes through its own handle (never process.pid, never a pid found by number).
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' }); await new Promise(r => child.once('spawn', r));
+  try {
+    const w = await world('owned'); const host = await fakeHost(w, { pid: child.pid, onShutdown: () => child.kill() });
+    assert.equal(await recordingHost(w.env, async () => 'started'), 'started'); assert.equal(recordHost(w.env), child.pid);
+    assert.deepEqual(await guardedCall(w.env)('status'), { method: 'status', stopping: false });
+    assert.ok(host.requests.every(r => r.authorization === `Bearer ${TOKEN}`));
+    assert.deepEqual(await ownedShutdown(w.env), { exited: [child.pid] });   // 'exited' is proven by the pid no longer existing, not by a closed port
+    assert.deepEqual(host.methods(), ['ping', 'status', 'shutdown']); assert.ok(!existsSync(join(w.env.PMA_DATA_DIR, 'daemon.json')));
+    const done = await teardown(w); assert.deepEqual(done.cleanup, { removed: true }); assert.ok(!existsSync(w.root));
+    // a launch that throws and leaves no pid to record is UNKNOWN_START: the error is not swallowed and the root is kept (d28389b)
+    const failed = await world('start-failed');
+    await assert.rejects(recordingHost(failed.env, async () => { throw new Error('the start failed'); }), /the start failed/, 'recordingHost does not swallow errors');
+    const kept = await teardown(failed); assert.equal(kept.cleanup.reason, 'FAILED_CLOSED'); assert.deepEqual(kept.stop.pending, ['UNKNOWN_START']); assert.ok(existsSync(failed.root));
+  } finally { child.kill(); }
 });
 
 test('cleanup refuses a path outside its root or outside the temp folder, removes nothing in that case, and removes its own root', async () => {
