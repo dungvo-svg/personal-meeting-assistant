@@ -257,8 +257,11 @@ def pick_by_score(vi_segments, lo_segments, lao_bias=LANG_PICK_BIAS):
 class ChunkSegments(list):
     """The segments of one chunk plus `alternatives`: [{language, text, score}] for the other Tai reading (th vs lo) when
     the chunk could not be told apart with confidence. Empty when the routing was decisive. A plain list subclass, so
-    existing callers (iteration, ==) work unchanged; read it with chunk_alternatives(segments)."""
+    existing callers (iteration, ==) work unchanged; read it with chunk_alternatives(segments). `undecided` is set by transcribe_readings
+    when the pick between the two readings was not clear."""
     alternatives = ()
+    undecided = False
+    seconds = None  # {'vi': s, 'lo': s}: decode time of each reading (transcribe_readings)
 
 
 def chunk_alternatives(segments):
@@ -284,6 +287,102 @@ def tai_is_decisive(primary, lo_score, th_score, seconds):
     return th_score >= LANG_TAI_TH_DECISIVE_SCORE and lo_score - th_score < LANG_TAI_TH_DECISIVE_DIFF
 
 
+# Two readings per chunk (item 1a, 23/11): in a session with both vi and lo (and the Lao model loaded) every chunk is decoded by the main model
+# as Vietnamese AND by BuzzASR as Lao, one after the other on the GPU. Both readings are kept with their own signals; the row text is one
+# of them (pick_reading), flagged READINGS_UNDECIDED when the pick is not clear. Log-probs of different models are NOT on one scale:
+# they are kept per reading and only the pick uses their difference, with the margins below (measured offline).
+READINGS_VERSION = 1
+# Pick thresholds, measured offline on 23/11 (FLEURS Lao/Vietnamese clips, the bidding meeting 09:10-09:16 as Vietnamese-only, OTC 08:49-08:54):
+# diff = Lao avgLogProb - Vietnamese avgLogProb. Vietnamese speech read by the Lao model never beat the Vietnamese reading by more than 0.114
+# (bidding meeting, 26 chunks where both readings were usable; clean FLEURS Vietnamese: Lao never ahead); Lao speech beat it by 0.15 or more in 17 of 17
+# short and 8 of 9 full FLEURS clips where both readings were usable. A Lao reading is usable on its own when its score is at least -0.55 (85 of
+# 93 FLEURS Lao readings; 2 of 9 on the bidding stretch where the Vietnamese reading was invented: noise, not Lao).
+READINGS_LO_WINS_DIFF = 0.15  # the Lao reading becomes the row text from this difference up
+READINGS_VI_CLEAR_DIFF = 0.0  # at or below: Vietnamese is clearly the better reading
+READINGS_LO_CLEAR_DIFF = 0.25  # at or above: Lao is clearly the better reading; in between the pick is flagged READINGS_UNDECIDED
+READINGS_LO_USABLE = -0.55
+LOOP_UNIT_MAX = 6
+
+
+def loop_penalty(text):
+    """Share of a reading's characters that sit in a loop: a run of one unit of 1-6 characters (Lao and Thai have no word spaces) repeated
+    4 times or more, counting all but the first copy. 0.0 for text without loops."""
+    text = text or ''
+    covered = 0
+    for match in re.finditer(r'(.{1,%d}?)\1{3,}' % LOOP_UNIT_MAX, text, flags=re.DOTALL):
+        covered += len(match.group(0)) - len(match.group(1))
+    return round(min(1.0, covered / len(text)), 3) if text else 0.0
+
+
+def segment_invented(segment, code):
+    # A sentence the decoder invents over quiet or foreign audio (silence phrases, no-speech, Lao news stock phrases): same test as recheck.
+    text = (getattr(segment, 'text', '') or '').strip()
+    whole = re.sub(r'[^\w\s]', '', text.lower()).strip()
+    return any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or getattr(segment, 'no_speech_prob', 0.0) > 0.6 \
+        or (code == 'lo' and lao_stock_phrase(text, segment))
+
+
+def build_reading(code, model_name, segments):
+    """One reading: {rv, language, model, text, avgLogProb, score, viSyllableShare, viSyllables, viTokens, viSyllableVersion, loopPenalty, status, picked}.
+    avgLogProb is that model's own mean token log-probability (score is the same number, for readers of the older alternatives): never compare it
+    across models as if on one scale. viSyllableShare is a signal about the text, not proof of meaning (tools/vi_syllables.py)."""
+    import vi_syllables
+    segments = list(segments)
+    text = segments_text(segments)
+    score = segments_score(segments)
+    spoken = [s for s in segments if (getattr(s, 'text', '') or '').strip()]
+    status = 'empty' if not text else ('invented' if all(segment_invented(s, code) for s in spoken) else 'ok')
+    log_prob = round(score, 3) if score > float('-inf') else None
+    return {'rv': READINGS_VERSION, 'language': code, 'model': model_name, 'text': collapse_repeats(text), 'avgLogProb': log_prob, 'score': log_prob,
+            **vi_syllables.share(text), 'loopPenalty': loop_penalty(text), 'status': status, 'picked': False}
+
+
+def pick_reading(vi, lo):
+    """Which reading becomes the row text, and whether that is clear. Returns (code, decisive). Vietnamese is the default (a Vietnamese-only meeting
+    behaves as before). With both readings usable the pick follows diff = lo - vi (each model's own avgLogProb): Lao from READINGS_LO_WINS_DIFF up,
+    decisive at or below READINGS_VI_CLEAR_DIFF and at or above READINGS_LO_CLEAR_DIFF. A reading that is empty or invented does not compete: the other
+    one is the row text, decisive when it is usable (Lao: score at least READINGS_LO_USABLE)."""
+    lo_score = lo['avgLogProb']
+    if lo['status'] != 'ok' or lo_score is None:
+        return 'vi', vi['status'] == 'ok'
+    vi_score = vi['avgLogProb']
+    if vi['status'] != 'ok' or vi_score is None:
+        return 'lo', lo_score >= READINGS_LO_USABLE
+    diff = lo_score - vi_score
+    return ('lo' if diff >= READINGS_LO_WINS_DIFF else 'vi'), (diff <= READINGS_VI_CLEAR_DIFF or diff >= READINGS_LO_CLEAR_DIFF)
+
+
+def vi_share(text):
+    import vi_syllables
+    return vi_syllables.share(text)
+
+
+def readings_enabled(languages, lao_model):
+    return 'vi' in languages and 'lo' in languages and lao_model is not None
+
+
+def transcribe_readings(model, waveform16, lao_model, vi_model=None, beam=None, model_names=None):
+    """Both readings of one chunk. Returns (segments, language, None, readings) in the shape transcribe_chunk returns, `segments` being a ChunkSegments of the
+    picked reading, `.alternatives` the list of readings (picked first) and `.undecided` True when the pick was not clear. Vietnamese is decoded by the
+    Vietnamese model when there is one, else by the main model forced to vi; Lao by the Lao model. Sequential: the GPU runs one decoder at a time."""
+    names = model_names or {}
+    options = decode_options(model, beam)
+    started = time.perf_counter()
+    vi_segments = list((vi_model or model).transcribe(waveform16, language='vi', **options)[0])
+    middle = time.perf_counter()
+    lo_segments = list(lao_model.transcribe(waveform16, language='lo', **options, **LAO_OPTIONS)[0])
+    finished = time.perf_counter()
+    vi = build_reading('vi', names.get('vi') or names.get('main'), vi_segments)
+    lo = build_reading('lo', names.get('lo'), lo_segments)
+    code, decisive = pick_reading(vi, lo)
+    (vi if code == 'vi' else lo)['picked'] = True
+    result = ChunkSegments(vi_segments if code == 'vi' else lo_segments)
+    result.alternatives = [r for r in sorted((vi, lo), key=lambda r: not r['picked'])]
+    result.undecided = not decisive
+    result.seconds = {'vi': round(middle - started, 3), 'lo': round(finished - middle, 3)}
+    return result, code, None
+
+
 RECHECK_PICK_MARGIN = 0.1  # mean log-probability by which a forced reading must beat the detector's language to replace it
 
 
@@ -301,14 +400,18 @@ def segment_range(segment, chunk_seconds):
     return f'; SEG_RANGE {a:.2f}-{b:.2f}' if b > a else ''
 
 
+def decode_options(model, beam=None):
+    # max_new_tokens stops repetition loops on noisy or misdetected chunks.
+    return {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': beam_for(model, beam), 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
+
+
 def transcribe_chunk(model, waveform16, languages, lao_model=None, vi_model=None, pick=None, beam=None):
     """Returns (segments, language, language_probability). `segments` is a ChunkSegments when the routing decoded more than
     one reading: `chunk_alternatives(segments)` gives [{language, text, score}] for the other Tai reading (th <-> lo), and the
     probability is then capped at LANG_TAI_UNSURE_PROB so segment_flags marks LANG_UNSURE. Languages are any subset of vi, lo, th.
     Tai chunks of a session with both lo and th are decoded twice (main model with th, Lao model with lo) and the primary is
     the more confident one; see LANG_TAI_* for when the other is dropped."""
-    # max_new_tokens stops repetition loops on noisy or misdetected chunks.
-    options = {'task': 'transcribe', 'max_new_tokens': 224, 'beam_size': beam_for(model, beam), 'temperature': 0, 'condition_on_previous_text': False, 'vad_filter': True, 'vad_parameters': {'min_silence_duration_ms': 400}, 'no_speech_threshold': 0.6}
+    options = decode_options(model, beam)
 
     def decode(code):
         if code == 'lo' and lao_model:
@@ -748,6 +851,8 @@ def capture(args):
     # Mixed sessions on CPU use longer chunks: detection is more reliable and per-chunk overhead stays below real time.
     # On the GPU ASR takes ~0.3 s per chunk, so chunks end at the first pause after 3 s and text arrives sooner (30/10).
     min_chunk_seconds = 6 if len(languages) > 1 else 3
+    dual = False
+    reading_names = {}
     stop = threading.Event()  # leave the worker
     pause = threading.Event()  # end this listening, keep the models
     drain = threading.Event()  # --follow: read and transcribe what is on disk, then leave
@@ -786,6 +891,9 @@ def capture(args):
     model, lao_model, vi_model, asr = load_models(model_path, args.lao_model or profile['lo'], args.asr_device, 6, args.vi_model or profile['vi'])
     if asr['device'] == 'cuda':
         min_chunk_seconds = GPU_MIN_CHUNK_SECONDS
+    # Both readings of every chunk when the session has Vietnamese and Lao and the Lao model is loaded (item 1a); Thai is not read in that mode.
+    dual = readings_enabled(languages, lao_model) and not getattr(args, 'one_reading', False)
+    reading_names = {'main': asr.get('mainModel'), 'vi': asr.get('viModel'), 'lo': asr.get('laoModel')}
     # Model load only: in warm mode the wait for the source comes after this and is reported on its own (audit 30/10, A4).
     load_seconds = round(time.monotonic() - started, 3)
     mic_watch = [None]
@@ -986,7 +1094,7 @@ def capture(args):
                         silence_samples = 0
                         continue
                     if primary and not ready:
-                        emit({'type': 'ready', 'device': source_name, 'micDevice': listening.mic_name if listening.mic_device is not None else None, 'micSelectedBy': listening.mic_by, 'micError': listening.mic_error, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'asr': asr, 'modelLoadSeconds': load_seconds, 'waitedForSourceSeconds': round(waited_seconds, 1), 'audioStorage': 'WAV_ON_DISK' if listening.save_dir or listening.follow else 'RAM_ONLY', 'follow': bool(listening.follow), 'maxQueuedChunks': 6, 'maxChunkSeconds': MAX_CHUNK_SECONDS, 'maxSessionSeconds': listening.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
+                        emit({'type': 'ready', 'device': source_name, 'micDevice': listening.mic_name if listening.mic_device is not None else None, 'micSelectedBy': listening.mic_by, 'micError': listening.mic_error, 'sampleRate': rate, 'channels': channels, 'languages': languages, 'readings': dual, 'asr': asr, 'modelLoadSeconds': load_seconds, 'waitedForSourceSeconds': round(waited_seconds, 1), 'audioStorage': 'WAV_ON_DISK' if listening.save_dir or listening.follow else 'RAM_ONLY', 'follow': bool(listening.follow), 'maxQueuedChunks': 6, 'maxChunkSeconds': MAX_CHUNK_SECONDS, 'maxSessionSeconds': listening.max_seconds, 'firstReadBytes': len(raw), 'loopbackKeepalive': keepalive_note})
                         ready = True
                     if not raw:
                         continue  # a followed file has nothing new yet (or ASR is on hold); look again
@@ -1074,7 +1182,10 @@ def capture(args):
                     resampler = av.AudioResampler(format='flt', layout='mono', rate=16000)
                     converted = resampler.resample(frame) + resampler.resample(None)
                     waveform16 = np.concatenate([f.to_ndarray().reshape(-1) for f in converted]).astype(np.float32)
-                    segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model, vi_model)
+                    if dual:
+                        segments, language, language_probability = transcribe_readings(model, waveform16, lao_model, vi_model, model_names=reading_names)
+                    else:
+                        segments, language, language_probability = transcribe_chunk(model, waveform16, languages, lao_model, vi_model)
                     # The other Lao/Thai reading when the routing was not sure: sent once per chunk, with its first text, for
                     # Claude to translate by meaning (owner 31/10: Lao heard as Thai passes if the meaning holds).
                     others = chunk_alternatives(segments)
@@ -1084,6 +1195,8 @@ def capture(args):
                         text = segment.text.strip()
                         if text:
                             marks = ''.join('; ' + flag for flag in segment_flags(text, segment, language, language_probability))
+                            if getattr(segments, 'undecided', False):
+                                marks += '; READINGS_UNDECIDED'
                             if channel == 'mic':
                                 marks += '; CHANNEL_MIC'
                                 if listening.follow and place:
@@ -1168,10 +1281,12 @@ def silent_audio(waveform16, block=1600):
     return all(float(np.sqrt(np.mean(waveform16[i:i + block] ** 2))) < SOUND_RMS for i in range(0, len(waveform16), block))
 
 
-def recheck_window(model, lao_model, vi_model, directory, start, end, channel='speaker', languages=('vi', 'lo', 'th'), beam=8):
+def recheck_window(model, lao_model, vi_model, directory, start, end, channel='speaker', languages=('vi', 'lo', 'th'), beam=8, model_names=None):
     # Cut a wall-time window out of the recorder's files and transcribe it again with a wider beam. `text`/`language` are the
     # usual detection and pick over all languages; `alternatives` is one forced decode per language with its confidence
-    # (mean log-probability), so the agent can read the stretch the way it is meant when the detector is unsure.
+    # (mean log-probability), so the agent can read the stretch the way it is meant when the detector is unsure. Each alternative has the
+    # fields of a reading (build_reading: rv, model, avgLogProb, viSyllableShare with numerator and denominator, loopPenalty, status, picked): the same
+    # contract as the readings of live chunks; `picked` marks the one whose language became `text`.
     timeline = Timeline.load(directory)
     waveform = cut_window(timeline, channel, parse_wall(start), parse_wall(end))
     result = {'text': '', 'language': None, 'alternatives': [], 'silent': silent_audio(waveform), 'seconds': round(len(waveform) / RATE16, 3)}
@@ -1199,7 +1314,9 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
         text = text_of(segments, code)
         if not text:
             continue  # nothing but invented phrases in that language: not a reading
-        result['alternatives'].append({'language': code, 'text': text, 'score': round(score, 3) if score > float('-inf') else None})
+        item = build_reading(code, (model_names or {}).get(code), segments)
+        item.update(text=text, **vi_share(text), loopPenalty=loop_penalty(text))  # the text of a recheck has its invented sentences dropped
+        result['alternatives'].append(item)
     best = max(result['alternatives'], key=lambda item: item['score'] if item['score'] is not None else float('-inf'), default=None)
     try:
         segments, language, _ = transcribe_chunk(model, waveform, list(languages), lao_model, vi_model, beam=beam)
@@ -1212,6 +1329,8 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
     same = next((a for a in result['alternatives'] if a['language'] == result['language']), None)
     if best and best['language'] != result['language'] and best['score'] is not None and (same is None or same['score'] is None or best['score'] - same['score'] >= RECHECK_PICK_MARGIN):
         result.update(text=best['text'], language=best['language'], pickedBy='score')
+    for item in result['alternatives']:
+        item['picked'] = item['language'] == result['language']
     return result
 
 
@@ -1221,8 +1340,9 @@ def recheck(args):
         raise ValueError('--recheck needs --from, --to (ISO times) and --channel speaker or mic')
     profile = asr_profile()
     model_path = Path(args.model or profile['main']).resolve(strict=True)
-    model, lao_model, vi_model, _ = load_models(model_path, args.lao_model or profile['lo'], args.asr_device, 6, args.vi_model or profile['vi'])
-    emit(recheck_window(model, lao_model, vi_model, args.recheck, args.from_, args.to, args.channel, languages, args.beam))
+    model, lao_model, vi_model, asr = load_models(model_path, args.lao_model or profile['lo'], args.asr_device, 6, args.vi_model or profile['vi'])
+    names = {'vi': asr.get('viModel') or asr.get('mainModel'), 'lo': asr.get('laoModel'), 'th': asr.get('mainModel')}
+    emit(recheck_window(model, lao_model, vi_model, args.recheck, args.from_, args.to, args.channel, languages, args.beam, names))
 
 
 def build_parser():
@@ -1240,6 +1360,7 @@ def build_parser():
     parser.add_argument('--speed', type=float, default=1.0)
     parser.add_argument('--asr-device', default='auto', choices=['auto', 'cuda', 'cpu'])
     parser.add_argument('--lao-model')
+    parser.add_argument('--one-reading', action='store_true', help='decode one language per chunk as before 0.13 (no second reading)')
     parser.add_argument('--vi-model')
     parser.add_argument('--wait-source', action='store_true')
     parser.add_argument('--mic-device', type=int)
