@@ -7,14 +7,15 @@
 //   job-token/1        job start returns a token; job done/fail need it
 //   mic-session/1      an explicit mic choice is kept by the session
 //   meeting-purpose/1  prepare takes `purpose` and the `purpose` method sets it; an older host ignores `purpose` silently, so a request that carries it is refused first
+//   picture-items/1    the `pictureUpdate` method: the host keeps cumulative picture items and renders the picture; an older host has no such method
 //   mic-session/2      and is never silently dropped: prepare(mic:false) on an open meeting whose recorder records (or may record)
 //                      the mic is refused (MIC_OFF_NOT_APPLIED); a recorder taken over keeps its mic mode only with the same pid and
 //                      OS start time, else UNKNOWN (04/11). An 0.12.1 build with /1 only has the earlier, silent early return.
 export const PROTOCOL = 'pma-rpc/2';
-export const CAPABILITIES = ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1', 'mic-session/2', 'meeting-purpose/1'] as const;
+export const CAPABILITIES = ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1', 'mic-session/2', 'meeting-purpose/1', 'picture-items/1'] as const;
 // What attach() needs before it sends a draft; a job result also needs the job token.
 export const DRAFT_NEEDS: readonly string[] = ['draft-guard/1', 'context-receipt/1'];
-export const needsFor = (method: string): readonly string[] => method === 'job' ? [...DRAFT_NEEDS, 'job-token/1'] : DRAFT_NEEDS;
+export const needsFor = (method: string): readonly string[] => method === 'job' ? [...DRAFT_NEEDS, 'job-token/1'] : method === 'pictureUpdate' ? [...DRAFT_NEEDS, 'picture-items/1'] : DRAFT_NEEDS;
 // The note key the meeting picture is stored under: only `pma picture` (receipt, base) writes it. An older host does not reserve it, so
 // the client refuses it before any host is asked (a note under it would be a picture revision past the new guards).
 export const PICTURE_KEY = 'buc-tranh';

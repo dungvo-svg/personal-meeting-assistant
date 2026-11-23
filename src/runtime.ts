@@ -14,7 +14,8 @@ import { shareOk } from './mic_share.js';
 import { Ledger } from './jobs.js';
 import { DecisionLedger } from './decisions.js';
 import { PICTURE_KEY } from './protocol.js';
-import { parsePurpose } from './purpose.js';
+import { parsePurpose, purposeOf } from './purpose.js';
+import { describeItems, planUpdate, renderPicture, sourcesOf, type PictureUpdate, type StoredItem } from './picture.js';
 import { CoworkLedger, seatStatus, type HandledKind } from './cowork.js';
 import { applyCorrections, bindingKey, bindRole, buildPack, CONTEXT_TABLES_SQL, readiness, type Bindings, type ContextPack } from './context_pack.js';
 
@@ -223,6 +224,10 @@ export class MeetingRuntime extends EventEmitter {
     this.cowork = new CoworkLedger(this.db, () => this.now(), { requireContext: true });
     this.db.exec(`CREATE TABLE IF NOT EXISTS draft_keys(session_id TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, content_hash TEXT NOT NULL, result TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY(session_id, kind, key));
       CREATE TABLE IF NOT EXISTS job_tokens(job_id INTEGER PRIMARY KEY, token TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS picture_events(seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, item_id TEXT NOT NULL, event TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL, source_ids TEXT NOT NULL,
+        certainty TEXT, person TEXT, deadline TEXT, status TEXT, supersedes TEXT, reason TEXT, rev INTEGER NOT NULL, created TEXT NOT NULL, UNIQUE(session_id,item_id));
+      CREATE TRIGGER IF NOT EXISTS picture_events_no_update BEFORE UPDATE ON picture_events BEGIN SELECT RAISE(ABORT,'PICTURE_EVENTS_IMMUTABLE'); END;
+      CREATE TRIGGER IF NOT EXISTS picture_events_no_delete BEFORE DELETE ON picture_events BEGIN SELECT RAISE(ABORT,'PICTURE_EVENTS_IMMUTABLE'); END;
       CREATE TABLE IF NOT EXISTS pma_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
     // The jobs that existed before tokens: the highest job id at the first start of a host with tokens (once, never moved).
     this.db.prepare("INSERT OR IGNORE INTO pma_meta(key,value) VALUES('job_tokens_since', (SELECT COALESCE(MAX(id),0) FROM jobs))").run();
@@ -473,7 +478,47 @@ export class MeetingRuntime extends EventEmitter {
   picture(id: string) {
     const row: any = this.db.prepare("SELECT revision,payload,created FROM notes WHERE session_id=? AND item_key=? ORDER BY revision DESC LIMIT 1").get(id, PICTURE_KEY);
     if (!row) return null;
-    const payload = JSON.parse(row.payload); return { revision: row.revision as number, text: payload.text as string, sourceIds: payload.sourceIds as number[], savedAt: row.created as string };
+    const payload = JSON.parse(row.payload);
+    return { revision: row.revision as number, text: payload.text as string, sourceIds: payload.sourceIds as number[], savedAt: row.created as string, ...(payload.structured ? { structured: true, dangBan: (payload.dangBan ?? undefined) as string | undefined } : {}) };
+  }
+  // The cumulative items (0.13.x, picture update): every stored event, oldest first. Nothing is ever edited or removed here.
+  pictureEvents(id: string): StoredItem[] {
+    return (this.db.prepare('SELECT item_id,kind,text,source_ids,certainty,person,deadline,status,supersedes,reason,rev FROM picture_events WHERE session_id=? ORDER BY seq').all(id) as any[]).map(r => ({
+      id: r.item_id, kind: r.kind, text: r.text, sourceIds: JSON.parse(r.source_ids), createdRev: r.rev,
+      ...(r.certainty ? { certainty: r.certainty } : {}), ...(r.person ? { person: r.person } : {}), ...(r.deadline ? { deadline: r.deadline } : {}), ...(r.status ? { status: r.status } : {}), ...(r.supersedes ? { supersedes: r.supersedes } : {}), ...(r.reason ? { reason: r.reason } : {}) }));
+  }
+  // Live items with their correction history, for the SUMMARY writer (`pma picture --json`).
+  pictureItems(id: string) { const p = this.picture(id); return { revision: p?.revision ?? 0, savedAt: p?.savedAt ?? null, dangBan: p?.dangBan ?? null, items: describeItems(this.pictureEvents(id)) }; }
+  // Update the cumulative picture with what is NEW or CORRECTED (plan item 10). Checks in the order savePicture uses: the sources belong to the
+  // session, the base revision, the receipt of a chinh read. Events, the rendered snapshot and the revision are written in ONE transaction:
+  // an error anywhere leaves nothing half saved. The snapshot is stored as an ordinary picture revision, so reads, the brief, `committed`
+  // and the history keep working; its `coversUpTo` is still what chinh was actually handed (citing a row it was not handed covers nothing).
+  savePictureUpdate(id: string, update: PictureUpdate, opts: { expectedRevision?: number; central?: boolean; receipt?: string } = {}) {
+    this.requireRecentSession(id);
+    const cited = this.sessionSourceIds(id, sourcesOf(update)).sort((a, b) => a - b); const latest = this.picture(id);
+    if (opts.expectedRevision !== undefined && opts.expectedRevision !== (latest?.revision ?? 0)) throw new Error(`PICTURE_REVISION_CONFLICT: đang sửa từ bản ${opts.expectedRevision}, đã có bản ${latest?.revision ?? 0}; đọc lại pma picture, gộp phần mới của bạn vào rồi lưu lại với --base ${latest?.revision ?? 0}`);
+    if (opts.central) this.requireCentralContext(id, opts.receipt);
+    const revision = (latest?.revision ?? 0) + 1; const items = this.pictureEvents(id);
+    const plan = planUpdate(items, update, revision);
+    const dangBan = update.dangBan ?? latest?.dangBan;
+    // Nothing new (every item already there, "đang bàn" the same): not a new revision.
+    if (!plan.events.length && latest?.structured && dangBan === latest.dangBan) return { saved: true, revision: latest.revision, duplicate: true, added: [], fixed: [], skipped: plan.skipped };
+    const legacy: any = this.db.prepare("SELECT revision, json_extract(payload,'$.text') AS text FROM notes WHERE session_id=? AND item_key=? AND json_extract(payload,'$.legacy')=1 ORDER BY revision DESC LIMIT 1").get(id, PICTURE_KEY);
+    const purpose = purposeOf(JSON.parse((this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id) as any).context).purpose);
+    const all = [...items, ...plan.events];
+    const text = renderPicture({ revision, purpose, dangBan, items: all, legacy: legacy ? { revision: legacy.revision, text: legacy.text } : undefined });
+    const coversUpTo = Math.min(Math.max(...cited), this.followers[MAIN_FOLLOWER]?.cursor ?? 0); const now = new Date().toISOString();
+    const own = !this.db.isTransaction; if (own) this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const insert = this.db.prepare('INSERT INTO picture_events(session_id,item_id,event,kind,text,source_ids,certainty,person,deadline,status,supersedes,reason,rev,created) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)');
+      for (const e of plan.events) insert.run(id, e.id, e.supersedes ? 'fix' : 'add', e.kind, e.text, JSON.stringify(e.sourceIds), e.certainty ?? null, e.person ?? null, e.deadline ?? null, e.status ?? null, e.supersedes ?? null, e.reason ?? null, revision, now);
+      const count: any = this.db.prepare('SELECT COUNT(*) AS n FROM notes WHERE session_id=?').get(id);
+      if (count.n >= 2000) throw new Error('NOTE_CAPACITY_REACHED');
+      const payload = JSON.stringify({ text, sourceIds: cited, author: 'assistant', semanticStatus: 'UNVERIFIED_AGENT_NOTE', coversUpTo, structured: true, dangBan: dangBan ?? null, items: all.length });
+      this.db.prepare('INSERT INTO notes(session_id,item_key,revision,kind,payload,created) VALUES(?,?,?,?,?,?)').run(id, PICTURE_KEY, revision, 'observation', payload, now);
+      if (own) this.db.exec('COMMIT');
+    } catch (error) { if (own && this.db.isTransaction) this.db.exec('ROLLBACK'); throw error; }
+    this.ping(); return { saved: true, revision, added: plan.added, fixed: plan.fixed, skipped: plan.skipped, items: all.length };
   }
   // Same text on the same set of sources as the latest revision is not a new revision. The sources are checked against the session
   // first (as publish does), so equal text cannot be used to get past that check.
@@ -485,11 +530,13 @@ export class MeetingRuntime extends EventEmitter {
     if (latest && latest.text === text && latest.sourceIds.length === ids.length && [...latest.sourceIds].sort((a, b) => a - b).every((v, i) => v === ids[i])) return { saved: true, revision: latest.revision, duplicate: true };
     if (opts.expectedRevision !== undefined && opts.expectedRevision !== (latest?.revision ?? 0)) throw new Error(`PICTURE_REVISION_CONFLICT: đang sửa từ bản ${opts.expectedRevision}, đã có bản ${latest?.revision ?? 0}; đọc pma picture, gộp rồi lưu lại`);
     if (opts.central) this.requireCentralContext(id, opts.receipt);
+    // Once the picture holds cumulative items, a whole-text save would replace them with whatever the text says (the 23/11 loss): refused.
+    if ((this.db.prepare('SELECT COUNT(*) AS n FROM picture_events WHERE session_id=?').get(id) as any).n) throw new Error('PICTURE_HAS_ITEMS: bức tranh này đã có các mục cộng dồn; không lưu cả văn bản đè lên. Dùng pma picture update (chỉ gửi phần mới hoặc phần sửa)');
     const revision = (latest?.revision ?? 0) + 1;
     // How far this picture covers the meeting: its highest cited source, but never past what chinh had been handed when it was saved
     // (citing a row chinh has not been handed yet covers nothing).
     const coversUpTo = Math.min(Math.max(...ids), this.followers[MAIN_FOLLOWER]?.cursor ?? 0);
-    this.publishNote(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS, { coversUpTo }, true); return { saved: true, revision };
+    this.publishNote(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS, { coversUpTo, legacy: true }, true); return { saved: true, revision };
   }
   // Distinct IDs, each a source of this session.
   private sessionSourceIds(id: string, sourceIds: number[]) {

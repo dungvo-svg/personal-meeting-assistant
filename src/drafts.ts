@@ -74,7 +74,7 @@ export type DraftEnvelope = {
 };
 
 // ---- Strict validators (throw Invalid internally; the public functions return a result) --------------------------------------
-class Invalid extends Error { constructor(readonly code: string, readonly path: string) { super(code + ' at ' + path); } }
+export class Invalid extends Error { constructor(readonly code: string, readonly path: string) { super(code + ' at ' + path); } }
 
 // Reason-precision only: every key not listed in a schema is refused anyway; these names just get a clearer code. A draft has
 // no field that names a place or runs anything.
@@ -88,7 +88,7 @@ const TASK_BASES: readonly string[] = ['stated', 'confirmed', 'inferred'];
 
 // A closed plain object: own, enumerable-by-listing, DATA properties only (no getters that could answer differently the second
 // time), no symbol keys, no prototype tricks. `undefined` counts as absent.
-function obj(value: unknown, path: string, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
+export function obj(value: unknown, path: string, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Invalid('NOT_AN_OBJECT', path);
   const proto = Object.getPrototypeOf(value);
   if (proto !== Object.prototype && proto !== null) throw new Invalid('NOT_PLAIN_OBJECT', path);
@@ -103,13 +103,13 @@ function obj(value: unknown, path: string, required: readonly string[], optional
   for (const key of required) if (!(key in out)) throw new Invalid('MISSING_KEY', path + '.' + key);
   return out;
 }
-function arr(value: unknown, path: string, min: number, max: number): unknown[] {
+export function arr(value: unknown, path: string, min: number, max: number): unknown[] {
   if (!Array.isArray(value)) throw new Invalid('NOT_AN_ARRAY', path);
   if (value.length < min || value.length > max) throw new Invalid('BAD_LENGTH', path);
   if (Object.getPrototypeOf(value) !== Array.prototype || Reflect.ownKeys(value).length !== value.length + 1) throw new Invalid('NOT_PLAIN_ARRAY', path);
   return value.map((_, i) => { const d = Object.getOwnPropertyDescriptor(value, i); if (!d || !('value' in d)) throw new Invalid('BAD_ELEMENT', path + '[' + i + ']'); return d.value; });
 }
-function str(value: unknown, path: string, min: number, max: number): string {
+export function str(value: unknown, path: string, min: number, max: number): string {
   if (typeof value !== 'string') throw new Invalid('NOT_A_STRING', path);
   if (value.includes('\0')) throw new Invalid('NUL_IN_TEXT', path);
   const text = value.normalize('NFC').trim();
@@ -119,12 +119,12 @@ function str(value: unknown, path: string, min: number, max: number): string {
 const optStr = (value: unknown, path: string, max: number) => (value === undefined ? undefined : str(value, path, 1, max));
 // An optional text that is empty or only blanks is absent (23/11: participants with "role": "" was refused as BAD_LENGTH). A non-string, or a
 // text that is too long, is still refused.
-const optBlank = (value: unknown, path: string, max: number) => (typeof value === 'string' && !value.normalize('NFC').trim() ? undefined : optStr(value, path, max));
-function id(value: unknown, path: string): string { if (typeof value !== 'string' || !ID_RE.test(value)) throw new Invalid('BAD_ID', path); return value; }
-function int(value: unknown, path: string, min: number): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) throw new Invalid('BAD_INTEGER', path); return value; }
-function oneOf<T extends string>(value: unknown, path: string, allowed: readonly string[]): T { if (typeof value !== 'string' || !allowed.includes(value)) throw new Invalid('BAD_VALUE', path); return value as T; }
+export const optBlank = (value: unknown, path: string, max: number) => (typeof value === 'string' && !value.normalize('NFC').trim() ? undefined : optStr(value, path, max));
+export function id(value: unknown, path: string): string { if (typeof value !== 'string' || !ID_RE.test(value)) throw new Invalid('BAD_ID', path); return value; }
+export function int(value: unknown, path: string, min: number): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) throw new Invalid('BAD_INTEGER', path); return value; }
+export function oneOf<T extends string>(value: unknown, path: string, allowed: readonly string[]): T { if (typeof value !== 'string' || !allowed.includes(value)) throw new Invalid('BAD_VALUE', path); return value as T; }
 // Source ids are provenance (same rule as jobs.ts / decisions.ts): positive safe integers, unique, sorted.
-function sourceIds(value: unknown, path: string, max: number): number[] {
+export function sourceIds(value: unknown, path: string, max: number): number[] {
   const list = arr(value, path, 1, max).map((n, i) => int(n, path + '[' + i + ']', 1));
   return [...new Set(list)].sort((a, b) => a - b);
 }
@@ -185,7 +185,7 @@ function validateTasks(value: unknown): TasksContent {
 const VALIDATORS: Record<DraftKind, (value: unknown) => DraftContent> = { picture: validatePicture, translations: validateTranslations, participants: validateParticipants, summary: validateSummary, tasks: validateTasks };
 
 // Same value, same text: keys sorted, undefined dropped (same idea as context_pack.canonical).
-function canonical(value: unknown): string {
+export function canonical(value: unknown): string {
   if (Array.isArray(value)) return '[' + value.map(item => canonical(item === undefined ? null : item)).join(',') + ']';
   if (value && typeof value === 'object') {
     const body = Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined).sort(([a], [b]) => byText(a, b)).map(([k, v]) => JSON.stringify(k) + ':' + canonical(v));

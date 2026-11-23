@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { pieces, RECHECK_PIECE_SECONDS } from './ranges.js';
 import { randomBytes } from 'node:crypto';
 import { attach, call, inspect, reach } from './client.js';
+import { pagesOf } from './picture.js';
 import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
 import { loadNames, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
 
@@ -19,7 +20,11 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma purpose <giá trị> [--session ID]   đặt/đổi mục đích họp của phiên đang mở (context đổi bản: các vai đọc lại pma brief); pma brief in mục đích ở dòng đầu
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
                                    variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
-  pma picture [--file f.md --sources 1,2 --base N --receipt rcpt-…]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô);
+  pma picture update --file - --base N --receipt rcpt-… [--key K]   CẬP NHẬT bức tranh cộng dồn mỗi lô: chỉ gửi một JSON {"add":[{kind,text,sourceIds,certainty?,person?,deadline?}],
+                                   "fix":[{targetId,expectedOld,replacement:{text,...},sourceIds,reason}],"dangBan":"…"}; kind: decision|task|number|question|fact; host giữ các mục và dựng bức tranh;
+                                   mục cũ không bao giờ mất (sửa = "đã sửa: cũ → mới"); xong việc/đã trả lời = fix với replacement.status done|cancelled|resolved; một lần lưu là một giao dịch
+  pma picture [--page N|all] [--json]   đọc bức tranh (bản lớn chia trang, báo rõ còn mấy trang); --json: các mục đang dùng kèm lịch sử sửa, để viết SUMMARY
+  pma picture [--file f.md --sources 1,2 --base N --receipt rcpt-…]   (cũ) lưu CẢ văn bản bức tranh; bị từ chối khi bức tranh đã có các mục cộng dồn;
                                    lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --base N: bản đã đọc (lần đầu 0), BẮT BUỘC cho picture/summary/tasks; có bản mới hơn thì báo xung đột;
                                    --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
@@ -419,6 +424,13 @@ async function main() {
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
     case 'picture': {
+      if (positional[0] === 'update') {
+        if (!flags.file) throw new Error('SAVE_NEEDS_FILE: pma picture update cần --file <f.json> hoặc --file - (đọc stdin) với JSON {"add":[…],"fix":[…],"dangBan":"…"}. Chưa lưu gì');
+        if (flags.sources !== undefined) throw new Error('SOURCES_IN_JSON: pma picture update không có --sources; nguồn nằm trong JSON (sourceIds của từng mục; bản chỉ có dangBan thì thêm "sourceIds" ở cấp ngoài). Chưa lưu gì');
+        const r = await attach('pictureUpdate', { ...session, update: jsonOf(flags.file, 'bản cập nhật bức tranh'), ...draftFlags(flags) });
+        const part = [r.added?.length ? 'thêm ' + r.added.map((a: any) => a.id).join(', ') : '', r.fixed?.length ? 'sửa ' + r.fixed.map((f: any) => `${f.targetId}→${f.newId}`).join(', ') : '', r.skipped?.length ? 'bỏ qua trùng ' + r.skipped.join(', ') : ''].filter(Boolean).join('; ');
+        return saved('bức tranh (cập nhật' + (part ? ': ' + part : '') + ')', r, { sourceIds: [] });
+      }
       if (!flags.file) {
         const stray = SAVE_ONLY_FLAGS.filter(key => flags[key] !== undefined);
         if (stray.length) throw new Error(`SAVE_NEEDS_FILE: ${stray.map(key => '--' + key).join(' ')} chỉ dùng khi LƯU bức tranh, mà thiếu --file <f.md> hoặc --file - (đọc stdin). Chưa lưu gì; bản hiện tại giữ nguyên. Muốn đọc bức tranh thì chạy pma picture không kèm cờ nào`);
@@ -426,8 +438,15 @@ async function main() {
         const text = contentOf(flags.file, 'bức tranh'); const sourceIds = sourcesOf(flags, 'bức tranh');
         return saved('bức tranh', await attach('picture', { ...session, text, sourceIds, ...draftFlags(flags) }), { chars: text.length, sourceIds });
       }
+      if (flags.json === 'true') return out(await call('picture', { ...session, items: true }));
       const p = await call('picture', session);
-      return console.log(p ? `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n${p.text}` : 'Chưa có bức tranh cuộc họp (pma picture --file f.md --sources <id,…>)');
+      if (!p) return console.log('Chưa có bức tranh cuộc họp (pma picture update --file - --base 0 --receipt rcpt-…)');
+      // A big picture is read in whole pages (nothing cut or left out): a short one prints exactly as before.
+      const pages = pagesOf(p.text); const head = `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n`;
+      const wanted = flags.page === undefined ? 1 : flags.page === 'all' ? 0 : Number(flags.page);
+      if (!Number.isInteger(wanted) || wanted < 0 || wanted > pages.length) throw new Error(`PAGE_OUT_OF_RANGE: bức tranh có ${pages.length} trang; dùng --page 1..${pages.length} hoặc --page all`);
+      if (pages.length === 1 || wanted === 0) return console.log(head + (wanted === 0 ? pages.join('\n') : pages[0]));
+      return console.log(`${head}[trang ${wanted}/${pages.length}]\n${pages[wanted - 1]}\n\n${wanted < pages.length ? `CÒN ${pages.length - wanted} TRANG: pma picture --page ${wanted + 1} (hoặc --page all). Chưa đọc hết thì chưa gộp/sửa mục ở trang chưa đọc.` : '[hết]'}`);
     }
     case 'me': {
       const chosen = (['on', 'off', 'auto'] as const).filter(v => flags[v] === 'true');

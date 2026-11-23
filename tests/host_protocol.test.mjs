@@ -86,7 +86,7 @@ test('the current host is sent every draft unchanged', async () => {
 test('the real host says what it implements: its ping carries the protocol and exactly the listed capabilities (read as text)', () => {
   const daemon = readFileSync(resolve('src/daemon.ts'), 'utf8');
   assert.match(daemon, /ping: \(\) => \(\{ ok: true, version: VERSION, pid: process\.pid, testMode: runtime\.testMode, protocol: PROTOCOL, capabilities: \[\.\.\.CAPABILITIES\] \}\)/);
-  assert.deepEqual([...CAPABILITIES], ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1', 'mic-session/2', 'meeting-purpose/1']);
+  assert.deepEqual([...CAPABILITIES], ['draft-guard/1', 'context-receipt/1', 'job-token/1', 'mic-session/1', 'mic-session/2', 'meeting-purpose/1', 'picture-items/1']);
 });
 
 // Writes that go through call(), not attach (Codex counterexample on the capability fence): the picture's reserved note key, and an

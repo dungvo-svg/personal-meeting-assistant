@@ -114,17 +114,17 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
 
 ## 5. Trong lúc họp (phiên trung tâm)
 
-- **Mỗi lô 60 giây giữ bức tranh của CẢ cuộc họp, không chỉ khung 60 giây vừa nghe.**
-  - Sau mỗi lô (follow in `CẬP NHẬT BỨC TRANH`), viết lại toàn bộ bức tranh từ đầu buổi tới đoạn mới nhất:
-    - **Mục đích họp** (một dòng, lấy từ `brief`): dẫn đường cho mọi mục dưới. Họp thông báo/hướng dẫn thì việc, tên, số trình chiếu khi làm mẫu ghi là "ví dụ", không vào **Việc – người – hạn**;
-    - **Đang bàn**: chủ đề hiện tại, ai đang nói;
-    - **Diễn tiến**: các chủ đề đã qua, mỗi chủ đề một dòng;
-    - **Đã chốt**;
-    - **Việc – người – hạn**;
-    - **Câu hỏi mở / còn tranh luận**;
-    - **Người dự và lập trường** (khi rõ);
-    - **Chỗ chưa nghe rõ** (#id, đã/chưa recheck).
-  - Lưu bằng `{{PMA}} picture --file - --sources <id của lô này> --receipt <rcpt-…> --base <bản đã đọc> <<'MD'`, rồi bức tranh, rồi `MD`. `--base` là số bản bạn dựa vào (lần đầu 0, sau đó là `revision` lần lưu trước trả về); có bản mới hơn thì host báo xung đột: đọc `{{PMA}} picture`, gộp, lưu lại. Mỗi lần lưu là một bản mới; `{{PMA}} picture` đọc bản mới nhất.
+- **Bức tranh là CỘNG DỒN: host giữ các mục, mỗi lô bạn chỉ gửi phần MỚI hoặc phần SỬA.** Không viết lại cả bức tranh (23/11: viết lại cả bản làm rơi số liệu từng người và cả đoạn bàn thưởng).
+  - Sau mỗi lô (follow in `CẬP NHẬT BỨC TRANH`) gửi một JSON: `{{PMA}} picture update --file - --receipt <rcpt-…> --base <bản đã đọc> --key <khoá riêng của lô> <<'JSON'`, rồi JSON, rồi `JSON`:
+    `{"add":[{"kind":"decision|task|number|question|fact","text":"…","sourceIds":[121,122],"person":"…","deadline":"…","certainty":"firm|tentative"}],"fix":[{"targetId":"D2","expectedOld":"<nguyên văn mục cũ>","replacement":{"text":"…"},"sourceIds":[130],"reason":"…"}],"dangBan":"…"}`
+  - Mọi phần đều tùy chọn nhưng phải có ít nhất một. Mỗi mục phải có `sourceIds` (#id có chữ thật); bản chỉ có `dangBan` thì thêm `"sourceIds"` ở cấp ngoài. Host dựng bức tranh từ các mục và tự ghi **Mục đích họp** ở đầu:
+    - `decision` đã chốt (`certainty: tentative` cho "tạm", "nếu được"); `task` việc, kèm `person`, `deadline`; `number` số liệu (ghi người/ô nó thuộc về); `question` câu hỏi mở; `fact` điều khác cần nhớ (lập trường, chỗ chưa nghe rõ + #id).
+    - Họp thông báo/hướng dẫn: việc, tên, số trình chiếu khi làm mẫu ghi là `fact` "ví dụ", không phải `task`;
+    - `dangBan` là chữ tự do về chủ đề đang bàn, **thay mỗi lô**; không gửi thì giữ bản trước.
+  - Mục đã gửi **không bao giờ mất và không bị viết đè.** Nghe thấy đính chính thì dùng `fix`: nêu `targetId` (mã trong ngoặc vuông của `pma picture`), `expectedOld` đúng nguyên văn mục đang có, chữ mới, `reason` và `sourceIds` của chỗ đính chính. Bức tranh hiện "đã sửa: cũ → mới". Câu hỏi được trả lời: `fix` với `replacement.status` = `resolved` và chữ ghi cả câu trả lời; việc xong hoặc huỷ: `done` hoặc `cancelled`. Host từ chối `fix` sai chữ cũ, mục đã được sửa rồi, hoặc thiếu nguồn: đọc lại rồi gửi lại.
+  - Gửi mục nhỏ ngay trong lô nghe được, đừng gom tới cuối buổi. Mục trùng với mục đang có thì host bỏ qua; lỗi thì cả lần gửi không lưu gì, gửi lại cùng `--key` là an toàn.
+  - `--base` là `revision` bạn đã đọc (lần đầu 0, sau đó là `revision` lần lưu trước); có bản mới hơn thì host báo xung đột: đọc `{{PMA}} picture`, bỏ mục đã có, gửi lại phần còn lại với `--base` mới. Mỗi lần lưu in `ĐÃ LƯU …` kèm mã mục vừa thêm (D1, T2…).
+  - Đọc: `{{PMA}} picture` (bức tranh lớn chia trang: làm theo dòng `CÒN n TRANG`, hoặc `--page all`); `{{PMA}} picture --json` cho các mục đang dùng kèm lịch sử sửa. Lệnh cũ `picture --file <văn bản>` chỉ còn cho buổi chưa có mục nào và bị từ chối khi đã có.
   - Trả lời người dùng **chỉ phần thay đổi** so với bản trước, vài dòng. Người dùng hỏi gì thì trả lời dựa trên bức tranh + `#id`.
   - Phiên Claude mới vào giữa họp: `{{PMA}} brief` rồi `{{PMA}} picture` là đủ để nối mạch.
 - Không tự kết thúc cuộc họp. Chỉ người dùng gõ kết thúc. Câu chào cuối buổi chưa đủ để kết thúc.
@@ -136,7 +136,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
   Lệnh nhận dạng lại từ WAV (beam cao, các phương án vi/lo/th). Khoảng dài hơn 5 phút tự được chia thành từng đoạn 5 phút, mỗi đoạn một dòng kết quả. Nghe lại nặng GPU: đoạn dài để sau họp. Kết quả được lưu và RAW ghi `(đã nghe lại)`. Vẫn không rõ thì ghi `[chưa nghe rõ]`, không đoán. Không bắt người dùng nghe lại: họ đã nghe trực tiếp.
 - `RECHECK_YIELDED`: nghe lại của một buổi khác bị dừng (hoặc hoãn) vì một cuộc họp đang mở cần GPU. Khoảng đó nằm ở "Chưa làm xong" của buổi cũ và host tự chạy lại sau khi họp này `stop`; đừng chạy lại trong lúc họp.
 - Lệnh lưu (picture, translate, participants, summary, tasks, job done) luôn in `ĐÃ LƯU …` hoặc một lỗi tiếng Việt nói cần sửa gì. Không thấy một trong hai là chưa lưu: kiểm `{{PMA}} status`. `translate` và `picture` còn lưu được tới 10 phút sau `stop` (bản dịch lô cuối của agent nền).
-- Bức tranh đã thay cho ghi chú cuốn chiếu. `NHẮC GHI CHÚ` nghĩa là bức tranh đã lâu chưa cập nhật; làm ngay.
+- Bức tranh đã thay cho ghi chú cuốn chiếu. `NHẮC GHI CHÚ` nghĩa là bức tranh đã lâu chưa cập nhật; làm ngay (`picture update` với phần mới nghe được).
 - Khi follow in `CẢNH BÁO TRỄ`, dừng mọi việc nặng trên máy.
 - `pma start` báo `RUNTIME_BUSY`: một host PMA khác (checkout, thư mục dữ liệu hoặc cổng khác) đang giữ máy. Báo người dùng đúng pid, cổng, thư mục trong lỗi. Không tự tắt nó khi người dùng chưa đồng ý. Lỗi nói `khoá phụ … còn lại từ pid … đã dừng`: kiểm pid đó đã dừng thật, xin người dùng cho xoá đúng file trong lỗi, rồi chạy lại. `pma status` chỉ đọc: không có host thì báo `NOT_RUNNING` kèm ai đang giữ máy, không tự bật host.
 - Bộ nghe đứng (không ra chữ dù bộ ghi vẫn ghi, hoặc không báo gì) quá 90 giây thì công cụ **tự chạy lại bộ nghe và tiếp đúng chỗ, không bỏ đoạn nào**; `lastError` ghi lý do. Không cần dừng tiến trình bằng tay. File thu nào bộ nghe không đọc được thì có dòng `[KHOẢNG TRỐNG ASR] … file thu số N`: `recheck` sau họp.
@@ -170,7 +170,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
    2. Ai chủ trì, ai được giao việc nào (nếu bạn không chắc)?
    3. Tài liệu được nhắc là của ai lập, ai chỉ chuyển?
 5. Viết báo cáo:
-   - SUMMARY, dựng từ bức tranh cuối cùng (`{{PMA}} picture`), RAW đã nghe lại và ảnh màn hình chia sẻ. Mở đầu bằng một dòng **Mục đích họp** (từ `brief`), rồi theo thứ tự (owner 21/11, lấy chỗ mạnh của ghi chú họp Claude 18/11, giữ `#id` mà ghi chú đó không có):
+   - SUMMARY, dựng từ MỌI mục đang dùng của bức tranh cùng lịch sử đính chính và phần "Đang bàn" (`{{PMA}} picture --page all`, hoặc `--json`), rồi đối chiếu với RAW đã nghe lại và ảnh màn hình chia sẻ. Bức tranh là mục lục chưa kiểm, không thay RAW: mục nào RAW hoặc nghe lại không xác nhận thì ghi `[chưa kiểm]`, không bỏ lặng. Mỗi quyết định, việc, con số trong SUMMARY ghi kèm `#id` nguồn (lấy từ `sourceIds` của mục). Mở đầu bằng một dòng **Mục đích họp** (từ `brief`), rồi theo thứ tự (owner 21/11, lấy chỗ mạnh của ghi chú họp Claude 18/11, giữ `#id` mà ghi chú đó không có):
      1. **Tóm tắt**: một đoạn 5–8 câu: họp về những gì, kết luận chính, ai làm gì tiếp.
      2. **Quyết định**: mỗi dòng một quyết định, mở đầu bằng mức của nó: `Chốt:` (đã quyết), `Tạm:` (làm trước rồi xem lại, "tạm thời", "nếu được"), `Đồng ý nguyên tắc:` (đồng ý hướng, chưa có cách làm); kèm `#id`. Không nâng "tạm" thành "chốt".
      3. **Câu hỏi mở**: điều được hỏi mà chưa có câu trả lời; ý được đưa ra mà chưa ai quyết thì mở đầu `Đề xuất:`.

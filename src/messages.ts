@@ -36,6 +36,7 @@ export const explainInput = (error: z.ZodError) => 'INVALID_INPUT: ' + error.iss
 const CODE_TEXT: Record<string, string> = {
   BAD_LENGTH: 'độ dài hoặc số lượng không hợp lệ (rỗng, quá ngắn hoặc quá dài)', NOT_A_STRING: 'phải là chữ', NOT_AN_ARRAY: 'phải là danh sách', NOT_AN_OBJECT: 'phải là một đối tượng {…}', MISSING_KEY: 'thiếu trường bắt buộc',
   UNKNOWN_KEY: 'có trường không được phép', FORBIDDEN_KEY: 'có trường không được phép', BAD_INTEGER: 'phải là số nguyên dương', BAD_VALUE: 'giá trị không nằm trong các giá trị cho phép', DUPLICATE_ENTRY: 'bị trùng với mục khác',
+  EMPTY_UPDATE: 'bản cập nhật rỗng: cần add, fix hoặc dangBan', NO_SOURCES: 'chưa có #id nào: mỗi mục phải có sourceIds; bản chỉ có dangBan thì thêm sourceIds ở cấp ngoài', BAD_ID: 'mã mục sai dạng (D1, T2, N3, Q4, F5 — in trong ngoặc vuông của pma picture)',
   NUL_IN_TEXT: 'chứa ký tự không hợp lệ', UNKNOWN_KIND: 'loại nội dung không có',
 };
 export function explainDraft(kind: string, code: string, path: string): string {

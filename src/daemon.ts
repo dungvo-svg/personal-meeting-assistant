@@ -16,6 +16,7 @@ import { composeBrief } from './brief.js';
 import { applyParticipants } from './participants.js';
 import { setMicState } from './mic.js';
 import { validateDraft, type DraftKind } from './drafts.js';
+import { validatePictureUpdate } from './picture.js';
 import { CAPABILITIES, PROTOCOL } from './protocol.js';
 import { explainDraft, explainInput } from './messages.js';
 
@@ -186,10 +187,20 @@ const methods: Record<string, (input: any) => any> = {
     return a.action === 'mark' ? { first: board.mark(s, a.kind, a.detail) } : { cleared: board.clear(s, a.kind) };
   },
   picture: input => {
-    const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional(), expectedRevision: z.number().int().nonnegative().optional(), receipt, idempotencyKey: key }).parse(input);
+    const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional(), expectedRevision: z.number().int().nonnegative().optional(), receipt, idempotencyKey: key, items: z.boolean().optional() }).parse(input);
     const id = a.text ? recent(a.sessionId) : current(a.sessionId);
+    if (!a.text && a.items) return runtime.pictureItems(id);
     if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); if (a.expectedRevision === undefined) throw new Error(BASE_REQUIRED('picture')); const v = draft('picture', { text: a.text, sourceIds: a.sourceIds }); const sourceIds = a.sourceIds; return runtime.draftOnce(id, 'picture', a.idempotencyKey, v.contentHash, () => runtime.savePicture(id, a.text!, sourceIds, { expectedRevision: a.expectedRevision, central: true, receipt: a.receipt })); }
     return runtime.picture(id);
+  },
+  // Cumulative picture (plan item 10): the session sends only what is new or corrected; the host keeps the items and renders the picture.
+  // Same guards as the whole-text save (session, base, receipt, key); limits are per item and per update.
+  pictureUpdate: input => {
+    const a = z.object({ sessionId: sid.optional(), update: z.unknown(), expectedRevision: z.number().int().nonnegative().optional(), receipt, idempotencyKey: key }).parse(input);
+    const id = recent(a.sessionId);
+    if (a.expectedRevision === undefined) throw new Error(BASE_REQUIRED('picture'));
+    const v = validatePictureUpdate(a.update); if (!v.ok) throw new Error(`INVALID_PICTURE_UPDATE: ${v.code} ${v.path} — ${explainDraft('picture', v.code, v.path)}`);
+    return runtime.draftOnce(id, 'picture', a.idempotencyKey, v.contentHash, () => runtime.savePictureUpdate(id, v.update, { expectedRevision: a.expectedRevision, central: true, receipt: a.receipt }));
   },
   mic: input => setMicState(runtime, z.object({ state: z.enum(['on', 'off', 'auto']) }).parse(input).state),
   fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); const a = z.object({ text: z.string().min(1).max(8000), language: z.enum(['vi', 'lo', 'th']).optional() }).parse(input); return { id: runtime.ingest(a.text, 'synthetic_fixture', 0, 0, '', '', a.language) }; },
