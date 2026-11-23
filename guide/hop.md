@@ -23,6 +23,14 @@ Không ghi file nháp nào (owner 03/11: giữ chặn ghi vào `.local`, đi qua
 [{"name": "Namfon", "role": "Giám đốc kho", "languages": ["lo"], "variants": ["Nam Phủ"]}]
 ```
 Thiếu thông tin thì để trống, không đoán.
+
+**Bảng tên theo context** (0.13.3): cùng danh sách này giữ cả những tên máy hay nghe sai ngoài người dự. Mỗi mục có `kind` (bỏ trống = `attendee`):
+- `attendee`: người dự họp (mặc định);
+- `mentioned`: người được nhắc tên mà không dự (lãnh đạo, đối tác, người trong việc đang bàn);
+- `alias`: biệt danh hoặc tên hiển thị của một người, kèm `of` là người đó (ví dụ cách người ta gọi tắt, hoặc tên tài khoản Zoom/Meet khác tên thật): `{"name": "<biệt danh>", "kind": "alias", "of": "<tên thật>"}`. Biệt danh chỉ giúp bạn hiểu người nói và tên người nhận việc, **không** bị máy tự sửa trong chữ (từ ngắn như "Ta" cũng là từ thường);
+- `system`: tên hệ thống, sản phẩm, thuật ngữ (Claude, OKR, MISA, AMIS, tên đối tác, file/folder…).
+
+Tên người dự, người được nhắc, hệ thống, bảng tên chung và tên đã gặp ở các buổi trước trên máy này được **đưa cho bộ nghe làm từ khóa** (ngắn, vài chục tên); mỗi lần danh sách đổi, bộ nghe dùng bảng mới từ đoạn kế tiếp. `variants` là các chữ máy hay viết sai và được sửa trong chữ hiển thị thành `Tên (nghe: …)`. Chữ sai mà **cũng là từ thường** (ví dụ "dùng" nghe thay cho một tên người) cho vào `weakVariants`: chỉ được sửa khi ngay sau nó là động từ giao việc (nghiên cứu, phụ trách, gửi, kiểm tra…) và trước nó không phải từ làm nó thành động từ thường ("để", "cần", "không"…); chỗ sửa như vậy ghi thêm cờ `(sửa theo bảng tên)`. Tên chưa chắc thì giữ `(nghe: …)`, không tự thay.
 - Thuật ngữ phụ thuộc context này. Context thiếu thì chữ ra thô là bình thường; đã có WAV để nghe lại.
 - Tôi là ai: `--me "Tên"` ở `pma start` (chỉ là thông tin, không cấp quyền gì). Chưa biết thì hỏi người dùng tên.
 
@@ -123,6 +131,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
     - Họp thông báo/hướng dẫn: việc, tên, số trình chiếu khi làm mẫu ghi là `fact` "ví dụ", không phải `task`;
     - `dangBan` là chữ tự do về chủ đề đang bàn, **thay mỗi lô**; không gửi thì giữ bản trước.
   - Mục đã gửi **không bao giờ mất và không bị viết đè.** Nghe thấy đính chính thì dùng `fix`: nêu `targetId` (mã trong ngoặc vuông của `pma picture`), `expectedOld` đúng nguyên văn mục đang có, chữ mới, `reason` và `sourceIds` của chỗ đính chính. Bức tranh hiện "đã sửa: cũ → mới". Câu hỏi được trả lời: `fix` với `replacement.status` = `resolved` và chữ ghi cả câu trả lời; việc xong hoặc huỷ: `done` hoặc `cancelled`. Host từ chối `fix` sai chữ cũ, mục đã được sửa rồi, hoặc thiếu nguồn: đọc lại rồi gửi lại.
+  - **Hai cách nghe → đúng ô** (0.13.3): đoạn tiếng Lào hoặc lẫn Việt–Lào có thể có hai cách nghe (xem "Đọc dòng transcript"). Đọc cả hai cách nghe cùng màn hình đang chiếu, bảng tên và con số rồi mới đặt nội dung vào ô `fact`/`number`/`decision`/`task`; con số và tên chỉ lấy khi khớp ngữ cảnh. Chỗ cả hai vô nghĩa: không đặt vào ô nào, ghi `fact` "chưa nghe rõ" kèm `#id` rồi `recheck`.
   - Gửi mục nhỏ ngay trong lô nghe được, đừng gom tới cuối buổi. Mục trùng với mục đang có thì host bỏ qua; lỗi thì cả lần gửi không lưu gì, gửi lại cùng `--key` là an toàn.
   - `--base` là `revision` bạn đã đọc (lần đầu 0, sau đó là `revision` lần lưu trước); có bản mới hơn thì host báo xung đột: đọc `{{PMA}} picture`, bỏ mục đã có, gửi lại phần còn lại với `--base` mới. Mỗi lần lưu in `ĐÃ LƯU …` kèm mã mục vừa thêm (D1, T2…).
   - Đọc: `{{PMA}} picture` (bức tranh lớn chia trang: làm theo dòng `CÒN n TRANG`, hoặc `--page all`); `{{PMA}} picture --json` cho các mục đang dùng kèm lịch sử sửa. Lệnh cũ `picture --file <văn bản>` chỉ còn cho buổi chưa có mục nào và bị từ chối khi đã có.
@@ -134,7 +143,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
   - chữ vô nghĩa, câu ngắn lạc ngữ cảnh;
   - đoạn người dùng hỏi tới.
 
-  Lệnh nhận dạng lại từ WAV (beam cao, các phương án vi/lo/th). Khoảng dài hơn 5 phút tự được chia thành từng đoạn 5 phút, mỗi đoạn một dòng kết quả. Nghe lại nặng GPU: đoạn dài để sau họp. Kết quả được lưu và RAW ghi `(đã nghe lại)`. Vẫn không rõ thì ghi `[chưa nghe rõ]`, không đoán. Không bắt người dùng nghe lại: họ đã nghe trực tiếp.
+  Lệnh nhận dạng lại từ WAV (beam cao, các phương án vi/lo/th). Khoảng dài hơn 5 phút tự được chia thành từng đoạn 5 phút, mỗi đoạn một dòng kết quả. Nghe lại nặng GPU: đoạn dài để sau họp. Kết quả được lưu và RAW ghi `(đã nghe lại)`. Các phương án của `recheck` theo đúng cách đọc hai cách nghe ở mục "Đọc dòng transcript" (cùng các điểm, cùng quy tắc). Vẫn không rõ thì ghi `[chưa nghe rõ]`, không đoán. Không bắt người dùng nghe lại: họ đã nghe trực tiếp.
 - `RECHECK_YIELDED`: nghe lại của một buổi khác bị dừng (hoặc hoãn) vì một cuộc họp đang mở cần GPU. Khoảng đó nằm ở "Chưa làm xong" của buổi cũ và host tự chạy lại sau khi họp này `stop`; đừng chạy lại trong lúc họp.
 - Lệnh lưu (picture, translate, participants, summary, tasks, job done) luôn in `ĐÃ LƯU …` hoặc một lỗi tiếng Việt nói cần sửa gì. Không thấy một trong hai là chưa lưu: kiểm `{{PMA}} status`. `translate` và `picture` còn lưu được tới 10 phút sau `stop` (bản dịch lô cuối của agent nền).
 - Bức tranh đã thay cho ghi chú cuốn chiếu. `NHẮC GHI CHÚ` nghĩa là bức tranh đã lâu chưa cập nhật; làm ngay (`picture update` với phần mới nghe được).
@@ -163,9 +172,9 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
 3. `{{PMA}} coverage` liệt kê:
    - chỗ WAV có âm mà không có chữ;
    - đoạn lỗi;
-   - đoạn cờ không chắc.
+   - đoạn cờ không chắc, kể cả đoạn "hai cách nghe chưa phân định" (loại `CHƯA CHẮC`).
 
-   `recheck` những chỗ có ảnh hưởng tới nội dung trước khi viết tóm tắt.
+   `recheck` những chỗ có ảnh hưởng tới nội dung trước khi viết tóm tắt. Đoạn "chưa phân định" nằm trong số đó: sau khi nghe lại mà vẫn không phân định thì SUMMARY ghi `[chưa nghe rõ]` kèm `#id`, không chọn đại một cách nghe.
 4. Hỏi người dùng tối đa 3 câu ngắn trong một tin nhắn (người dùng có thể bỏ qua). **Chỉ hỏi chỗ chưa rõ mà còn ảnh hưởng tới mục đích họp**: họp thông báo/hướng dẫn thì không hỏi người nhận việc làm mẫu; họp giao việc thì ai nhận việc nào là câu chính:
    1. Họp thật sự bắt đầu từ lúc nào? Phần trước đó không đưa vào tóm tắt; RAW giữ nguyên.
    2. Ai chủ trì, ai được giao việc nào (nếu bạn không chắc)?
@@ -214,11 +223,16 @@ Mỗi dòng có dạng `#id HH:MM:SS [Tôi …] ngôn ngữ⚠cờ: nội dung`.
 | `lo` | Tiếng Lào từ model tiếng Lào (GPU). Dịch theo nghĩa, giữ số và tên. |
 | `th` | Tiếng Thái, hoặc tiếng Lào máy nghe ra chữ Thái (phiên âm: đọc theo âm Lào). Dịch theo nghĩa. Đạt khi nghĩa tiếng Việt đúng, không cần đúng chữ. Số dễ sai (FLEURS 31/10: 2006 → 2016): đối chiếu với `↳ lo` hoặc `recheck`. |
 | `↳ lo:` / `↳ th:` | Phương án nhận dạng khác cho cùng đoạn (khi máy không chắc là Lào hay Thái). Đọc cả hai để dịch. |
+| `↳ lo (cách nghe song song)` / `↳ vi (cách nghe song song)` | **Cách nghe thứ hai của cùng đoạn âm**, do mô hình kia giải mã (0.13: mỗi đoạn chạy cả mô hình Việt và mô hình Lào). Kèm `[điểm mô hình …· âm tiết Việt n/d = …% · lặp …%]` rồi chữ. Đọc theo mục "Hai cách nghe" bên dưới. |
+| `↳ lo (dòng chính)` / `↳ vi (dòng chính)` | Dòng chính của đoạn (chữ ở đầu dòng `#id`) là cách nghe này; dòng `↳` chỉ in **điểm**, không in lại chữ. |
+| `hai cách nghe chưa phân định` | Cờ `READINGS_UNDECIDED`: máy không biết cách nghe nào đúng. Đọc cả hai; `coverage` liệt kê đoạn này để nghe lại sau họp. |
 | `Lào kém` | Model Lào không tự tin. Chỉ lấy số và tên khớp ngữ cảnh; đáng `recheck`. |
 | `ngôn ngữ không chắc` | Máy không chắc ngôn ngữ. Đáng `recheck`. |
 | `[bỏ: nghi câu ảo]` | Câu Whisper bịa khi im lặng. Bỏ qua. |
+| `[bỏ: nghi câu ảo ở dòng chính; còn cách nghe khác]` | Dòng chính bị nghi là câu bịa nhưng cách nghe kia của cùng đoạn có chữ: đọc dòng `↳` bên dưới, đừng bỏ cả đoạn. |
 | `lặp` / `#a–#b lặp ×N` | Vòng lặp nhận dạng, đã gộp. Coi như một lần nói. |
 | `Tên (nghe: …)` | Tên đã sửa theo bảng tên / người dự; chữ trong ngoặc là chữ máy nghe được. |
+| `Tên (nghe: …) (sửa theo bảng tên)` | Chữ máy nghe là một từ thường ("dùng" thay cho một tên người), được sửa **chỉ vì câu cho thấy đó là tên** (đứng trước động từ giao việc). Kiểm lại bằng `recheck` khi tên đó quyết định ai nhận việc. |
 | `[Tên]` / `[A→B]` | Tài khoản Zoom có viền "đang nói" lúc đó (`pma screen`). Là micro của tài khoản đó có tiếng, không chắc chắn là người đó: nhiều người chung một micro thì chỉ ra một tên; viền có thể trễ khoảng 1 giây. `A→B`: viền đổi giữa câu. Không có ngoặc = không có viền trong 30 giây trước, không đoán. Tên tiếng Việt có thể mất dấu khi máy chưa có gói OCR tiếng Việt. |
 | `MÀN HÌNH hh:mm:ss: …` | Ai bắt đầu/dừng chia sẻ màn hình, và đường dẫn ảnh màn hình chia sẻ khi nội dung đổi. Ảnh là dữ liệu nội bộ, chỉ trên máy. |
 | `Tiếng loa lọt vào mic (trùng #id)` | Dòng kênh micro mà chữ hoặc âm trùng với dòng loa cùng lúc (0.13.2): là tiếng người dự lọt vào micro, **không phải lời chủ họp**. Không đưa vào "Tôi", không dịch; nội dung đã có ở dòng loa #id. |
@@ -231,6 +245,15 @@ Mỗi dòng có dạng `#id HH:MM:SS [Tôi …] ngôn ngữ⚠cờ: nội dung`.
 | `CONTEXT CHƯA ĐỌC` / `CONTEXT ĐỔI (v…)` | Vai này chưa đọc, hoặc đọc bản context cũ: chạy `{{PMA}} brief --as <vai>`. |
 | `NHẮC HỎI #id: …` | Câu hỏi đang chờ người dùng, nhắc đúng một lần. |
 | `→ (Claude dịch) …` | Bản dịch bộ dịch nền đã lưu (chỉ hiện trong `{{PMA}} read` của phiên trung tâm và trong RAW). |
+
+### Hai cách nghe của một đoạn (0.13)
+
+Với phiên có cả `vi` và `lo`, mỗi đoạn âm được giải mã **hai lần**, bằng mô hình Việt và mô hình Lào; cả hai cách nghe được giữ, không ép chọn sớm. Dòng `#id` mang chữ của cách nghe được chọn làm dòng chính; các dòng `↳` bên dưới là cách nghe còn lại (kèm chữ) và dòng chính (chỉ có điểm).
+- **Hai bản điểm không cùng thang.** `điểm mô hình` là log-xác suất trung bình của chính mô hình đó; điểm của mô hình Việt và mô hình Lào **không so trực tiếp được**. Không bao giờ tin một cách nghe chỉ vì điểm của nó cao hơn.
+- **`viSyllableShare`** (`âm tiết Việt n/d`) cho biết bao nhiêu phần chữ là âm tiết tiếng Việt hợp lệ, **không** cho biết chữ có nghĩa: tiếng Lào bị ghi ra chữ Việt vô nghĩa vẫn có thể đạt 100%. Dùng nó để biết chữ "trông như" tiếng Việt, rồi tự đọc xem có nghĩa không. `lặp` là phạt vòng lặp; `nghi câu bịa` / `không có chữ` là trạng thái của cách nghe đó.
+- **Đoạn `chưa phân định`:** đọc cả hai cách nghe, rồi dùng màn hình đang chiếu, bảng tên (`brief`) và các con số để đặt nội dung vào đúng ô (đang bàn / số liệu / đã chốt / việc–người–hạn). Con số và tên chỉ lấy khi khớp ngữ cảnh. Cách nghe có điểm cao hơn mà vô nghĩa trong ngữ cảnh thì bỏ.
+- **Cả hai đều vô nghĩa:** ghi `[chưa nghe rõ]` rồi `recheck` từ WAV; các phương án của `recheck` có cùng điểm và theo cùng quy tắc này.
+- Ví dụ đã gặp (23/11): bản Việt "La kha Vê nừng" là tiếng Lào **ລາຄາ P1** = giá P1; bản Việt "Hàn khải nhốt" là **ຮ້ານຂາຍຍ່ອຍ** = cửa hàng bán lẻ. Bản Việt chỉ là âm Lào đọc thành âm tiết Việt, vô nghĩa; chữ Lào cho nghĩa đúng. Vẫn kiểm lại bằng màn hình và bảng tên trước khi lấy.
 
 ## Phát lại file ghi hình
 

@@ -171,6 +171,22 @@ test('a folded group prints its mic label; a hallucination row stays content-fre
   });
 });
 
+test('a hallucination row with a second reading that has words does not hide that reading; with nothing in it, it stays content-free (item 1b)', async () => {
+  const reading = (language, more = {}) => ({ rv: 1, language, model: 'm-' + language, text: 'chữ-' + language, avgLogProb: -0.5, score: -0.5, viSyllableShare: null, viSyllables: 0, viTokens: 0, viSyllableVersion: 'v', loopPenalty: 0, status: 'ok', picked: false, ...more });
+  const rows = [
+    row(1, 'Hãy subscribe cho kênh', { boundary: 'LIKELY_HALLUCINATION; READINGS_UNDECIDED; ' + LIVE, alternatives: [reading('vi', { picked: true, text: 'Hãy subscribe cho kênh' }), reading('lo', { text: 'ລາຄາ P1 ແມ່ນ 120,000' })] }),
+    row(2, 'Hãy subscribe cho kênh', { boundary: 'LIKELY_HALLUCINATION; READINGS_UNDECIDED; ' + LIVE, alternatives: [reading('vi', { picked: true }), reading('lo', { status: 'empty', text: '' })] }),
+  ];
+  let n = 0;
+  await withHost((method, args) => method === 'status' ? status() : method === 'release' ? { released: true } : args.limit === 1 ? reply([], args.after) : ++n === 1 ? reply(rows, 2) : reply([], 2, { ended: true }), async host => {
+    const { out } = await cli(host, ['follow', '--no-notes']);
+    assert.ok(out.includes('#1 [bỏ: nghi câu ảo ở dòng chính; còn cách nghe khác]\n  ↳ vi (dòng chính) ['), out);
+    assert.ok(out.includes('  ↳ lo (cách nghe song song) [') && out.includes(']: ລາຄາ P1 ແມ່ນ 120,000'), 'the other reading is printed with its text');
+    assert.ok(out.includes('#2 [bỏ: nghi câu ảo]\n'), 'nothing to spare: content-free as before');
+    assert.ok(!out.includes('subscribe'), 'the ghost phrase itself is never printed');
+  });
+});
+
 test('pma read --as sends the role and prints only what it got; an all-hidden page still says where to go on; without --as it is the full read', async () => {
   const pages = { 0: { items: [row(3, 'công khai ba.')], nextCursor: 9, done: false }, 9: { items: [], nextCursor: 14, done: false }, 14: { items: [row(15, 'công khai mười lăm.')], nextCursor: 15, done: true } };
   await withHost((method, args) => { if (method === 'read') return pages[args.after]; throw new Error('unexpected ' + method); }, async host => {
