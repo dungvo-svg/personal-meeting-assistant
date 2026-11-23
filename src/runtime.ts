@@ -14,6 +14,7 @@ import { shareOk } from './mic_share.js';
 import { Ledger } from './jobs.js';
 import { DecisionLedger } from './decisions.js';
 import { PICTURE_KEY } from './protocol.js';
+import { parsePurpose } from './purpose.js';
 import { CoworkLedger, seatStatus, type HandledKind } from './cowork.js';
 import { applyCorrections, bindingKey, bindRole, buildPack, CONTEXT_TABLES_SQL, readiness, type Bindings, type ContextPack } from './context_pack.js';
 
@@ -328,9 +329,12 @@ export class MeetingRuntime extends EventEmitter {
   machineState() { if (!this.machine) return null; const h = machineHolder(); if (!h) return null; const { token, ...rest } = h; return { ...rest, mine: token === this.machine.token }; }
   // extra.mic false: no microphone for this meeting, decided before anything can open one (the remembered speaker starts the recorder
   // right here, so a later `select --no-mic` would be too late for the first seconds).
-  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean; mic?: boolean } = {}) {
+  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean; mic?: boolean; purpose?: string } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
+    // Refused before anything exists: a wrong word must not leave a meeting without the purpose the owner meant.
+    const purpose = extra.purpose === undefined ? undefined : parsePurpose(extra.purpose).id;
     if (this.session && !this.session.ended) {
+      if (purpose) this.setPurpose(this.session.id, purpose);
       // A meeting is already open (start returns it). An explicit no-mic is applied only where it is true: no recorder yet, or one
       // already without the microphone. A recorder that records (or may record) the microphone is not changed here, and the call
       // says so instead of looking like it worked: select --no-mic restarts that recorder without it (04/11, review of runtime.ts:283).
@@ -353,7 +357,7 @@ export class MeetingRuntime extends EventEmitter {
     // Who "Tôi" is (remembered for next time) and when the meeting was scheduled, for the coverage line in reports.
     if (extra.me?.trim()) this.saveProfile({ me: extra.me.trim().slice(0, 80) });
     const scheduled = scheduledAt(extra.at);
-    const context = { ...base, languages, me: this.profile.me, scheduledStart: scheduled, ...(extra.mic === false ? { micOff: true } : {}) };
+    const context = { ...base, languages, me: this.profile.me, scheduledStart: scheduled, ...(purpose ? { purpose } : {}), ...(extra.mic === false ? { micOff: true } : {}) };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
     this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.followers = {}; this.committed = {}; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.captureState = 'OFF'; this.captureInfo = {};
@@ -565,7 +569,7 @@ export class MeetingRuntime extends EventEmitter {
   packOf(id: string, store = false): ContextPack | null {
     const row: any = this.db.prepare('SELECT title,context FROM sessions WHERE id=?').get(id); if (!row) return null;
     const c = JSON.parse(row.context);
-    const pack = buildPack({ sessionId: id, title: row.title, scheduledStart: c.scheduledStart, me: c.me, agenda: c.agenda, participants: c.participants, glossary: this.glossary, docs: c.docs, corrections: c.corrections, createdAt: new Date(this.now()).toISOString() });
+    const pack = buildPack({ sessionId: id, title: row.title, scheduledStart: c.scheduledStart, me: c.me, purpose: c.purpose, agenda: c.agenda, participants: c.participants, glossary: this.glossary, docs: c.docs, corrections: c.corrections, createdAt: new Date(this.now()).toISOString() });
     if (store) this.db.prepare('INSERT OR IGNORE INTO context_packs(session_id,version,created,json) VALUES(?,?,?,?)').run(id, pack.version, pack.createdAt, JSON.stringify(pack));
     return pack;
   }
@@ -653,6 +657,15 @@ export class MeetingRuntime extends EventEmitter {
     this.db.prepare('UPDATE sessions SET context=? WHERE id=?').run(JSON.stringify(context), id);
     if (this.session?.id === id) this.session.context = context;
     this.ping(); return { version: this.packOf(id, true)!.version, [field]: context[field].length };
+  }
+  // The meeting's purpose, set at `start --purpose` or changed for the open meeting (`pma purpose`). It lives in the session context and so in
+  // the context pack: the version changes, and every role (and the central session) is told CONTEXT ĐỔI and reads the brief again.
+  setPurpose(id: string, value: string) {
+    const purpose = parsePurpose(value); const row: any = this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id); if (!row) throw new Error('SESSION_NOT_FOUND');
+    const context = JSON.parse(row.context); const before = context.purpose ?? null; context.purpose = purpose.id;
+    this.db.prepare('UPDATE sessions SET context=? WHERE id=?').run(JSON.stringify(context), id);
+    if (this.session?.id === id) this.session.context = context;
+    this.ping(); return { sessionId: id, purpose: purpose.id, label: purpose.label, rule: purpose.rule, changed: before !== purpose.id, was: before, version: this.packOf(id, true)!.version };
   }
   // A decision (or a change of one) by `by`. Without authority it is not decided and the dependent part waits for the right person
   // as ONE owner question; everything else goes on (ENG-49).

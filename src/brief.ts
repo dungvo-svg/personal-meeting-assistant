@@ -8,6 +8,7 @@ import type { GlossaryEntry } from './text.js';
 import { audioDir } from './audio.js';
 import { loadOwner, type Owner } from './owner.js';
 import type { Participant } from './participants.js';
+import { purposeOf } from './purpose.js';
 
 export const BRIEF_MAX_BYTES = 2048;
 const AGENDA_MAX_BYTES = 520;
@@ -39,7 +40,10 @@ const STATES: Record<string, string> = { LISTENING: 'đang nghe', OFF: 'không n
 
 export function buildBrief(input: BriefInput, maxBytes = BRIEF_MAX_BYTES) {
   const { owner, session, glossary } = input; const context = session?.context ?? {};
-  const head: string[] = ['# Brief họp (context trước họp, chỉ đọc)'];
+  // The purpose is the FIRST line (0.13.0): it leads how everything below is read. Not known yet: say so, so it is settled before the picture.
+  const purpose = purposeOf(context.purpose);
+  const head: string[] = session ? [purpose ? `**Mục đích họp:** ${purpose.label} — ${purpose.rule}` : '**Mục đích họp:** chưa rõ — xác định từ lời mời hoặc hỏi chủ một lần (pma purpose thong-bao|huong-dan|giao-viec|ban-quyet-dinh)'] : [];
+  head.push('# Brief họp (context trước họp, chỉ đọc)');
   const me = owner?.name ?? context.me;
   if (me || owner) {
     const who = [me, owner?.role, owner?.company].filter(Boolean).join(' · ');

@@ -15,7 +15,8 @@ Bạn (Claude ở phiên này) là người dùng công cụ: phục vụ ngư�
 Từ nội dung người dùng gửi, rút ra trước khi mở phiên:
 - mục tiêu và giờ họp;
 - người dự (tên, vai trò, ngôn ngữ họ nói: `vi`/`lo`/`th`);
-- thuật ngữ, tên NCC, tên hệ thống, cách máy hay nghe sai các tên đó.
+- thuật ngữ, tên NCC, tên hệ thống, cách máy hay nghe sai các tên đó;
+- **mục đích họp**: `thong-bao` (thông báo), `huong-dan` (hướng dẫn), `giao-viec` (giao việc) hoặc `ban-quyet-dinh` (bàn quyết định). Xác định **trước khi viết bức tranh, SUMMARY, TASKS**: từ lời mời/chương trình người dùng gửi. Lời mời không nói rõ thì hỏi người dùng **một lần** lúc mở phiên, không hỏi lại. Họp thông báo hoặc hướng dẫn: việc, tên, số được nêu khi làm mẫu (ví dụ việc người trình bày đẩy lên một app) là **ví dụ, không vào TASKS**; đoạn chào hỏi không phải nội dung. Hai việc này (14:00, 23/11) từng bị đưa nhầm vào TASKS.
 
 Không ghi file nháp nào (owner 03/11: giữ chặn ghi vào `.local`, đi qua host). Đưa thẳng cho host qua stdin bằng `--file -`. Dạng danh sách người dự:
 ```json
@@ -29,6 +30,7 @@ Thiếu thông tin thì để trống, không đoán.
 
 `{{PMA}} start --title "<tên ngắn>" --agenda "<nội dung người dùng gửi>" --participants - --link "<link Zoom hoặc Meet>" --at <HH:MM> <<'JSON'` rồi danh sách người dự, rồi `JSON`
 - `--link` nhận Zoom (mở app) và `https://meet.google.com/…` (mở trình duyệt). Họp bắt đầu khác lịch thì sửa bằng `{{PMA}} at <HH:MM>`.
+- `--purpose <thong-bao|huong-dan|giao-viec|ban-quyet-dinh>` (nhận cả "thông báo", "hướng dẫn", "giao việc", "bàn quyết định"). Biết rồi thì đặt ngay lúc mở phiên; chưa biết hoặc đổi giữa họp thì `{{PMA}} purpose <giá trị>`. Context đổi bản: chạy lại `{{PMA}} brief --as chinh` rồi dùng biên nhận mới.
 - Ngôn ngữ mặc định `vi,lo,th`. Chỉ thu hẹp khi người dùng nói rõ.
 - **Mô hình nạp ngay**, trong lúc mọi người vào phòng.
 - **Bộ ghi tự chạy** nếu nguồn loa của lần trước vẫn còn (`{{PMA}} status` → `recorder.state RECORDING`). Không còn thì chọn nguồn:
@@ -37,7 +39,7 @@ Thiếu thông tin thì để trống, không đoán.
 - Nhắc người dùng vào họp và bật âm thanh (Zoom: **Join** + **Join Audio**; Meet: **Tham gia ngay**).
 - **Tiếng Lào**: người dự có nói tiếng Lào mà `{{PMA}} doctor` báo `CHƯA cho tiếng Lào` thì nói ngay với người dùng trước họp: lời Lào sẽ ra chữ Thái phiên âm, nghĩa/số/tên không đáng tin (21/11). Dòng như vậy có cờ `thiếu mô hình Lào`; đừng dịch chúng như chữ Thái thật, sau khi dựng mô hình thì `recheck`.
 - **Zoom: bật canh màn hình** ngay khi cửa sổ họp Zoom mở trên máy này: `{{PMA}} screen start` (chỉ đọc cửa sổ Zoom, không bấm gì). Từ đó dòng chữ có `[Tên]` người Zoom đánh dấu đang nói, và `follow` của phiên trung tâm in `MÀN HÌNH …` khi ai bắt đầu/dừng chia sẻ, kèm đường dẫn ảnh màn hình chia sẻ: mở ảnh đó để biết đang trình bày gì, đưa vào bức tranh. Cửa sổ Zoom không được thu nhỏ (bị che thì vẫn chụp được). `{{PMA}} screen status` xem tình trạng; `{{PMA}} screen stop` sau khi kết thúc. Google Meet chưa có.
-- `{{PMA}} brief` in context trước họp + một dòng tình trạng. Đọc nó ngay khi mở phiên, và mỗi khi bạn là phiên mới vào giữa họp.
+- `{{PMA}} brief` in context trước họp + một dòng tình trạng; **dòng đầu là mục đích họp** (hoặc "chưa rõ": xác định nó trước). Đọc nó ngay khi mở phiên, và mỗi khi bạn là phiên mới vào giữa họp.
 
 **Micro "Tôi"** luôn ghi, không phụ thuộc nền tảng.
 - Mỗi đoạn micro có nhãn: `Tôi (mic bật)` = nói trong họp; `Tôi (mic tắt — nói riêng)`; `Tôi (?)` = không đọc được trạng thái.
@@ -114,6 +116,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
 
 - **Mỗi lô 60 giây giữ bức tranh của CẢ cuộc họp, không chỉ khung 60 giây vừa nghe.**
   - Sau mỗi lô (follow in `CẬP NHẬT BỨC TRANH`), viết lại toàn bộ bức tranh từ đầu buổi tới đoạn mới nhất:
+    - **Mục đích họp** (một dòng, lấy từ `brief`): dẫn đường cho mọi mục dưới. Họp thông báo/hướng dẫn thì việc, tên, số trình chiếu khi làm mẫu ghi là "ví dụ", không vào **Việc – người – hạn**;
     - **Đang bàn**: chủ đề hiện tại, ai đang nói;
     - **Diễn tiến**: các chủ đề đã qua, mỗi chủ đề một dòng;
     - **Đã chốt**;
@@ -131,6 +134,8 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
   - đoạn người dùng hỏi tới.
 
   Lệnh nhận dạng lại từ WAV (beam cao, các phương án vi/lo/th). Khoảng dài hơn 5 phút tự được chia thành từng đoạn 5 phút, mỗi đoạn một dòng kết quả. Nghe lại nặng GPU: đoạn dài để sau họp. Kết quả được lưu và RAW ghi `(đã nghe lại)`. Vẫn không rõ thì ghi `[chưa nghe rõ]`, không đoán. Không bắt người dùng nghe lại: họ đã nghe trực tiếp.
+- `RECHECK_YIELDED`: nghe lại của một buổi khác bị dừng (hoặc hoãn) vì một cuộc họp đang mở cần GPU. Khoảng đó nằm ở "Chưa làm xong" của buổi cũ và host tự chạy lại sau khi họp này `stop`; đừng chạy lại trong lúc họp.
+- Lệnh lưu (picture, translate, participants, summary, tasks, job done) luôn in `ĐÃ LƯU …` hoặc một lỗi tiếng Việt nói cần sửa gì. Không thấy một trong hai là chưa lưu: kiểm `{{PMA}} status`. `translate` và `picture` còn lưu được tới 10 phút sau `stop` (bản dịch lô cuối của agent nền).
 - Bức tranh đã thay cho ghi chú cuốn chiếu. `NHẮC GHI CHÚ` nghĩa là bức tranh đã lâu chưa cập nhật; làm ngay.
 - Khi follow in `CẢNH BÁO TRỄ`, dừng mọi việc nặng trên máy.
 - `pma start` báo `RUNTIME_BUSY`: một host PMA khác (checkout, thư mục dữ liệu hoặc cổng khác) đang giữ máy. Báo người dùng đúng pid, cổng, thư mục trong lỗi. Không tự tắt nó khi người dùng chưa đồng ý. Lỗi nói `khoá phụ … còn lại từ pid … đã dừng`: kiểm pid đó đã dừng thật, xin người dùng cho xoá đúng file trong lỗi, rồi chạy lại. `pma status` chỉ đọc: không có host thì báo `NOT_RUNNING` kèm ai đang giữ máy, không tự bật host.
@@ -160,12 +165,12 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
    - đoạn cờ không chắc.
 
    `recheck` những chỗ có ảnh hưởng tới nội dung trước khi viết tóm tắt.
-4. Hỏi người dùng 3 câu ngắn trong một tin nhắn (người dùng có thể bỏ qua):
+4. Hỏi người dùng tối đa 3 câu ngắn trong một tin nhắn (người dùng có thể bỏ qua). **Chỉ hỏi chỗ chưa rõ mà còn ảnh hưởng tới mục đích họp**: họp thông báo/hướng dẫn thì không hỏi người nhận việc làm mẫu; họp giao việc thì ai nhận việc nào là câu chính:
    1. Họp thật sự bắt đầu từ lúc nào? Phần trước đó không đưa vào tóm tắt; RAW giữ nguyên.
    2. Ai chủ trì, ai được giao việc nào (nếu bạn không chắc)?
    3. Tài liệu được nhắc là của ai lập, ai chỉ chuyển?
 5. Viết báo cáo:
-   - SUMMARY, dựng từ bức tranh cuối cùng (`{{PMA}} picture`), RAW đã nghe lại và ảnh màn hình chia sẻ. Theo thứ tự (owner 21/11, lấy chỗ mạnh của ghi chú họp Claude 18/11, giữ `#id` mà ghi chú đó không có):
+   - SUMMARY, dựng từ bức tranh cuối cùng (`{{PMA}} picture`), RAW đã nghe lại và ảnh màn hình chia sẻ. Mở đầu bằng một dòng **Mục đích họp** (từ `brief`), rồi theo thứ tự (owner 21/11, lấy chỗ mạnh của ghi chú họp Claude 18/11, giữ `#id` mà ghi chú đó không có):
      1. **Tóm tắt**: một đoạn 5–8 câu: họp về những gì, kết luận chính, ai làm gì tiếp.
      2. **Quyết định**: mỗi dòng một quyết định, mở đầu bằng mức của nó: `Chốt:` (đã quyết), `Tạm:` (làm trước rồi xem lại, "tạm thời", "nếu được"), `Đồng ý nguyên tắc:` (đồng ý hướng, chưa có cách làm); kèm `#id`. Không nâng "tạm" thành "chốt".
      3. **Câu hỏi mở**: điều được hỏi mà chưa có câu trả lời; ý được đưa ra mà chưa ai quyết thì mở đầu `Đề xuất:`.
@@ -175,7 +180,7 @@ Chỉ làm khi chủ yêu cầu. Hiện chỉ có **vai giả lập** trên máy
 
      Tên không chắc thì ghi ngay tại chỗ: `Pui (tên chưa chắc, có thể Vui)`. Người nói lấy từ `[Tên]` (viền Zoom) là tài khoản có micro đang có tiếng, không phải bằng chứng chắc chắn. Giá vốn, công nợ, lương, danh sách khách hàng chỉ ở trong báo cáo trên máy.
      Lưu bằng `{{PMA}} summary --file - --sources <id,…> <<'MD'` … `MD`.
-   - Việc: `[{"task","owner","due","ownerBasis","certainty","sourceIds"}]`. Mỗi việc mở đầu bằng động từ, đủ cụ thể để làm mà không cần hỏi lại. `ownerBasis`: `stated` (nói rõ trong họp), `confirmed` (người dùng xác nhận sau họp) hoặc `inferred` (bạn suy ra, chưa ai xác nhận). `certainty`: `tentative` cho việc tạm / "nếu được" / chờ duyệt (hiện "(tạm)"), bỏ trống khi đã chốt. Việc được nêu mà chưa rõ ai làm vẫn ghi, để trống `owner` (hiện "Chưa nêu trong họp"); đừng bỏ việc. Hạn chỉ ghi khi được nói rõ. Lưu bằng `{{PMA}} tasks --file - <<'JSON'` … `JSON`. Việc có người phụ trách `inferred` hiện kèm "(suy luận, cần xác nhận)" và không vào "Việc của tôi".
+   - Việc: họp **thông báo / hướng dẫn** thì việc người trình bày làm mẫu không phải việc được giao: không vào TASKS (nếu có việc thật sau họp, ghi rõ người nói là việc thật). `[{"task","owner","due","ownerBasis","certainty","sourceIds"}]`. Mỗi việc mở đầu bằng động từ, đủ cụ thể để làm mà không cần hỏi lại. `ownerBasis`: `stated` (nói rõ trong họp), `confirmed` (người dùng xác nhận sau họp) hoặc `inferred` (bạn suy ra, chưa ai xác nhận). `certainty`: `tentative` cho việc tạm / "nếu được" / chờ duyệt (hiện "(tạm)"), bỏ trống khi đã chốt. Việc được nêu mà chưa rõ ai làm vẫn ghi, để trống `owner` (hiện "Chưa nêu trong họp"); đừng bỏ việc. Hạn chỉ ghi khi được nói rõ. Lưu bằng `{{PMA}} tasks --file - <<'JSON'` … `JSON`. Việc có người phụ trách `inferred` hiện kèm "(suy luận, cần xác nhận)" và không vào "Việc của tôi".
 6. Trả lời người dùng:
    - đường dẫn RAW.md, SUMMARY.md, TASKS.md và `meeting-mix.wav`;
    - tóm tắt ngắn;

@@ -11,9 +11,12 @@ import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js'
 import { loadNames, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
-  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--participants p.json]
+  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--purpose thong-bao|huong-dan|giao-viec|ban-quyet-dinh] [--participants p.json]
                                    --link: Zoom (zoom.us/j/...) hoặc Google Meet (meet.google.com/abc-defg-hij)
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
+                                   --purpose: họp để làm gì (nhận cả "thông báo", "hướng dẫn", "giao việc", "bàn quyết định"): dẫn đường cho bức tranh/SUMMARY/TASKS;
+                                   họp thông báo/hướng dẫn thì việc, tên, số nêu khi làm mẫu là ví dụ, không vào TASKS
+  pma purpose <giá trị> [--session ID]   đặt/đổi mục đích họp của phiên đang mở (context đổi bản: các vai đọc lại pma brief); pma brief in mục đích ở dòng đầu
   pma participants --file p.json   người dự họp (context trước họp): [{"name","role?","languages?":["vi"|"lo"|"th"],"variants?":["cách ASR nghe sai"]}]
                                    variants vào bảng tên (biến thể quá ngắn/thông dụng bị bỏ và báo lại); start --participants p.json làm cùng lúc
   pma picture [--file f.md --sources 1,2 --base N --receipt rcpt-…]   bức tranh cả cuộc họp tới lúc này (phiên tổng hợp cập nhật mỗi lô);
@@ -368,7 +371,7 @@ async function main() {
         out({ error: 'HARDWARE_NOT_ENOUGH', tier: hw.tier, label: hw.label, reasons: hw.reasons ?? [hw.error], refusedLanguages: hw.meeting?.refused ?? [], hint });
         process.exitCode = 1; return;
       }
-      const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}) });
+      const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}), ...(flags.purpose !== undefined ? { purpose: flags.purpose === 'true' ? '' : flags.purpose } : {}) });
       // Right after the session exists; a list the runtime refuses is reported, the session stays open.
       const people = listed ? await attach('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
       const opened = flags.link ? await call('open', { url: flags.link }) : undefined;
@@ -406,6 +409,12 @@ async function main() {
       const done = spawnSync(python, ['-I', `${ROOT}/tools/doctor.py`, '--project', flags.project || process.cwd(), ...(flags.json ? ['--json'] : [])], { stdio: 'inherit' });
       if (done.error) { console.log(`THIẾU python: không chạy được ${python} (${done.error.message}) → tạo .venv theo README`); process.exitCode = 1; return; }
       process.exitCode = done.status ?? 1; return;
+    }
+    case 'purpose': {
+      const value = positional.join(' ') || (flags.purpose && flags.purpose !== 'true' ? flags.purpose : '');
+      if (!value) throw new Error('PURPOSE_NEEDS_VALUE: pma purpose thong-bao | huong-dan | giao-viec | ban-quyet-dinh (hoặc: thông báo, hướng dẫn, giao việc, bàn quyết định)');
+      const r = await call('purpose', { ...session, purpose: value });
+      return out({ ...r, line: r.changed ? `MỤC ĐÍCH HỌP: ${r.label}${r.was ? ' (trước đó: ' + r.was + ')' : ''} — ${r.rule}. Context đổi sang v${r.version}: chạy lại pma brief --as chinh trước khi lưu bức tranh/SUMMARY/TASKS` : `MỤC ĐÍCH HỌP: ${r.label} (không đổi)` });
     }
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.

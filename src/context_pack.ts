@@ -13,13 +13,15 @@ export type Correction = { raw: string; corrected: string; sourceId?: string; at
 export type ContextPack = {
   version: string; createdAt: string;
   meeting: { sessionId: string; title: string; scheduledStart?: string };
-  me?: string; roster: RosterItem[]; topics: string[]; entities: EntityItem[]; docs: DocItem[]; corrections: Correction[]; missing: string[];
+  me?: string; purpose?: string; roster: RosterItem[]; topics: string[]; entities: EntityItem[]; docs: DocItem[]; corrections: Correction[]; missing: string[];
 };
 
 // What the runtime already has at prepare(): agenda text, participants file rows, glossary entries. Every list item may
 // say where it came from; the defaults name the file or step it normally comes from.
 export type PackInput = {
   sessionId: string; title?: string; scheduledStart?: string; me?: string;
+  // What the meeting is for (purpose.ts id). Absent for a meeting where it is not known: the version is then what it was before 0.13.
+  purpose?: string;
   agenda?: string; topics?: string[];
   participants?: { name: string; role?: string; languages?: string[]; variants?: string[]; source?: string; basis?: string }[];
   glossary?: { name: string; kind?: string; variants?: string[]; source?: string }[];
@@ -104,7 +106,7 @@ export function buildPack(input: PackInput): ContextPack {
   // Missing is information, not a block: capture never waits for context, and the caller reports DEGRADED with these.
   const missing = [!me && 'me', !topics.length && 'agenda', !roster.length && 'roster', !entities.length && 'entities'].filter((item): item is string => !!item);
 
-  const body = { meeting: { sessionId, title, scheduledStart }, me, roster, topics, entities, docs, corrections, missing };
+  const body = { meeting: { sessionId, title, scheduledStart }, me, purpose: clip(input.purpose, 40), roster, topics, entities, docs, corrections, missing };
   return { version: versionOf(body), createdAt: clip(input.createdAt, 40) ?? new Date().toISOString(), ...body };
 }
 
