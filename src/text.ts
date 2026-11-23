@@ -143,3 +143,28 @@ export function segmentTimesProblem(event: { start?: unknown; end?: unknown; wal
   if (wall < sessionStartMs - 60000) return 'BEFORE_SESSION';
   return null;
 }
+
+// The readings of a chunk (item 1a, 0.13): the same audio decoded by the Vietnamese and by the Lao model, each kept with its own signals.
+// They ride in the row's `alternatives`; items with `rv` are readings, items without are the older "other Lao/Thai reading" (language, text, score).
+// `avgLogProb` is the model's own mean token log-probability: two models' numbers are never one scale, so they are printed side by side and never
+// subtracted here. `viSyllableShare` says how much of the text is valid Vietnamese syllables (n/d): a signal about the text, not proof of meaning.
+export type Reading = { rv?: number; language: string; text: string; score?: number; model?: string; avgLogProb?: number | null; viSyllableShare?: number | null; viSyllables?: number; viTokens?: number; viSyllableVersion?: string; loopPenalty?: number; status?: string; picked?: boolean };
+const STATUS_LABELS: Record<string, string> = { invented: 'nghi câu bịa', empty: 'không có chữ' };
+export function readingFacts(a: Reading) {
+  const parts: string[] = [];
+  parts.push(`điểm mô hình ${a.avgLogProb === null || a.avgLogProb === undefined ? '?' : a.avgLogProb}${a.model ? ' (' + a.model + ')' : ''}`);
+  parts.push(`âm tiết Việt ${a.viSyllableShare === null || a.viSyllableShare === undefined ? 'n/a' : `${a.viSyllables}/${a.viTokens} = ${Math.round(a.viSyllableShare * 100)}%`}`);
+  parts.push(`lặp ${Math.round((a.loopPenalty ?? 0) * 100)}%`);
+  if (a.status && STATUS_LABELS[a.status]) parts.push(STATUS_LABELS[a.status]);
+  return parts.join(' · ');
+}
+// One line per reading, for `follow`, `read` and RAW. The picked reading is the row's own text: only its signals are printed (no second copy of the text).
+export function readingLines(alternatives: Reading[], prefix = '  ↳ ', note = 'cách nghe khác') {
+  return alternatives.map(a => {
+    const text = a.text.replace(/\r?\n/g, ' ');
+    if (a.rv === undefined) return `${prefix}${a.language} (${note}): ${text}`;
+    const head = `${prefix}${a.language}${a.picked ? ' (dòng chính)' : ' (cách nghe song song)'} [${readingFacts(a)}]`;
+    return a.picked ? head : `${head}: ${text}`;
+  });
+}
+export const hasReadings = (alternatives: Reading[] | undefined) => !!alternatives?.some(a => a.rv !== undefined);
