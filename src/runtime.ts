@@ -11,6 +11,7 @@ import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE
 import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
 import { claimMachine, machineHolder, processStartedAt, releaseMachine } from './machine_lock.js';
 import { shareOk } from './mic_share.js';
+import { bleedOf, isMicRow, nearInTime, type BleedRow } from './bleed.js';
 import { Ledger } from './jobs.js';
 import { DecisionLedger } from './decisions.js';
 import { PICTURE_KEY } from './protocol.js';
@@ -610,6 +611,31 @@ export class MeetingRuntime extends EventEmitter {
       return false;
     });
   }
+  // Speaker sound that leaked into the mic (src/bleed.ts): when a row arrives, the mic rows heard at the same moment (the row itself if it is
+  // a mic row, else the mic rows near it: the speaker channel is often transcribed after the mic) are compared with the speaker rows
+  // there. A leak gets `MIC_BLEED #<speaker row>`: not "Tôi" (micLabel), never handed to a share role (shareable). Text and WAV stay.
+  private markBleed(id: number) {
+    try {
+      const cols = 'id,text,wall,start,end,boundary';
+      const row = this.db.prepare(`SELECT ${cols},session_id FROM sources WHERE id=? AND origin='local_asr_unverified' AND wall!='' AND boundary NOT LIKE '%TIMESTAMP_INVALID%'`).get(id) as (BleedRow & { session_id: string }) | undefined; if (!row) return;
+      const at = Date.parse(row.wall!); const length = Math.max(0, row.end - row.start) * 1000;
+      const around = this.db.prepare(`SELECT ${cols} FROM sources WHERE session_id=? AND origin='local_asr_unverified' AND wall!='' AND wall BETWEEN ? AND ? AND boundary NOT LIKE '%TIMESTAMP_INVALID%'`).all(row.session_id, new Date(at - 45000).toISOString(), new Date(at + length + 45000).toISOString()) as unknown as BleedRow[];
+      const mics = isMicRow(row) ? [row] : around.filter(other => isMicRow(other) && nearInTime(other, row));
+      for (const mic of mics) {
+        if (mic.boundary?.includes('MIC_BLEED #')) continue;
+        const sibling = (a: BleedRow, b: BleedRow) => a.id !== b.id && isMicRow(b) && b.wall === a.wall && b.start === a.start && b.end === a.end;
+        const hit = bleedOf(mic, around); let flag: string | null = null;
+        const flaggedSibling = around.find(other => sibling(mic, other) && other.boundary?.includes('MIC_BLEED #'));
+        if (flaggedSibling) flag = `MIC_BLEED #${/MIC_BLEED #(\d+)/.exec(flaggedSibling.boundary!)![1]} CHUNK`;
+        else if (hit) flag = `MIC_BLEED #${hit.id} ${hit.why}`;
+        else if (mic.boundary?.includes('MIC_BLEED_ENV')) { const near = around.filter(other => !isMicRow(other) && nearInTime(mic, other)); if (near.length) flag = `MIC_BLEED #${near[0].id} ENV`; }
+        if (!flag) continue;
+        // The other lines cut from the same chunk (same time range, no word timing) are the same sound: they share the verdict.
+        for (const same of [mic, ...around.filter(other => sibling(mic, other))])
+          this.db.prepare("UPDATE sources SET boundary=boundary||? WHERE id=? AND boundary NOT LIKE '%MIC_BLEED #%'").run(`; ${same === mic ? flag : flag.replace(/ \w+$/, ' CHUNK')}`, same.id);
+      }
+    } catch { /* a failed comparison leaves the row as it was: nothing is hidden or deleted */ }
+  }
   // ---- context pack and who read it (context_pack.ts, ENG-45) ----
   // The pack is built from what the session holds (agenda, me, schedule, participants) and the glossary; the same context gives the
   // same version. `store` keeps it (a role binds to a stored version); status only computes it.
@@ -1130,7 +1156,7 @@ export class MeetingRuntime extends EventEmitter {
         const kept = source.split('; ').filter(flag => flag !== 'MIC_SHARE_OK' && flag !== 'SOURCE_LIVE_FOLLOW').concat(follow ? ['SOURCE_TIME_UNTRUSTED'] : []).join('; ');
         const raw = JSON.stringify({ start: event.start, end: event.end, wall: event.wall ?? null }).replace(/;/g, ',');
         this.ingest(event.text, 'local_asr_unverified', 0, 0, withFlag(kept, `TIMESTAMP_INVALID ${problem} ${raw}`), this.captureId, event.language || '', '', event.seg, event.alternatives);
-      } else { this.ingest(event.text, 'local_asr_unverified', event.start, event.end, source, this.captureId, event.language || '', event.wall, event.seg, event.alternatives); this.notePosition(event); }
+      } else { this.markBleed(this.ingest(event.text, 'local_asr_unverified', event.start, event.end, source, this.captureId, event.language || '', event.wall, event.seg, event.alternatives)); this.notePosition(event); }
     }
     // A follow worker that fails exits, and the supervisor restarts it; only a replay stops on the first error.
     if (event.type === 'error') { this.lastError = event.message; if (!follow) { this.captureState = 'ERROR'; void this.stopCapture(); } }

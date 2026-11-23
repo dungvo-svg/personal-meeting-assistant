@@ -484,6 +484,87 @@ def mic_is_own_voice(mic_rms, speaker_rms, ratio=MIC_OVER_SPEAKER, share=MIC_OWN
     return sum(1 for m, s in loud if m > ratio * s) / len(loud) >= share
 
 
+# Speaker sound that leaks into the microphone (Google Meet in a room: ~10 rows in one 25-minute meeting, 23/11) rises and falls with
+# the speaker channel, whatever the volume ratio between the two. The amplitude check above misses it when the mic is the louder of
+# the two; the shape of the sound does not: the 0.1 s loudness of the mic chunk is compared with the speaker channel's over the same
+# time (Pearson, the best of a few slots of lag for acoustic and buffer delay). The owner's own voice does not follow the room.
+# Conservative on purpose: a short chunk, a quiet or flat speaker channel, or a middling correlation is never called bleed.
+BLEED_SLOT_SECONDS = 0.1
+BLEED_MIN_SLOTS = 12          # 1.2 s of both channels; shorter chunks are left to the host's text check
+BLEED_MIN_LOUD_SLOTS = 6      # speaker slots at or above SOUND_RMS
+BLEED_MAX_LAG_SLOTS = 3       # 0.3 s either way
+BLEED_CORRELATION = 0.88
+BLEED_MIN_VARIATION = 0.25    # std / mean of the speaker envelope: a flat sound (hum, music bed) has no shape to follow
+
+
+def envelope(waveform, rate, slot_seconds=BLEED_SLOT_SECONDS):
+    """RMS per slot of a mono float array."""
+    import numpy as np
+    size = max(1, int(rate * slot_seconds))
+    count = len(waveform) // size
+    if not count:
+        return []
+    frames = np.asarray(waveform[:count * size], dtype=np.float64).reshape(count, size)
+    return np.sqrt(np.mean(frames * frames, axis=1)).tolist()
+
+
+def _pearson(a, b):
+    import numpy as np
+    a, b = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    a, b = a - a.mean(), b - b.mean()
+    denominator = float(np.sqrt((a * a).sum() * (b * b).sum()))
+    return float((a * b).sum() / denominator) if denominator > 0 else 0.0
+
+
+def envelope_correlation(mic_env, speaker_env, max_lag=BLEED_MAX_LAG_SLOTS):
+    """Best Pearson correlation of the mic envelope with the speaker envelope (speaker earlier by up to max_lag slots) or None
+    when the speaker channel gives nothing to follow (too short, too quiet, too flat)."""
+    import numpy as np
+    count = min(len(mic_env), len(speaker_env))
+    if count < BLEED_MIN_SLOTS:
+        return None
+    mic, speaker = np.asarray(mic_env[:count], dtype=np.float64), np.asarray(speaker_env[:count], dtype=np.float64)
+    if int((speaker >= SOUND_RMS).sum()) < BLEED_MIN_LOUD_SLOTS or speaker.mean() <= 0 or speaker.std() / speaker.mean() < BLEED_MIN_VARIATION:
+        return None
+    best = None
+    for lag in range(-max_lag, max_lag + 1):
+        a, b = (mic[lag:], speaker[:count - lag]) if lag >= 0 else (mic[:count + lag], speaker[-lag:])
+        if len(a) < BLEED_MIN_SLOTS:
+            continue
+        value = _pearson(a, b)
+        best = value if best is None else max(best, value)
+    return best
+
+
+def mic_is_bleed(mic_env, speaker_env, threshold=BLEED_CORRELATION):
+    """(is it bleed, the correlation or None). Only an energy envelope that follows the speaker channel's counts."""
+    value = envelope_correlation(mic_env, speaker_env)
+    return (value is not None and value >= threshold), value
+
+
+# MIC_FAINT: the mic is at its noise floor (what it hears is faint) while the room is much louder. Not bleed on its own (a soft
+# owner looks the same, 20% of mic-on rows in the 23/11 data), so it only lets the host accept a weaker word overlap (src/bleed.ts).
+FAINT_MIC_P90 = 0.010
+FAINT_SPEAKER_OVER_MIC = 6.5
+FAINT_SPEAKER_MIN = 0.02
+
+
+def bleed_flags(mic16, speaker16):
+    """Flags for a mic chunk compared with the speaker channel's audio of the same wall-clock time (both 16 kHz mono arrays).
+    MIC_BLEED_ENV: the mic's loudness follows the speaker channel's (it is not the owner). MIC_FAINT: faint mic, loud room."""
+    import numpy as np
+    mic_env, speaker_env = envelope(mic16, RATE16), envelope(speaker16, RATE16)
+    flags = []
+    bleed, value = mic_is_bleed(mic_env, speaker_env)
+    if bleed:
+        flags.append(f'MIC_BLEED_ENV r={value:.2f}')
+    if len(mic_env) >= 5 and len(speaker_env) >= 5:
+        mic_mean, speaker_mean = float(np.mean(mic_env)), float(np.mean(speaker_env))
+        if float(np.percentile(mic_env, 90)) <= FAINT_MIC_P90 and speaker_mean >= FAINT_SPEAKER_MIN and speaker_mean >= FAINT_SPEAKER_OVER_MIC * mic_mean:
+            flags.append('MIC_FAINT')
+    return flags
+
+
 # Apps that may hold the microphone during a meeting, likeliest first (process names without .exe). The "Tôi" channel
 # does not depend on the meeting platform: it is the user's microphone, picked from whatever these apps are using.
 MEETING_APPS = ('zoom', 'ms-teams', 'teams', 'slack', 'webex', 'discord', 'skype', 'chrome', 'msedge', 'firefox', 'brave', 'opera', 'vivaldi')
@@ -1016,7 +1097,17 @@ def capture(args):
                                     until = begin_wall + (end - begin) + MIC_STATE_GRACE_SECONDS
                                     horizon = timeline.end_wall()
                                     # The audio going on is not proof the mic reader is: it must have been seen alive through the chunk too.
-                                    if horizon is not None and horizon >= until and share_ok(states, begin_wall, until):
+                                    # Speaker sound that leaked into the mic (the speaker channel's audio of the same wall time, from the recorder's
+                                    # files): flagged, never MIC_SHARE_OK. The text and the WAV stay (src/bleed.ts renders and filters it).
+                                    leak = []
+                                    speaker_end = timeline.end_wall('speaker')
+                                    if speaker_end is not None and speaker_end >= begin_wall + (end - begin):
+                                        try:
+                                            leak = bleed_flags(waveform16, cut_window(timeline, 'speaker', begin_wall, begin_wall + (end - begin)))
+                                        except Exception:
+                                            leak = []  # a failed check leaves the row as it was
+                                    marks += ''.join('; ' + flag for flag in leak)
+                                    if horizon is not None and horizon >= until and share_ok(states, begin_wall, until) and not any(f.startswith('MIC_BLEED') for f in leak):
                                         marks += '; MIC_SHARE_OK'
                             marks += segment_range(segment, end - begin)
                             # No Lao model loaded: Whisper writes spoken Lao as a Thai-script transliteration, meaning not reliable
