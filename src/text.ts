@@ -11,6 +11,8 @@ export const isHallucination = (row: Row) => !!row.boundary?.includes('LIKELY_HA
 export function micLabel(boundary: string | undefined, me?: string) {
   const flags = boundary ?? '';
   const mic = flags.includes('CHANNEL_MIC');
+  // Speaker sound heard through the mic (src/bleed.ts, MIC_BLEED_ENV from the worker): not the owner, whatever the mic state said.
+  if (mic && flags.includes('MIC_BLEED')) { const of = /MIC_BLEED #(\d+)/.exec(flags)?.[1]; return `Tiếng loa lọt vào mic${of ? ` (trùng #${of})` : ''}`; }
   const state = flags.includes('MIC_STATE_ON') ? 'mic bật' : flags.includes('MIC_STATE_OFF') ? 'mic tắt — nói riêng' : flags.includes('MIC_STATE_UNKNOWN') ? '?' : null;
   if (!mic && !state) return null;
   return `Tôi${me ? ' — ' + me : ''} (${state ?? 'micro'})`;
@@ -23,6 +25,8 @@ export function micLabel(boundary: string | undefined, me?: string) {
 export function shareable(row: { origin?: string; boundary?: string }) {
   if (row.origin === 'system_gap' || row.origin === 'operator_text' || row.origin === 'synthetic_fixture') return true;
   const flags = row.boundary ?? '';
+  // Room sound that leaked into the mic is the speaker channel's text already (src/bleed.ts): never handed on as a mic row.
+  if (flags.includes('CHANNEL_MIC') && flags.includes('MIC_BLEED')) return false;
   // Both kinds need the host's live-follow stamp; a mic row also needs the worker's whole-chunk-on flag.
   // MIC_SHARE_REVOKED: the host checked the mic again at hand-over and the evidence no longer held (runtime.revalidateMic).
   return flags.includes('SOURCE_LIVE_FOLLOW') && (!flags.includes('CHANNEL_MIC') || (flags.includes('MIC_SHARE_OK') && !flags.includes('MIC_SHARE_REVOKED')));
