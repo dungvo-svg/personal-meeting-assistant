@@ -5,7 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync
 import { basename, join, resolve } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { applyGlossary, collapseLoops, foldRuns, isHallucination, micLabel, riskyVariants, segmentTimesProblem, shareable, type GlossaryEntry } from './text.js';
+import { applyGlossary, collapseLoops, foldRuns, hasReadings, isHallucination, micLabel, readingFacts, readingLines, riskyVariants, segmentTimesProblem, shareable, type GlossaryEntry, type Reading } from './text.js';
 import { canonicalOwner } from './participants.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
@@ -88,12 +88,23 @@ const cell = (text: string) => text.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ')
 
 export type Source = { id: number; sessionId: string; text: string; origin: string; start: number; end: number; createdAt: string; boundary: string; captureId: string; language: string; wall: string; seg: number | null; shown?: string };
 export type Language = 'vi' | 'lo' | 'th';
-export type Alternative = { language: Language; text: string; score?: number };
-// Stored or sent alternatives, cleaned: known languages only, short text, at most 3.
+export type Alternative = Reading & { language: Language };
+// Stored or sent alternatives, cleaned: known languages only, at most 4. Items of the older kind (the other Lao/Thai reading) keep language, text
+// (2000 characters) and score. A reading (`rv` set, item 1a) keeps its whole contract and its full text (up to 8000 characters, as a recheck): model,
+// avgLogProb, viSyllableShare with its numerator, denominator and rule version, loopPenalty, status and whether it is the row's own text.
+const READING_STATUS = ['ok', 'invented', 'empty'];
+const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 export function parseAlternatives(value: unknown): Alternative[] {
   let list: any = value; if (typeof list === 'string') { try { list = list ? JSON.parse(list) : []; } catch { list = []; } }
-  return (Array.isArray(list) ? list : []).filter(a => a && ['vi', 'lo', 'th'].includes(a.language) && typeof a.text === 'string' && a.text.trim())
-    .slice(0, 3).map(a => ({ language: a.language, text: String(a.text).trim().slice(0, 2000), ...(Number.isFinite(a.score) ? { score: a.score } : {}) }));
+  return (Array.isArray(list) ? list : []).filter(a => a && ['vi', 'lo', 'th'].includes(a.language) && typeof a.text === 'string' && (a.text.trim() || a.rv !== undefined))
+    .slice(0, 4).map(a => {
+      if (!Number.isInteger(a.rv)) return { language: a.language, text: String(a.text).trim().slice(0, 2000), ...(finite(a.score) ? { score: a.score } : {}) };
+      return { rv: a.rv, language: a.language, text: String(a.text).trim().slice(0, 8000), ...(typeof a.model === 'string' ? { model: a.model.slice(0, 80) } : {}),
+        avgLogProb: finite(a.avgLogProb) ? a.avgLogProb : null, ...(finite(a.score) ? { score: a.score } : {}),
+        viSyllableShare: finite(a.viSyllableShare) ? a.viSyllableShare : null, ...(finite(a.viSyllables) ? { viSyllables: a.viSyllables } : {}), ...(finite(a.viTokens) ? { viTokens: a.viTokens } : {}),
+        ...(typeof a.viSyllableVersion === 'string' ? { viSyllableVersion: a.viSyllableVersion.slice(0, 40) } : {}), loopPenalty: finite(a.loopPenalty) ? a.loopPenalty : 0,
+        status: READING_STATUS.includes(a.status) ? a.status : 'ok', picked: a.picked === true };
+    });
 }
 export type CoverageItem = { kind: string; from: string; to: string; fromClock: string; toClock: string; seconds: number; sourceId?: number; why: string; rechecked: boolean; recheck: string };
 // What the host leaves in daemon.json for the next host (Q-3): enough to find the session's recorder again after a crash.
@@ -1439,7 +1450,8 @@ export class MeetingRuntime extends EventEmitter {
     let result: any; try { result = JSON.parse(last ?? ''); } catch { throw new Error('RECHECK_FAILED: ' + (code === 0 ? 'bộ nghe không trả kết quả' : 'bộ nghe thoát mã ' + code) + (error.trim() ? ': ' + error.trim().slice(-300) : '')); }
     if (code !== 0 || result.error) throw new Error('RECHECK_FAILED: ' + String(result.error ?? 'mã ' + code).slice(0, 300));
     const text = String(result.text ?? '').trim(); const language = String(result.language ?? '');
-    const alternatives = (Array.isArray(result.alternatives) ? result.alternatives : []).slice(0, 5).map((a: any) => ({ language: String(a?.language ?? ''), text: String(a?.text ?? '').slice(0, 2000), score: a?.score ?? null }));
+    // Each forced reading keeps the fields of a reading (model, avgLogProb, viSyllableShare n/d, loopPenalty, status) when the worker sends them (item 1a).
+    const alternatives = (Array.isArray(result.alternatives) ? result.alternatives : []).slice(0, 5).map((a: any) => ({ ...(Number.isInteger(a?.rv) ? parseAlternatives([{ ...a, language: ['vi', 'lo', 'th'].includes(a.language) ? a.language : 'vi' }])[0] : {}), language: String(a?.language ?? ''), text: String(a?.text ?? '').slice(0, Number.isInteger(a?.rv) ? 8000 : 2000), score: a?.score ?? null }));
     const silent = result.silent === true || (!text && !alternatives.length);
     const created = new Date().toISOString();
     const row = this.db.prepare('INSERT INTO rechecks(session_id,source_id,from_wall,to_wall,channel,text,language,alternatives,silent,created) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id, sourceId, fromIso, toIso, channel ?? '', text.slice(0, 8000), language, JSON.stringify(alternatives), silent ? 1 : 0, created);
@@ -1589,14 +1601,15 @@ export class MeetingRuntime extends EventEmitter {
     const rows: any[] = this.db.prepare('SELECT s.id,s.text,s.origin,s.created,s.wall,s.capture_id,s.language,s.boundary,s.alternatives,t.text AS translation FROM sources s LEFT JOIN translations t ON t.source_id=s.id WHERE s.session_id=? ORDER BY s.id').all(id);
     const origin: Record<string, string> = { local_asr_unverified: 'nghe', operator_text: 'nhập tay', synthetic_fixture: 'dữ liệu thử', system_gap: 'khoảng trống' };
     const lines = [...this.header(session, 'RAW transcript'), '> Văn bản nhận dạng tự động (ASR) hoặc nhập tay, CHƯA xác minh. Nhãn vi/lo là ngôn ngữ ASR chọn cho từng đoạn, có thể sai ở chỗ chuyển ngôn ngữ; tiếng Lào nhận dạng còn kém. Giờ là giờ thật của lời nói theo bản ghi âm (đoạn không có giờ thật thì là lúc text được ghi nhận, trễ vài giây). Tên dạng "Namfon (nghe: Nam Phủ)" là tên đã sửa theo bảng tên, chữ trong ngoặc là chữ ASR nghe được. ' + this.audioNote(id), ''];
+    if (rows.some(row => hasReadings(parseAlternatives(row.alternatives)))) lines.push('> Dòng "↳ … (cách nghe song song)" là cách nghe thứ hai của cùng đoạn âm thanh, do mô hình khác giải mã (Việt và Lào chạy song song). Điểm mô hình của hai mô hình KHÔNG so sánh trực tiếp được; tỷ lệ âm tiết Việt chỉ là dấu hiệu, không chứng minh có nghĩa. Dòng "chưa phân định" là chỗ chưa biết cách nghe nào đúng: đọc cả hai.', '');
     if (rows.some(row => row.translation)) lines.push('> Dòng "→ (Claude dịch)" là bản dịch tiếng Việt do Claude viết cho đoạn tiếng Lào, chưa ai kiểm; chữ Lào ở trên mới là nguồn.', '');
-    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_MODEL_MISSING') ? ' · chưa có mô hình Lào: chữ Thái phiên âm, nghĩa chưa đáng tin' : row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${(mic => mic ? ' · ' + mic : '')(micLabel(row.boundary, session.context?.me))}`;
+    const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_MODEL_MISSING') ? ' · chưa có mô hình Lào: chữ Thái phiên âm, nghĩa chưa đáng tin' : row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('READINGS_UNDECIDED') ? ' · hai cách nghe (Việt, Lào) chưa phân định' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${(mic => mic ? ' · ' + mic : '')(micLabel(row.boundary, session.context?.me))}`;
     // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
     const ghosts = rows.filter(isHallucination);
     const when = (row: any) => localTime(row.wall || row.created);
     // What Claude heard again from the WAV (`pma recheck`): the latest answer per source, and the ranges without a source.
     const heardAgain: any[] = this.db.prepare('SELECT source_id,from_wall,to_wall,text,language,alternatives,silent FROM rechecks WHERE session_id=? ORDER BY id').all(id);
-    const phrase = (r: any) => { const others = (JSON.parse(r.alternatives) as any[]).map(a => `[${a.language}] ${a.text}`).join('; '); return `${r.silent ? 'không thấy tiếng nói' : `${r.language ? '[' + r.language + '] ' : ''}${r.text}`}${others ? ' — phương án khác: ' + others : ''}`; };
+    const phrase = (r: any) => { const others = (JSON.parse(r.alternatives) as any[]).map(a => `[${a.language}] ${a.text}${a.rv === undefined ? '' : ' (' + readingFacts(a) + ')'}`).join('; '); return `${r.silent ? 'không thấy tiếng nói' : `${r.language ? '[' + r.language + '] ' : ''}${r.text}`}${others ? ' — phương án khác: ' + others : ''}`; };
     const again = new Map<number, any>(); for (const r of heardAgain) if (r.source_id !== null) again.set(r.source_id, r);
     let capture: string | null = null;
     for (const group of foldRuns(rows.filter(row => !isHallucination(row)))) {
@@ -1605,7 +1618,7 @@ export class MeetingRuntime extends EventEmitter {
       lines.push(group.count > 1
         ? `[${when(row)}] #${row.id}–#${group.last.id} (${label(row)} · lặp ${group.count} đoạn liền) ${this.shown(row.text)} [×${group.count}]`
         : `[${when(row)}] #${row.id} (${label(row)}) ${this.shown(row.text)}`);
-      for (const other of parseAlternatives(row.alternatives)) lines.push(`  ↳ ${other.language} (cách nghe khác): ${other.text.replace(/\r?\n/g, ' ')}`);
+      lines.push(...readingLines(parseAlternatives(row.alternatives)));
       const rechecked = again.get(row.id); if (rechecked) lines.push(`  (đã nghe lại: ${phrase(rechecked).replace(/\r?\n/g, ' ')})`);
       const translation = row.translation ?? group.last.translation; if (translation) lines.push(`  → (Claude dịch) ${translation.replace(/\r?\n/g, ' ')}`);
     }

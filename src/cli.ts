@@ -8,7 +8,7 @@ import { pieces, RECHECK_PIECE_SECONDS } from './ranges.js';
 import { randomBytes } from 'node:crypto';
 import { attach, call, inspect, reach } from './client.js';
 import { pagesOf } from './picture.js';
-import { ackOf, foldRuns, isHallucination, micLabel, wrapLine } from './text.js';
+import { ackOf, foldRuns, isHallucination, micLabel, readingLines, wrapLine } from './text.js';
 import { loadNames, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
@@ -165,7 +165,7 @@ function saved(what: string, result: any, detail: { chars?: number; sourceIds?: 
   return out({ ...result, line: `${verb}${body ? ' (' + body + ')' : ''}${result.path ? ' → ' + result.path : ''}` });
 }
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
-const FLAG_LABELS: Record<string, string> = { LAO_MODEL_MISSING: 'thiếu mô hình Lào: chữ Thái phiên âm, nghĩa chưa tin', LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được' };
+const FLAG_LABELS: Record<string, string> = { LAO_MODEL_MISSING: 'thiếu mô hình Lào: chữ Thái phiên âm, nghĩa chưa tin', LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được', READINGS_UNDECIDED: 'hai cách nghe chưa phân định' };
 const MAIN = 'chinh';
 const NOTE_EVERY_MS = 10 * 60000; const LAG_WARN_SECONDS = 10;
 const micWhy = (by?: string) => !by ? '' : by.startsWith('meeting_app:') ? `micro ${by.slice(12)} đang dùng` : ({ windows_default: 'micro mặc định của Windows', selected: 'micro đã chọn', NO_MICROPHONE_FOUND: 'không thấy micro nào' } as Record<string, string>)[by] ?? by;
@@ -187,7 +187,8 @@ function line(item: any) {
   // Microphone: the owner. Otherwise the tile Zoom outlined as speaking (tools/meeting_screen.ps1), in brackets.
   const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : SPEAKERS.has(item.id) ? ` [${SPEAKERS.get(item.id)}]` : '';
   // The other Lao/Thai reading of an unsure chunk, for the translation session to read both (owner 31/10).
-  const others = (item.alternatives ?? []).map((a: any) => `\n  ↳ ${a.language}: ${a.text}`).join('');
+  // Each reading with its language and signals (item 1a); an older alternative stays `↳ lang (…): text`.
+  const others = (item.alternatives ?? []).length ? '\n' + readingLines(item.alternatives).join('\n') : '';
   const translated = item.translation ? `\n  → (Claude dịch) ${item.translation}` : '';
   return `#${item.id} ${clock(item.wall || item.createdAt)}${who} ${item.language || '?'}${flags.length ? '⚠' + flags.join(',') : ''}: ${item.shown ?? item.text}${others}${translated}`;
 }
