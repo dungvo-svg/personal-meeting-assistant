@@ -22,6 +22,10 @@ import { applyCorrections, bindingKey, bindRole, buildPack, CONTEXT_TABLES_SQL, 
 export type TaskItem = { task: string; owner?: string; due?: string; ownerBasis?: 'stated' | 'confirmed' | 'inferred'; certainty?: 'firm' | 'tentative'; sourceIds: number[] };
 const BASIS_NOTE: Record<string, string> = { confirmed: ' (người dùng xác nhận)', inferred: ' (suy luận, cần xác nhận)' };
 export type Opener = (url: string) => void;
+type ActiveRecheck = { sessionId: string; child: ChildProcess; yielded: boolean };
+// What a recheck that did not run to the end still owes: the whole range (nothing of it is kept), and the ledger job that says so.
+type YieldedRecheck = { sessionId: string; sourceId: number | null; from: string; to: string; channel?: string; beam?: number; job: number };
+const clockOf = (ms: number) => new Date(ms).toLocaleTimeString('vi-VN', { hour12: false });
 // Runs tools/mix_audio.py (python, [script, audio dir]) hidden, with no stdio, and resolves when it has exited. A caller that
 // must not wait (pause) just ignores the promise; finish waits for it before the host may exit.
 export type Mixer = (python: string, args: string[]) => void | Promise<unknown>;
@@ -174,6 +178,13 @@ export class MeetingRuntime extends EventEmitter {
   private recheckChain: Promise<unknown> = Promise.resolve();
   // A recheck worker is running (it loads a model too): the machine lock is kept meanwhile.
   rechecking = 0;
+  // Rechecks whose worker this host spawned and still runs, and rechecks set aside to give the GPU to a meeting (ENG-50, 23/11: a
+  // recheck of the OTC meeting kept running when the next meeting opened and text lagged 47 s). A worker of another process is never
+  // here: only the machine lock speaks for it. `spawnRecheck` is the seam tests replace so no real process is started or signalled.
+  private activeRechecks = new Set<ActiveRecheck>();
+  private yieldedRechecks: YieldedRecheck[] = [];
+  private resuming: Promise<void> | null = null;
+  spawnRecheck: (python: string, args: string[]) => ChildProcess = (python, args) => spawn(python, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   // Timings, all overridable by tests.
   restartDelayMs = 1500; persistRetryMs = 60000; drainIdleMs = 120000; drainMaxMs = 30 * 60000; recorderStopMs = 20000; mixWaitMs = 15 * 60000; recheckTimeoutMs = 600000;
   stallCheckMs = 5000; stallSeconds = ASR_STALL_SECONDS;
@@ -349,6 +360,7 @@ export class MeetingRuntime extends EventEmitter {
     this.recorder = newRecorder(); this.asrWanted = false; this.workerPaused = false; this.modelReady = false; this.everListened = false; this.asrPosition = null; this.workerCrashes = []; this.micWanted = this.micFor(this.session.id); this.recorderMic = null;
     // The session host lives as long as the meeting: models load now (ASR stays paused until `listen`), and when the last
     // speaker source is still there the recorder starts at once, so the whole meeting is on disk from the first second.
+    this.yieldHeavyJobs(this.session.id);
     if (!fixture && extra.warm !== false) { this.warmUp(this.session.id); void this.resumeRemembered(this.session.id); }
     this.ping(); return this.snapshot();
   }
@@ -923,7 +935,7 @@ export class MeetingRuntime extends EventEmitter {
   // `listen`: ASR on. The recorder is started if it is not running yet; a paused worker resumes and catches up from where
   // it paused, a missing one is started. (mic only matters when this is what starts the recorder.)
   async start(id: string, mic?: boolean) {
-    this.requireSession(id); this.claim(id);
+    this.requireSession(id); this.claim(id); this.yieldHeavyJobs(id);
     if (this.stoppingCapture || this.finishing || ['STOPPING', 'CLEANUP_UNCONFIRMED'].includes(this.captureState)) throw new Error('CAPTURE_STOP_IN_PROGRESS');
     if (!this.armedDevice) throw new Error('SELECT_SOURCE_FIRST: source_list then source_select');
     const micWanted = this.micFor(id, mic);
@@ -1259,6 +1271,7 @@ export class MeetingRuntime extends EventEmitter {
     if (first) this.emit('finished', id);
     // Recorder and ASR are done: the machine is free for another host (unless their exit is not confirmed; see releaseWhenIdle).
     this.releaseWhenIdle();
+    if (first) this.resumeYielded();
     return { ...this.compact(), raw, unfinished: this.ledger.unfinishedLines(id), decisions: this.decisions.reportLines(id) };
   }
 
@@ -1276,11 +1289,11 @@ export class MeetingRuntime extends EventEmitter {
   // Asks the worker to transcribe one stretch of the recording again (more beams, both candidate languages) and stores the
   // answer. For a source (#id) that source is tagged RECHECKED and RAW shows "(đã nghe lại: …)" under it. One at a time:
   // each call loads the models, and two would fight over the GPU.
-  recheck(id: string, input: { sourceId?: number; from?: string; to?: string; channel?: string; beam?: number } = {}) {
+  recheck(id: string, input: { sourceId?: number; from?: string; to?: string; channel?: string; beam?: number; job?: number } = {}) {
     const run = this.recheckChain.then(() => this.recheckNow(id, input), () => this.recheckNow(id, input));
     this.recheckChain = run.catch(() => {}); return run;
   }
-  private async recheckNow(id: string, input: { sourceId?: number; from?: string; to?: string; channel?: string; beam?: number }) {
+  private async recheckNow(id: string, input: { sourceId?: number; from?: string; to?: string; channel?: string; beam?: number; job?: number }) {
     const session = this.sessionRow(id); const dir = audioDir(this.dataDir, id);
     if (!existsSync(join(dir, TIMELINE_FILE))) throw new Error('NO_AUDIO_FOR_SESSION: phiên này không có bản ghi âm để nghe lại');
     let channel = input.channel; let sourceId: number | null = null; let from: number; let to: number;
@@ -1297,20 +1310,28 @@ export class MeetingRuntime extends EventEmitter {
       if (!(to > from) || to - from > 30 * 60000) throw new Error('INVALID_RANGE: khoảng nghe lại phải dài hơn 0 và không quá 30 phút');
     }
     const fromIso = new Date(from).toISOString(); const toIso = new Date(to).toISOString();
+    // A meeting of another session is open: its GPU is not for this (AGENTS.md: no heavy job while a meeting is followed). The range is
+    // set aside in the jobs ledger and runs again after that meeting's stop. This also catches a recheck that waited in the chain.
+    if (this.session && !this.session.ended && this.session.id !== id) {
+      throw new Error(this.setAside(session, { sourceId, from: fromIso, to: toIso, channel, beam: input.beam }, input.job, false));
+    }
     // Listening again loads a model too: after the meeting it takes the machine for the time of the recheck only.
     const borrowed = !this.session || this.session.id !== id || !!this.session.ended; this.claim(id);
     this.rechecking++;
-    try { return await this.recheckRun(id, sourceId, channel, fromIso, toIso, input.beam, session); } finally { this.rechecking--; if (borrowed && !(this.session && !this.session.ended)) this.releaseWhenIdle(); }
+    try { return await this.recheckRun(id, sourceId, channel, fromIso, toIso, input.beam, session, input.job); } finally { this.rechecking--; if (borrowed && !(this.session && !this.session.ended)) this.releaseWhenIdle(); }
   }
-  private async recheckRun(id: string, sourceId: number | null, channel: string | undefined, fromIso: string, toIso: string, beam: number | undefined, session: any) {
+  private async recheckRun(id: string, sourceId: number | null, channel: string | undefined, fromIso: string, toIso: string, beam: number | undefined, session: any, job?: number) {
     const dir = audioDir(this.dataDir, id);
     const args = [join(this.root, 'tools', 'audio_worker.py'), '--recheck', dir, '--from', fromIso, '--to', toIso, ...(channel ? ['--channel', channel] : []), '--beam', String(beam ?? 8), '--languages', (session.context.languages ?? ['vi', 'lo', 'th']).join(','), ...this.laoModelArgs()];
-    const child = spawn(this.python(), args, { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = this.spawnRecheck(this.python(), args);
+    const active: ActiveRecheck = { sessionId: id, child, yielded: false }; this.activeRechecks.add(active);
     let output = ''; let error = '';
-    child.stdout.on('data', d => { output += d; }); child.stderr.on('data', d => { error = (error + d).slice(-2000); });
+    child.stdout?.on('data', d => { output += d; }); child.stderr?.on('data', d => { error = (error + d).slice(-2000); });
     const timer = setTimeout(() => child.kill(), this.recheckTimeoutMs);
     let code: number | null;
-    try { [code] = await once(child, 'exit') as [number | null]; } catch (e) { throw new Error('RECHECK_FAILED: ' + String(e)); } finally { clearTimeout(timer); }
+    try { [code] = await once(child, 'exit') as [number | null]; } catch (e) { throw new Error('RECHECK_FAILED: ' + String(e)); } finally { clearTimeout(timer); this.activeRechecks.delete(active); }
+    // Stopped on purpose for a meeting: nothing of its output is trusted; the whole range is owed and runs again after that meeting.
+    if (active.yielded) throw new Error(this.setAside(session, { sourceId, from: fromIso, to: toIso, channel, beam }, job, true));
     const last = output.trim().split(/\r?\n/).reverse().find(line => line.startsWith('{'));
     let result: any; try { result = JSON.parse(last ?? ''); } catch { throw new Error('RECHECK_FAILED: ' + (code === 0 ? 'bộ nghe không trả kết quả' : 'bộ nghe thoát mã ' + code) + (error.trim() ? ': ' + error.trim().slice(-300) : '')); }
     if (code !== 0 || result.error) throw new Error('RECHECK_FAILED: ' + String(result.error ?? 'mã ' + code).slice(0, 300));
@@ -1322,6 +1343,45 @@ export class MeetingRuntime extends EventEmitter {
     if (sourceId !== null) this.db.prepare("UPDATE sources SET boundary=CASE WHEN boundary='' THEN 'RECHECKED' ELSE boundary||'; RECHECKED' END WHERE id=? AND boundary NOT LIKE '%RECHECKED%'").run(sourceId);
     this.ping();
     return { id: Number(row.lastInsertRowid), sourceId, from: fromIso, to: toIso, channel: channel ?? null, text, language, alternatives, silent };
+  }
+  // A meeting opens or starts listening: the rechecks this host runs for ANOTHER session are stopped (the worker's own process only, through
+  // the child it holds) so the GPU is the meeting's. Each is set aside by recheckRun when its worker has really exited.
+  yieldHeavyJobs(liveId: string) {
+    for (const active of this.activeRechecks) {
+      if (active.sessionId === liveId || active.yielded) continue;
+      active.yielded = true; try { active.child.kill(); } catch {}
+    }
+  }
+  // Heavy work of this host that is running or waiting for a meeting to end: the host must not leave before it is done.
+  heavyPending() { return this.rechecking > 0 || this.yieldedRechecks.length > 0 || !!this.resuming; }
+  // The range is recorded as an unfinished job of its own session (SUMMARY "Chưa làm xong", pma stop's unfinished) and queued to run
+  // again; returns the message the caller of the recheck gets. A job id already known (a second set-aside of the same range) is reused.
+  private setAside(session: any, item: { sourceId: number | null; from: string; to: string; channel?: string; beam?: number }, job: number | undefined, stopped: boolean) {
+    const range = clockOf(Date.parse(item.from)) + '–' + clockOf(Date.parse(item.to));
+    const title = String(session.title).slice(0, 80);
+    if (job === undefined) {
+      job = this.ledger.jobs.start(session.id, 'other', 'Nghe lại ' + range + (item.sourceId ? ' (#' + item.sourceId + ')' : '') + ' của buổi "' + title + '"');
+      this.ledger.jobs.fail(job, (stopped ? 'đã dừng giữa chừng' : 'chưa chạy') + ' để nhường GPU cho cuộc họp đang mở; còn nguyên khoảng ' + range + ', host chạy lại sau khi họp kết thúc (pma stop), hoặc pma recheck --from ' + clockOf(Date.parse(item.from)) + ' --to ' + clockOf(Date.parse(item.to)));
+    }
+    this.yieldedRechecks.push({ sessionId: session.id, ...item, job });
+    return 'RECHECK_YIELDED: nghe lại ' + range + ' của buổi "' + title + '" ' + (stopped ? 'đã dừng' : 'hoãn') + ' để nhường GPU cho cuộc họp đang mở. Chưa có kết quả; khoảng này ghi ở "Chưa làm xong" và host tự chạy lại sau khi họp kết thúc. Không chạy lại trong lúc họp.';
+  }
+  // After the live meeting ended: the set-aside rechecks run again, one after the other (the chain keeps the GPU single-use). Not awaited by
+  // finish: its reply must not wait for minutes of listening. A recheck that fails is failed in the ledger with the reason; one set aside
+  // again (a new meeting opened meanwhile) goes back in the queue with the same job.
+  private resumeYielded() {
+    if (this.resuming || !this.yieldedRechecks.length || this.closing) return;
+    this.resuming = (async () => {
+      while (this.yieldedRechecks.length && !this.closing && !(this.session && !this.session.ended)) {
+        const item = this.yieldedRechecks.shift()!; this.ledger.jobs.reopen(item.job);
+        try {
+          await this.recheck(item.sessionId, { ...(item.sourceId ? { sourceId: item.sourceId } : { from: item.from, to: item.to }), channel: item.channel, beam: item.beam, job: item.job });
+          this.ledger.jobs.finish(item.job, 'đã nghe lại xong sau họp');
+        } catch (error: any) {
+          if (!String(error?.message).startsWith('RECHECK_YIELDED')) this.ledger.jobs.fail(item.job, ('nghe lại lỗi: ' + String(error?.message ?? error)).slice(0, 900));
+        }
+      }
+    })().catch(() => {}).finally(() => { this.resuming = null; this.ping(); });
   }
   // What the live ASR did not give: stretches of the recording with sound and no transcript, ASR gaps, rows the ASR itself
   // doubted, and what the recorder lost. Times are real (wall-clock). Everything here can be fixed by `pma recheck`.

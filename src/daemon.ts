@@ -238,10 +238,11 @@ console.error(`Meeting runtime ${VERSION}: ${origin} (capture OFF)`);
 // Saved audio never expires and is never deleted here: only `pma audio purge` removes it (owner, 31/10/2026).
 
 // A host with no open session and nothing recording leaves after PMA_IDLE_MINUTES; the CLI starts one again on demand.
-setInterval(() => { if (!runtime.session || runtime.session.ended) try { runtime.releaseWhenIdle(); } catch (error) { console.error('releaseWhenIdle:', error); } if ((!runtime.session || runtime.session.ended) && !runtime.capture && !runtime.recorderAlive() && Date.now() - lastActivity > idleMinutes * 60000) void shutdown(); }, Math.min(30000, Math.max(500, idleMinutes * 30000))).unref();
+setInterval(() => { if (!runtime.session || runtime.session.ended) try { runtime.releaseWhenIdle(); } catch (error) { console.error('releaseWhenIdle:', error); } if ((!runtime.session || runtime.session.ended) && !runtime.capture && !runtime.recorderAlive() && !runtime.heavyPending() && Date.now() - lastActivity > idleMinutes * 60000) void shutdown(); }, Math.min(30000, Math.max(500, idleMinutes * 30000))).unref();
 // The session is over, RAW is written and the mix is made: this host has nothing left to do. The grace lets the reply to `pma stop`
 // reach the CLI. A diagnostic runtime stays up (tests keep using it) unless PMA_EXIT_AFTER_FINISH=1.
-if (!runtime.testMode || process.env.PMA_EXIT_AFTER_FINISH === '1') runtime.on('finished', () => setTimeout(() => void shutdown(), 1500).unref());
+if (!runtime.testMode || process.env.PMA_EXIT_AFTER_FINISH === '1') // A recheck set aside for this meeting (or still running) is waited for: the host leaves when no heavy work of its own is left.
+{ const leave = () => { if (runtime.heavyPending()) setTimeout(leave, 5000).unref(); else void shutdown(); }; runtime.on('finished', () => setTimeout(leave, 1500).unref()); }
 let stopping = false;
 async function shutdown() {
   if (stopping) return; stopping = true;

@@ -76,6 +76,12 @@ export class JobBoard {
     const n = text(note, 1000, 'INVALID_JOB_NOTE'), at = this.now();
     return tx(this.db, () => this.db.prepare("UPDATE jobs SET status='failed', note=?, updated=? WHERE id=? AND status='running'").run(n, at, id).changes > 0);
   }
+  // A job that was set aside (failed, with the range it still owes in its note) runs again: failed -> running. Only a failed job
+  // moves; a running, done or cancelled one is left as it is. Used by a heavy job that yielded the GPU to a new meeting (ENG-50).
+  reopen(id: number): boolean {
+    const at = this.now();
+    return tx(this.db, () => this.db.prepare("UPDATE jobs SET status='running', note=NULL, updated=? WHERE id=? AND status='failed'").run(at, id).changes > 0);
+  }
   // At stop: everything still running is cancelled (the background agent is told separately by the skill) and returned so the
   // caller can list it in SUMMARY "Chưa làm xong". Calling it again returns [] because nothing is running any more.
   cancelRunning(sessionId: string, note: string = CANCEL_NOTE): Job[] {
