@@ -1,6 +1,6 @@
 # Kế hoạch cải tiến PMA sau ba buổi họp 23/11/2026
 
-Trạng thái: **kế hoạch, chưa làm**. Bản đang chạy là `pma` 0.12.8. Nghiệm thu ở họp thật tiếp theo, không tự thu âm để thử.
+Trạng thái (23/11 tối): **đã code đủ 11 việc trên nhánh `pma/0.13-tich-hop` (0.13.0–0.13.3), test xanh; chưa gộp vào nhánh chính, chưa cài, chưa nghiệm thu ở họp thật.** Bản đang chạy trên máy vẫn là `pma` 0.12.8. Việc còn mở: issue #8 (4 dòng Lào/Thái lọt micro), #9 (`transcribe` chưa nhường GPU), #10 (bản Lào OTC chưa ra ba con số %). Hotwords của việc 8 tắt mặc định vì đo thấy bịa tên. Nghiệm thu ở họp thật tiếp theo, không tự thu âm để thử.
 
 ## Bằng chứng
 

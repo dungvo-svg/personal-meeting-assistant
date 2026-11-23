@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.3 — 23/11/2026 (việc 1a, 1b, 8, 9: hai cách nghe Việt/Lào, bảng tên theo context, độ trễ)
+
+Họp OTC 23/11: lời Lào bị ghi thành chữ Việt vô nghĩa, mất ba con số % theo kênh; ba buổi 23/11 nghe sai tên ("Dũng" → "dùng", Claude, Mittaphab, OKR, Vimart). Chưa nghiệm thu ở họp thật.
+
+- **Hai cách nghe mỗi mẩu** (việc 1a): phiên có cả vi và lo (đã cài mô hình Lào) thì mỗi mẩu chạy lần lượt turbo-vi rồi BuzzASR-lo, giữ cả hai bản trong `alternatives` (`rv:1`: ngôn ngữ, mô hình, chữ, điểm riêng từng mô hình, tỷ lệ âm tiết Việt hợp lệ n/d, phạt vòng lặp, trạng thái). Dòng chính vẫn là một bản; chọn Lào khi điểm Lào hơn Việt ≥ 0,15; vùng 0–0,25 gắn "chưa phân định" (`READINGS_UNDECIDED`). `follow`/`read`/RAW/recheck in đủ hai bản; bản đọc không còn bị cắt ở 2.000 ký tự. Phiên chỉ vi, chỉ lo, thiếu mô hình Lào giữ đường cũ. Đo offline trên RTX 3050 6 GB: VRAM đỉnh 4,2 GB, RTF 0,24–0,31, p95 ≤ 4,6 s mỗi mẩu; tiếng Việt họp thầu không tụt. **Chưa đạt** nghiệm thu OTC: bản Lào chưa ra ba con số % (issue #10). Tỷ lệ âm tiết Việt chỉ để hiển thị, không dùng để chọn.
+- **Tổng hợp đọc hai cách nghe** (việc 1b): `guide/hop.md` có mục "Hai cách nghe của một đoạn" (điểm hai mô hình không cùng thang, đọc cả hai, đặt vào đúng ô theo màn hình/bảng tên/số, không tin bản nào chỉ vì điểm cao, cả hai vô nghĩa thì `[chưa nghe rõ]` + recheck; hai ví dụ Lào). `coverage` đưa đoạn "chưa phân định" vào nhóm CHƯA CHẮC; `follow` không giấu cách nghe thứ hai của dòng bị nghi câu ảo.
+- **Bảng tên theo context** (việc 8): file người dự nhận thêm `kind` (người dự, người được nhắc không dự, biệt danh kèm `of`, tên hệ thống) và `weakVariants`; file cũ chạy như trước. Brief có dòng "Được nhắc / biệt danh / hệ thống"; chủ việc ghi bằng biệt danh được đổi về tên thật. Chữ nghe sai mà cũng là từ thường ("dùng") chỉ được sửa khi liền sau là động từ giao việc, kèm `(sửa theo bảng tên)`; biệt danh không bao giờ bị sửa trong chữ.
+- **Từ khoá cho bộ nghe (hotwords) có sẵn nhưng tắt mặc định**, bật bằng `pma start --hotwords`: đo offline 23/11 với bảng tên 9 mục, 16/77 mẩu có tên bịa và 62/77 mẩu bị đổi chữ; "Dũng" chỉ ra đúng 1/3 dòng thử, "Claude" 0/3.
+- **Độ trễ** (việc 9): giữ lô 60 giây; chiếu cửa sổ Claude cho cả phòng thì `follow --batch 20`; ghi độ trễ đầu/giữa/cuối buổi vào SUMMARY.
+
 ## 0.13.2 — 23/11/2026 (việc 2 và 3: tiếng loa lọt micro, tên người nói từ bot Claude, màn hình Google Meet)
 
 Ba buổi Meet 23/11: tiếng loa lọt vào micro bị ghi "Tôi (mic tắt)" khoảng 10 lần trong buổi 14:00; buổi OTC ngoài chủ họp không đoạn nào có tên; họp thầu và họp 14:00 không có ảnh màn hình chia sẻ. Chưa nghiệm thu ở họp thật.
