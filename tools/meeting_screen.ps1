@@ -1,7 +1,10 @@
 <#
 .SYNOPSIS
-  Watch the Zoom meeting window (read only) and write what the screen shows: who is sharing and when, who Zoom marks as
-  speaking, and one frame of the shared screen each time its content changes.
+  Watch the Zoom meeting window, or the Google Meet tab in Chrome/Edge (read only), and write what the screen shows: who is
+  sharing and when, who is marked as speaking, and one frame of the shared screen each time its content changes.
+  -Mode auto|zoom|meet picks the app (auto: whichever window is open, Zoom first). Meet: window titled "Meet - ..."; the
+  presenter comes from UI Automation names ("<name> is presenting", Vietnamese, Lao); frames are the presentation area only;
+  when that area stays blank or covered, a screen_hidden event (MAN HINH AN) is written instead of blank images.
 
 .DESCRIPTION
   Nothing is clicked or opened in Zoom. Every -Interval seconds:
@@ -16,13 +19,161 @@
   printed, so `Monitor` can follow them. The images can hold internal data (prices, suppliers): they stay on this machine.
 #>
 param(
-  [Parameter(Mandatory = $true)][string]$OutDir,
+  [string]$OutDir,
   [double]$Interval = 2,
   [int]$FrameDiff = 12,     # mean absolute grey difference (0-255) that counts as new shared content
   [int]$MaxMinutes = 0,     # 0 = until stopped
-  [int]$IdleExitMinutes = 15  # no Zoom meeting window this long = the meeting is over: exit
+  [int]$IdleExitMinutes = 15,  # no meeting window this long = the meeting is over: exit
+  [ValidateSet('auto', 'zoom', 'meet')][string]$Mode = 'auto',  # which meeting window to watch; auto = whichever is open (Zoom first when both)
+  [int]$HiddenTicks = 3,    # Meet: this many flat presentation areas in a row = MAN HINH AN (screen_hidden)
+  [switch]$Library          # define the pure decision functions and return (tests dot-source the script with this)
 )
 $ErrorActionPreference = 'Stop'
+
+# ---- Pure decisions (no window, no screen, no files): tested with synthetic fixtures in tests/screen_meet.test.mjs ----
+# Source stays ASCII (Windows PowerShell 5.1 reads BOM-less files as ANSI): non-ASCII letters are \uXXXX regex escapes.
+
+# Meet's window title is "Meet - <code or meeting name>" (Chrome adds " - Google Chrome", Edge " - Microsoft Edge"). The Meet home
+# page is "Google Meet" and does not count. Only the active tab names the window, so the Meet tab must be the one showing.
+function Test-MeetTitle([string]$title) {
+  if (-not $title) { return $false }
+  return $title.Normalize([Text.NormalizationForm]::FormC) -match '^Meet\s+[-\u2013\u2014]\s*\S'
+}
+
+# Which window to watch. $candidates: objects with kind ('zoom'|'meet'), minimized, area. -Mode forces a kind; auto keeps the kind
+# used last tick when both are open, else Zoom (so the Zoom behaviour is unchanged). Within a kind: a visible window first, then the biggest.
+function Select-MeetingWindow($candidates, [string]$mode, [string]$previous) {
+  $list = @($candidates | Where-Object { $_ -and ($mode -eq 'auto' -or $_.kind -eq $mode) })
+  if (-not $list.Count) { return $null }
+  $kinds = @($list | ForEach-Object { $_.kind } | Select-Object -Unique)
+  $kind = if ($kinds.Count -eq 1) { $kinds[0] } elseif ($previous -in $kinds) { $previous } else { 'zoom' }
+  return @($list | Where-Object { $_.kind -eq $kind } | Sort-Object @{ Expression = { [bool]$_.minimized } }, @{ Expression = { -[double]$_.area } })[0]
+}
+
+# "<name> is presenting" and the like, from one UI Automation name. Returns @{ by; self } or $null. English and Vietnamese; the Lao
+# strings are a best guess (not yet seen on a real Lao-UI meeting).
+$script:PresentSelf = @(
+  '^You(?:\u2019|'')?(?:re| are) presenting',
+  '^B\u1ea1n \u0111ang tr\u00ecnh (?:b\u00e0y|chi\u1ebfu)',
+  '^\u0e81\u0eb3\u0ea5\u0eb1\u0e87\u0e99\u0eb3\u0eaa\u0eb0\u0ec0\u0edc\u0eb5'
+)
+$script:PresentOther = @(
+  '^(?<n>.+?) (?:is|are) presenting',
+  '^(?<n>.+?)(?:\u2019|'')s presentation',
+  '^Presentation (?:from|by) (?<n>.+)$',
+  '^(?<n>.+?) \u0111ang tr\u00ecnh (?:b\u00e0y|chi\u1ebfu)',
+  '^B\u1ea3n tr\u00ecnh b\u00e0y c\u1ee7a (?<n>.+)$',
+  '^(?<n>.+?) \u0e81\u0eb3\u0ea5\u0eb1\u0e87\u0e99\u0eb3\u0eaa\u0eb0\u0ec0\u0edc\u0eb5',
+  '^\u0e81\u0eb2\u0e99\u0e99\u0eb3\u0eaa\u0eb0\u0ec0\u0edc\u0eb5\u0e82\u0ead\u0e87 (?<n>.+)$'
+)
+function ConvertFrom-PresenterText([string]$text) {
+  if (-not $text) { return $null }
+  $t = $text.Normalize([Text.NormalizationForm]::FormC).Trim()
+  foreach ($p in $script:PresentSelf) { if ($t -match $p) { return @{ by = $null; self = $true } } }
+  foreach ($p in $script:PresentOther) {
+    if ($t -match $p) {
+      $n = ($Matches['n'] -replace '\s*\((?:You|B\u1ea1n|T\u00f4i)\)\s*$', '').Trim(' ', '.', ',', ':')
+      if ($n.Length -ge 2 -and $n.Length -le 80) { return @{ by = $n; self = $false } }
+    }
+  }
+  return $null
+}
+
+# Everything the meeting page's UI Automation tree names, reduced to what the watcher needs: is someone presenting and who, is a side
+# panel (People) open, who the page marks as speaking (only if Meet exposes it; not seen yet).
+function Get-MeetObservation($names) {
+  $obs = @{ presenting = $false; by = $null; self = $false; panel = $false; speaker = $null }
+  foreach ($raw in @($names)) {
+    if (-not $raw) { continue }
+    $n = ([string]$raw).Normalize([Text.NormalizationForm]::FormC).Trim()
+    if (-not $n -or $n.Length -gt 200) { continue }
+    if (-not $obs.presenting) {
+      $p = ConvertFrom-PresenterText $n
+      if ($p) { $obs.presenting = $true; $obs.by = $p.by; $obs.self = $p.self }
+    }
+    if ($n -imatch '^(?:People|M\u1ecdi ng\u01b0\u1eddi)$') { $obs.panel = $true }
+    if (-not $obs.speaker -and $n -imatch '^(?<n>.+?) (?:is speaking|\u0111ang n\u00f3i|\u0e81\u0eb3\u0ea5\u0eb1\u0e87\u0ec0\u0ea7\u0ebb\u0ec9\u0eb2)$') { $obs.speaker = $Matches['n'].Trim() }
+  }
+  return $obs
+}
+
+# Where the presentation shows: the page (below the browser bars) without the bottom control bar, and without the right side panel
+# when it is open. $page = @{ x; y; w; h } relative to the window, or $null when unknown (fixed browser-bar height then).
+function Get-PresentationArea($page, [int]$winW, [int]$winH, [bool]$panelOpen) {
+  $x = 0; $y = 120; $w = $winW; $h = $winH - 120
+  if ($page -and $page.w -gt 200 -and $page.h -gt 200 -and $page.x -ge 0 -and $page.y -ge 0 -and ($page.x + $page.w) -le ($winW + 2) -and ($page.y + $page.h) -le ($winH + 2)) {
+    $x = [int]$page.x; $y = [int]$page.y; $w = [int]$page.w; $h = [int]$page.h
+  }
+  $h -= 96                      # Meet's bottom control bar
+  if ($panelOpen) { $w -= 392 } # side panel (People, Chat): 360 px plus margins
+  if ($w -lt 100 -or $h -lt 100) { return $null }
+  return @{ x = $x; y = $y; w = $w; h = $h }
+}
+
+# Grey signatures are 32x18 byte arrays (MeetingScreen.Signature). Flat = nothing drawn there: Meet's empty dark area, or the
+# presentation covered. Measured as the standard deviation, so any flat colour counts, not only black.
+function Get-SigStats($sig) {
+  if (-not $sig -or -not $sig.Length) { return @{ mean = 0.0; sd = 0.0 } }
+  $m = ($sig | Measure-Object -Average).Average
+  $v = 0.0; foreach ($b in $sig) { $v += ($b - $m) * ($b - $m) }
+  return @{ mean = [double]$m; sd = [math]::Sqrt($v / $sig.Length) }
+}
+function Test-SigFlat($sig, [double]$maxSd = 3) { return (Get-SigStats $sig).sd -lt $maxSd }
+function Get-SigDiff($a, $b) {
+  if (-not $a -or -not $b -or $a.Length -ne $b.Length) { return 255 }
+  $t = 0L; for ($i = 0; $i -lt $a.Length; $i++) { $t += [math]::Abs([int]$a[$i] - [int]$b[$i]) }
+  return [int][math]::Floor($t / $a.Length)
+}
+
+# One tick of the Meet watcher. $state: share, by, self, sig, hidden, flat, speaker. $obs: Get-MeetObservation plus sig (signature of the
+# presentation area, $null when it could not be read). Returns the new state and the events to emit; a 'frame' event has no file yet
+# (the caller saves the area image and sets it). A presenter change emits share_stop then share_start. Nothing is saved while the
+# area is flat: screen_hidden (MAN HINH AN) once after $hiddenTicks flat ticks in a row, screen_visible when it draws again. Own
+# share: Meet shows only a placeholder, so no frames and no hidden verdict.
+function New-MeetState { return @{ share = $false; by = $null; self = $false; sig = $null; hidden = $false; flat = 0; speaker = $null } }
+function Get-PresenterKey($by, $self) { if ($self) { return '#self' } elseif ($by) { return ([string]$by).ToLowerInvariant() } else { return $null } }
+function Step-MeetState($state, $obs, [int]$frameDiff = 12, [int]$hiddenTicks = 3) {
+  $s = @{} + $state
+  $events = New-Object System.Collections.ArrayList
+  if ($obs.presenting) {
+    $oldKey = Get-PresenterKey $s.by $s.self; $newKey = Get-PresenterKey $obs.by $obs.self
+    if ($s.share -and $oldKey -and $newKey -and $oldKey -ne $newKey) {
+      [void]$events.Add(@{ type = 'share_stop'; by = $s.by; self = $s.self; reason = 'presenter changed' })
+      $s.share = $false
+    }
+    if (-not $s.share) {
+      [void]$events.Add(@{ type = 'share_start'; by = $obs.by; self = $obs.self; app = 'meet'; panel = $obs.panel })
+      $s.share = $true; $s.sig = $null; $s.hidden = $false; $s.flat = 0
+    }
+    if ($obs.by -or $obs.self) { $s.by = $obs.by; $s.self = $obs.self }  # a name read late fills in; an unread name never erases one
+  } elseif ($s.share) {
+    [void]$events.Add(@{ type = 'share_stop'; by = $s.by; self = $s.self })
+    $s.share = $false; $s.by = $null; $s.self = $false; $s.sig = $null; $s.hidden = $false; $s.flat = 0
+  }
+  if ($s.share -and -not $s.self -and $obs.sig) {
+    if (Test-SigFlat $obs.sig) {
+      $s.flat++
+      if ($s.flat -ge $hiddenTicks -and -not $s.hidden) {
+        $s.hidden = $true
+        $why = if ($obs.panel) { 'side panel open over the presentation' } else { 'presentation area is blank' }
+        [void]$events.Add(@{ type = 'screen_hidden'; by = $s.by; reason = $why; panel = [bool]$obs.panel })
+      }
+    } else {
+      $s.flat = 0
+      if ($s.hidden) { [void]$events.Add(@{ type = 'screen_visible'; by = $s.by }); $s.hidden = $false }
+      $d = Get-SigDiff $obs.sig $s.sig
+      if ($d -ge $frameDiff) { [void]$events.Add(@{ type = 'frame'; by = $s.by; diff = $d }); $s.sig = $obs.sig }
+    }
+  }
+  if ($obs.speaker -ne $s.speaker) {
+    if ($obs.speaker) { [void]$events.Add(@{ type = 'speaker'; name = $obs.speaker; how = 'meet ui automation' }) }
+    $s.speaker = $obs.speaker
+  }
+  return @{ state = $s; events = @($events) }
+}
+
+if ($Library) { return }
+if (-not $OutDir) { throw 'OutDir is required' }
 Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes, System.Runtime.WindowsRuntime
 Add-Type -ReferencedAssemblies System.Drawing @"
 using System; using System.Text; using System.Drawing; using System.Drawing.Imaging; using System.Runtime.InteropServices;
@@ -41,6 +192,18 @@ public static class MeetingScreen {
       if (c.ToString() == "ConfMultiTabContentWndClass" && IsWindowVisible(h)) { found = h; return false; } return true; }, IntPtr.Zero);
     return found;
   }
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  // Chrome and Edge top-level windows: {handle, title, minimized, area}. The caller keeps the ones titled "Meet - ...".
+  public static System.Collections.Generic.List<object[]> BrowserWindows() {
+    var list = new System.Collections.Generic.List<object[]>();
+    EnumWindows((h, l) => { var c = new StringBuilder(128); GetClassName(h, c, 128);
+      if (c.ToString() == "Chrome_WidgetWin_1" && IsWindowVisible(h)) {
+        var t = new StringBuilder(512); GetWindowText(h, t, 512); RECT r; GetWindowRect(h, out r);
+        if (t.Length > 0) list.Add(new object[] { h, t.ToString(), IsIconic(h), (double)Math.Max(0, r.R - r.L) * Math.Max(0, r.B - r.T) });
+      } return true; }, IntPtr.Zero);
+    return list;
+  }
+  public static int[] WindowRect(IntPtr h) { RECT r; GetWindowRect(h, out r); return new int[] { r.L, r.T, r.R, r.B }; }
   public static bool Minimized(IntPtr h) { return IsIconic(h); }
   public static Bitmap Capture(IntPtr h) {
     RECT r; GetWindowRect(h, out r); int w = r.R - r.L, ht = r.B - r.T; if (w < 100 || ht < 100) return null;
@@ -82,10 +245,10 @@ public static class MeetingScreen {
 $asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
 function Await($op, [Type]$t) { $task = $asTask.MakeGenericMethod($t).Invoke($null, @($op)); $task.Wait(-1) | Out-Null; $task.Result }
 # Vietnamese names keep their marks only with the Vietnamese OCR pack (Windows Settings > Language > Vietnamese); live 21/11 the
-# en-US engine read "Mr Đức - NNC Hà Nội" as "Mr Dirc - NNC Hå Nöi".
+# en-US engine read "Mr \u0110\u1ee9c - NNC H\u00e0 N\u1ed9i" as "Mr Dirc - NNC H\u00e5 N\u00f6i".
 $vi = [Windows.Media.Ocr.OcrEngine]::AvailableRecognizerLanguages | Where-Object { $_.LanguageTag -like 'vi*' } | Select-Object -First 1
 $engine = if ($vi) { [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage($vi) } else { [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages() }
-$ocrLanguage = if ($vi) { $vi.LanguageTag } else { 'en-US (tên tiếng Việt mất dấu)' }
+$ocrLanguage = if ($vi) { $vi.LanguageTag } else { 'en-US (t\u00ean ti\u1ebfng Vi\u1ec7t m\u1ea5t d\u1ea5u)' }
 $tmp = Join-Path $env:TEMP ("pma-ocr-" + $PID + ".png")
 function Ocr($bmp) {
   if (-not $bmp) { return '' }
@@ -120,16 +283,94 @@ function Emit([hashtable]$e) {
   Write-Output $line
 }
 
+# ---- Google Meet (Chrome/Edge tab titled "Meet - ..."): the thin, impure part. Decisions are the pure functions above. ----
+# Every UI Automation name on the meeting page (Chrome builds this tree once an automation client asks, so the first ticks can be empty).
+function Get-MeetNames($hwnd) {
+  $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+  $cr = New-Object System.Windows.Automation.CacheRequest
+  $cr.Add([System.Windows.Automation.AutomationElement]::NameProperty)
+  $scope = $cr.Activate()
+  try { return @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Cached.Name }) }
+  finally { $scope.Dispose() }
+}
+# The web page (document) rectangle relative to the window, to know where the browser bars end; $null when not readable.
+function Get-MeetPage($hwnd) {
+  try {
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($hwnd)
+    $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Document)
+    $doc = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+    if (-not $doc) { return $null }
+    $r = $doc.Current.BoundingRectangle; $w = [MeetingScreen]::WindowRect($hwnd)
+    if ($r.IsEmpty) { return $null }
+    return @{ x = [int]($r.X - $w[0]); y = [int]($r.Y - $w[1]); w = [int]$r.Width; h = [int]$r.Height }
+  } catch { return $null }
+}
+$meet = New-MeetState; $meetWindow = $null
+function Invoke-MeetTick($pick) {
+  $label = if ($pick.minimized) { 'minimized' } else { 'visible' }
+  if ($label -ne $script:meetWindow) { Emit @{ type = 'meet_window'; window = $label; title = $pick.title }; $script:meetWindow = $label }
+  if ($pick.minimized) { return }   # a minimized window cannot be captured; the UI tree is not trusted either
+  $obs = Get-MeetObservation (Get-MeetNames $pick.hwnd)
+  $bmp = $null; $rect = $null
+  try {
+    if ($obs.presenting -and -not $obs.self) {
+      $bmp = [MeetingScreen]::Capture($pick.hwnd)
+      if ($bmp) {
+        $a = Get-PresentationArea (Get-MeetPage $pick.hwnd) $bmp.Width $bmp.Height $obs.panel
+        if ($a) {
+          $rect = New-Object System.Drawing.Rectangle $a.x, $a.y, $a.w, $a.h
+          $rect.Intersect((New-Object System.Drawing.Rectangle 0, 0, $bmp.Width, $bmp.Height))
+          $obs.sig = [MeetingScreen]::Signature($bmp, $rect)
+        }
+      }
+    }
+    $step = Step-MeetState $script:meet $obs $FrameDiff $HiddenTicks
+    $script:meet = $step.state
+    foreach ($ev in $step.events) {
+      if ($ev.type -eq 'frame') {
+        $crop = if ($bmp -and $rect) { [MeetingScreen]::Crop($bmp, $rect) } else { $null }
+        if (-not $crop) { continue }
+        $file = (Get-Date -Format 'HHmmss') + '.png'
+        $crop.Save((Join-Path $OutDir "frames\$file"), [System.Drawing.Imaging.ImageFormat]::Png); $crop.Dispose()
+        $ev.file = "frames/$file"
+      }
+      Emit $ev
+    }
+  } finally { if ($bmp) { $bmp.Dispose() } }
+}
+
 $state = @{ zoom = $null; share = $false; by = $null; speaker = $null; sig = $null; tileX = $null; ocrAt = [datetime]::MinValue; black = 0 }
-$started = Get-Date; $lastSeen = Get-Date
-Emit @{ type = 'start'; interval = $Interval; out = $OutDir; ocr = $ocrLanguage }
+$started = Get-Date; $lastSeen = Get-Date; $prevKind = $null
+Emit @{ type = 'start'; interval = $Interval; out = $OutDir; ocr = $ocrLanguage; mode = $Mode }
 while ($MaxMinutes -le 0 -or ((Get-Date) - $started).TotalMinutes -lt $MaxMinutes) {
   try {
-    $h = [MeetingScreen]::FindMeeting()
+    $cands = @()
+    if ($Mode -ne 'meet') {
+      $zh = [MeetingScreen]::FindMeeting()
+      if ($zh -ne [IntPtr]::Zero) { $cands += [pscustomobject]@{ kind = 'zoom'; hwnd = $zh; minimized = [MeetingScreen]::Minimized($zh); area = 0; title = '' } }
+    }
+    if ($Mode -ne 'zoom') {
+      foreach ($w in [MeetingScreen]::BrowserWindows()) { if (Test-MeetTitle $w[1]) { $cands += [pscustomobject]@{ kind = 'meet'; hwnd = $w[0]; title = $w[1]; minimized = [bool]$w[2]; area = $w[3] } } }
+    }
+    $pick = Select-MeetingWindow $cands $Mode $prevKind
+    $kind = if ($pick) { $pick.kind } else { $null }
+    if ($prevKind -eq 'meet' -and $kind -ne 'meet') {
+      # Left Meet (closed, or switched to Zoom): close its share and forget the window state
+      if ($meet.share) { Emit @{ type = 'share_stop'; by = $meet.by; self = $meet.self; reason = 'no meeting window' } }
+      if (-not $kind) { Emit @{ type = 'meet_window'; window = 'none' } }
+      $meet = New-MeetState; $meetWindow = $null
+    }
+    if ($kind) { $prevKind = $kind }
+    if ($kind -eq 'meet') {
+      $lastSeen = Get-Date
+      Invoke-MeetTick $pick
+      Start-Sleep -Seconds $Interval; continue
+    }
+    $h = if ($pick) { $pick.hwnd } else { [IntPtr]::Zero }
     $zoom = if ($h -eq [IntPtr]::Zero) { 'none' } elseif ([MeetingScreen]::Minimized($h)) { 'minimized' } else { 'visible' }
-    if ($zoom -ne $state.zoom) { Emit @{ type = 'zoom'; window = $zoom }; $state.zoom = $zoom }
+    if ($zoom -ne $state.zoom) { if ($Mode -ne 'meet') { Emit @{ type = 'zoom'; window = $zoom } }; $state.zoom = $zoom }
     if ($zoom -ne 'none') { $lastSeen = Get-Date }
-    elseif (((Get-Date) - $lastSeen).TotalMinutes -ge $IdleExitMinutes) { Emit @{ type = 'end'; reason = "no Zoom meeting window for $IdleExitMinutes min" }; exit 0 }
+    elseif (((Get-Date) - $lastSeen).TotalMinutes -ge $IdleExitMinutes) { Emit @{ type = 'end'; reason = "no meeting window for $IdleExitMinutes min" }; exit 0 }
     if ($zoom -ne 'visible') {
       if ($zoom -eq 'none' -and $state.share) { Emit @{ type = 'share_stop'; by = $state.by; reason = 'no meeting window' }; $state.share = $false }
       Start-Sleep -Seconds $Interval; continue
@@ -141,7 +382,7 @@ while ($MaxMinutes -le 0 -or ((Get-Date) - $started).TotalMinutes -lt $MaxMinute
 
     if ($share -and -not $state.share) {
       $tab = Ocr ([MeetingScreen]::Crop($bmp, (New-Object System.Drawing.Rectangle 380, 8, 460, 44)))
-      $by = if ($tab -match "^(.+?)['’]s screen") { $Matches[1].Trim() } else { $null }
+      $by = if ($tab -match "^(.+?)['\u2019]s screen") { $Matches[1].Trim() } else { $null }
       Emit @{ type = 'share_start'; by = $by; tab = $tab }
       $state.by = $by; $state.sig = $null
     } elseif (-not $share -and $state.share) {
