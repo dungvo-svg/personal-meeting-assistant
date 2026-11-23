@@ -12,9 +12,10 @@ import { ackOf, foldRuns, isHallucination, micLabel, readingLines, wrapLine } fr
 import { loadNames, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
-  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--purpose thong-bao|huong-dan|giao-viec|ban-quyet-dinh] [--participants p.json]
+  pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--purpose thong-bao|huong-dan|giao-viec|ban-quyet-dinh] [--hotwords] [--participants p.json]
                                    --link: Zoom (zoom.us/j/...) hoặc Google Meet (meet.google.com/abc-defg-hij)
                                    --me: tên người dùng (nhớ cho lần sau); --at: giờ họp theo lịch, để báo cáo ghi độ phủ
+                                   --hotwords: đưa bảng tên cho bộ nghe làm từ khóa (MẶC ĐỊNH TẮT: đo 23/11 cho thấy làm bịa tên và đổi chữ ở đa số đoạn; bật chỉ khi đã đo lại)
                                    --purpose: họp để làm gì (nhận cả "thông báo", "hướng dẫn", "giao việc", "bàn quyết định"): dẫn đường cho bức tranh/SUMMARY/TASKS;
                                    họp thông báo/hướng dẫn thì việc, tên, số nêu khi làm mẫu là ví dụ, không vào TASKS
   pma purpose <giá trị> [--session ID]   đặt/đổi mục đích họp của phiên đang mở (context đổi bản: các vai đọc lại pma brief); pma brief in mục đích ở dòng đầu
@@ -384,7 +385,7 @@ async function main() {
         out({ error: 'HARDWARE_NOT_ENOUGH', tier: hw.tier, label: hw.label, reasons: hw.reasons ?? [hw.error], refusedLanguages: hw.meeting?.refused ?? [], hint });
         process.exitCode = 1; return;
       }
-      const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}), ...(flags.purpose !== undefined ? { purpose: flags.purpose === 'true' ? '' : flags.purpose } : {}) });
+      const status = await call('prepare', { title: flags.title, agenda: agenda(flags), languages: languagesOf(flags), me: flags.me, at: flags.at, ...(flags['no-mic'] === 'true' ? { mic: false } : {}), ...(flags.purpose !== undefined ? { purpose: flags.purpose === 'true' ? '' : flags.purpose } : {}), ...(flags.hotwords === 'true' ? { hotwords: true } : {}) });
       // Right after the session exists; a list the runtime refuses is reported, the session stays open.
       const people = listed ? await attach('participants', { participants: listed }).catch(error => ({ error: String(error?.message ?? error) })) : undefined;
       const opened = flags.link ? await call('open', { url: flags.link }) : undefined;

@@ -126,7 +126,7 @@ test('names met in earlier meetings: most frequent first, this meeting and nickn
 test('the host writes hotwords.json next to the recorder files: from the context, the glossary and earlier meetings; a glossary change updates it; nothing outside the data folder is written', async () => {
   await withRuntime(async (r, directory) => {
     r.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run('old', 'cũ', '2030-01-01T00:00:00Z', null, 'asr', JSON.stringify({ participants: [{ name: 'Oanh' }] }));
-    r.prepare('Họp thử', false, 'Chốt giá', ['vi', 'lo']);
+    r.prepare('Họp thử', false, 'Chốt giá', ['vi', 'lo'], { hotwords: true });
     const id = r.session.id;
     const report = applyParticipants(r, [{ name: 'Namfon' }, { name: 'Acme', kind: 'system' }, { name: 'ຄຳຟອນ', kind: 'mentioned' }]);
     assert.deepEqual(report.hotwords, { vi: 3, lo: 1 });
@@ -141,6 +141,22 @@ test('the host writes hotwords.json next to the recorder files: from the context
     assert.ok(body.terms.vi.includes('Zeta'));
     r.glossaryRemove('Zeta');
     assert.ok(!JSON.parse(readFileSync(file, 'utf8')).terms.vi.includes('Zeta'));
+  });
+});
+
+test('hotwords are OFF by default (offline A/B 23/11 found invented names): the file is written empty, and a meeting started with hotwords turns them on', async () => {
+  await withRuntime(async (r, directory) => {
+    r.prepare('Họp thử', false, 'Chốt giá', ['vi', 'lo']);
+    const id = r.session.id;
+    const report = applyParticipants(r, [{ name: 'Namfon' }, { name: 'Acme', kind: 'system' }]);
+    assert.deepEqual(report.hotwords, { vi: 0, lo: 0 });
+    const body = JSON.parse(readFileSync(join(audioDir(directory, id), 'hotwords.json'), 'utf8'));
+    assert.equal(body.vi, ''); assert.equal(body.lo, '');
+    assert.equal(r.session.context.hotwords, undefined);
+  });
+  await withRuntime(async r => {
+    r.prepare('Họp thử', false, 'Chốt giá', ['vi'], { hotwords: true });
+    assert.equal(r.session.context.hotwords, true);
   });
 });
 

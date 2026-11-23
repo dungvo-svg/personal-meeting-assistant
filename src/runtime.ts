@@ -351,7 +351,10 @@ export class MeetingRuntime extends EventEmitter {
     try {
       const row: any = this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id); if (!row) return null;
       const context = this.session?.id === id ? this.session.context : JSON.parse(row.context);
-      return writeHotwordsFile(audioDir(this.dataDir, id), nameTable(context, this.glossary, historyNames(this.db, id)));
+      // Off unless the meeting asked for it (`pma start --hotwords`): the offline A/B of 23/11 found invented names and heavy rewriting (see CHANGELOG 0.13.3).
+      // The file is still written, empty, so the worker never keeps an old list.
+      const table = context?.hotwords === true ? nameTable(context, this.glossary, historyNames(this.db, id)) : [];
+      return writeHotwordsFile(audioDir(this.dataDir, id), table);
     } catch { return null; }
   }
   ping() { this.emit('change'); }
@@ -368,7 +371,7 @@ export class MeetingRuntime extends EventEmitter {
   machineState() { if (!this.machine) return null; const h = machineHolder(); if (!h) return null; const { token, ...rest } = h; return { ...rest, mine: token === this.machine.token }; }
   // extra.mic false: no microphone for this meeting, decided before anything can open one (the remembered speaker starts the recorder
   // right here, so a later `select --no-mic` would be too late for the first seconds).
-  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean; mic?: boolean; purpose?: string } = {}) {
+  prepare(title?: string, fixture = false, agenda?: string, languages: Language[] = ['vi', 'lo', 'th'], extra: { me?: string; at?: string; warm?: boolean; mic?: boolean; purpose?: string; hotwords?: boolean } = {}) {
     if (this.closing) throw new Error('RUNTIME_CLOSING');
     // Refused before anything exists: a wrong word must not leave a meeting without the purpose the owner meant.
     const purpose = extra.purpose === undefined ? undefined : parsePurpose(extra.purpose).id;
@@ -396,7 +399,7 @@ export class MeetingRuntime extends EventEmitter {
     // Who "Tôi" is (remembered for next time) and when the meeting was scheduled, for the coverage line in reports.
     if (extra.me?.trim()) this.saveProfile({ me: extra.me.trim().slice(0, 80) });
     const scheduled = scheduledAt(extra.at);
-    const context = { ...base, languages, me: this.profile.me, scheduledStart: scheduled, ...(purpose ? { purpose } : {}), ...(extra.mic === false ? { micOff: true } : {}) };
+    const context = { ...base, languages, me: this.profile.me, scheduledStart: scheduled, ...(purpose ? { purpose } : {}), ...(extra.mic === false ? { micOff: true } : {}), ...(extra.hotwords ? { hotwords: true } : {}) };
     this.session = { id: randomUUID(), title: (title || context.title || 'Phiên họp cá nhân').slice(0, 300), created, ended: null, mode: fixture ? 'FIXTURE_NOT_MEETING' : languages.length > 1 ? 'VI_LO_MIXED_TRANSCRIPT_NO_TRANSLATION' : languages[0] === 'lo' ? 'LO_TRANSCRIPT_NO_TRANSLATION' : 'VI_TRANSCRIPT_NO_TRANSLATION', languages, context };
     this.db.prepare('INSERT INTO sessions VALUES(?,?,?,?,?,?)').run(this.session.id, this.session.title, this.session.created, null, this.session.mode, JSON.stringify(context));
     this.agentCursor = 0; this.lastAgentReadAt = null; this.lastFollowAt = null; this.followers = {}; this.committed = {}; this.lastError = null; this.armedDevice = null; this.armedMic = null; this.captureState = 'OFF'; this.captureInfo = {};
