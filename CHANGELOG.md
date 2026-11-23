@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.0 — 23/11/2026 (đợt 1 kế hoạch cải tiến: gỡ lỗi vận hành sau ba buổi họp 23/11)
+
+Kế hoạch: `docs/KE-HOACH-CAI-TIEN-2311.md`, việc 4, 5, 6, 7, 11. Chưa nghiệm thu ở họp thật.
+
+- **Việc nặng nhường GPU cho họp mới** (việc 4): khi `pma start`/`listen` mở họp, host dừng recheck do chính nó chạy cho buổi khác, ghi khoảng còn nợ vào "Chưa làm xong" của buổi đó (`RECHECK_YIELDED`) và tự chạy lại sau `pma stop`. Recheck buổi khác yêu cầu trong lúc họp bị hoãn, không chiếm GPU. Host không tự thoát khi còn recheck. `pma transcribe` chạy trong CLI nên chưa nhường (issue #9).
+- **Lệnh lưu không im lặng** (việc 5): picture, translate, participants, summary, tasks, job done in biên nhận ("ĐÃ LƯU … bản N, X ký tự, nguồn #…") hoặc lỗi tiếng Việt nói cần sửa gì (thiếu `--file` / `--sources`, nội dung rỗng, JSON hỏng, #id sai). `pma picture --base N` không có `--file` trước đây rơi vào nhánh đọc nên không in gì; nay báo `SAVE_NEEDS_FILE`. Câu zod "Too small" được dịch thành lời.
+- **Role rỗng** (việc 6): `participants` nhận role rỗng là không có role; owner/due rỗng của task cũng vậy.
+- **Ân hạn 10 phút** (việc 7): `translate` và `picture` còn lưu được tới 10 phút sau `pma stop` (lô dịch cuối của agent nền); sau đó báo như cũ.
+- **Mục đích họp** (việc 11): `pma start --purpose` / `pma purpose` (thông báo, hướng dẫn, giao việc, bàn quyết định). Dòng đầu của `pma brief`; nằm trong context pack (đổi thì các vai đọc lại). Họp thông báo/hướng dẫn: việc, tên, số nêu khi làm mẫu là ví dụ, không vào TASKS. `guide/hop.md` cập nhật theo.
+- Test: 7 test cũ (attach, follow, harness) chưa theo hợp đồng 0.12.1 đã được sửa theo đúng hành vi hiện hành; `npm test` 300/300.
+
 ## 0.12.8 — 21/11/2026 (chuyển file ghi âm thành chữ; chặn câu Lào bịa)
 
 Họp định kỳ 21/11 (anh Quân chủ trì): giao tìm công cụ chuyển ghi âm WhatsApp / app của Lê Hoàng Duy thành chữ; cùng buổi, 34 dòng chữ Lào là câu bịa của mô hình Lào trên mẩu ngắn trong khi không ai nói tiếng Lào.
