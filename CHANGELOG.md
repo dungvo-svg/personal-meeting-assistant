@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.2 — 23/11/2026 (việc 2 và 3: tiếng loa lọt micro, tên người nói từ bot Claude, màn hình Google Meet)
+
+Ba buổi Meet 23/11: tiếng loa lọt vào micro bị ghi "Tôi (mic tắt)" khoảng 10 lần trong buổi 14:00; buổi OTC ngoài chủ họp không đoạn nào có tên; họp thầu và họp 14:00 không có ảnh màn hình chia sẻ. Chưa nghiệm thu ở họp thật.
+
+- **Tiếng loa lọt micro không còn là "Tôi"** (việc 2): bộ nghe so đường bao âm micro với âm loa cùng giờ (`MIC_BLEED_ENV`, r ≥ 0,88); host so chữ dòng micro với dòng loa trong ±2 giây (trigram ký tự, chạy được cả chữ Lào/Thái; trùng mạnh → `MIC_BLEED #id`, các dòng cùng khúc theo nhau). Dòng bị cờ hiện "Tiếng loa lọt vào mic (trùng #id)", không vào vai dịch, không vào "Tôi"; chữ và WAV giữ nguyên. Thử lại trên dữ liệu buổi 14:00: bắt 6/10 dòng lọt; 4 dòng Lào/Thái còn lại cần chủ quyết cách làm (issue #8).
+- **`tools/bot_speaker_join.py`**: ghép tên người nói từ bản ghi của bot họp Claude (connector meetings) vào dòng PMA theo giờ: tên từ bot, chữ từ PMA; micro là chủ họp; không có lượt nói gần đó thì "?", không đoán. Chỉ đọc.
+- **`pma screen` cho Google Meet** (việc 3): tự nhận Zoom hay Meet (`--mode auto|zoom|meet`). Meet: tìm tab "Meet - …" của Chrome/Edge, đọc tên người trình bày từ cây trợ năng, ghi `share_start`/`share_stop` đúng người, chụp vùng trình bày khi ảnh đổi. Vùng trình bày trống hoặc bị che 3 nhịp liên tiếp thì ghi `MÀN HÌNH ẨN` thay vì lưu ảnh trống. Tự chia sẻ thì chỉ ghi bắt đầu/dừng. Zoom giữ nguyên. Chuỗi trợ năng của Meet (nhất là tiếng Lào) và ảnh chụp tab Chrome chưa kiểm trên họp thật.
+- `guide/hop.md`: Meet trong `pma screen`, dòng "Tiếng loa lọt vào mic", cách lấy tên từ bot Claude.
+
 ## 0.13.1 — 23/11/2026 (việc 10: bức tranh cuộc họp cộng dồn)
 
 Họp OTC 23/11: bản 12 của bức tranh có doanh số từng người, tới bản 26 chỉ còn số tổng; phần thưởng năm 08:49–08:53 không vào bức tranh vì lần lưu cuối thất bại. Chưa nghiệm thu ở họp thật.

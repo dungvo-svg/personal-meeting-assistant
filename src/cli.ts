@@ -35,7 +35,7 @@ const USAGE = `pma — trợ lý họp chạy trên máy
   pma hardware [--json] [--languages vi,lo] bảng phần cứng + bậc của máy này (day-du / tieng-viet / khong-du), ngôn ngữ họp dùng được;
                                    pma start từ chối khi máy không đủ hoặc họp có tiếng Lào mà máy không chạy được mô hình Lào
   pma doctor [--json]             máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
-  pma screen start|stop|status     canh cửa sổ Zoom (chỉ đọc, chạy trên máy): ai chia sẻ màn hình và lúc nào, ai Zoom đánh dấu đang nói
+  pma screen start|stop|status     canh cửa sổ Zoom hoặc Google Meet (tự nhận; --mode auto|zoom|meet để ép; chỉ đọc, chạy trên máy): ai chia sẻ màn hình và lúc nào, ai Zoom đánh dấu đang nói
                                    (tên vào dòng chữ: [Tên]), ảnh màn hình chia sẻ khi nội dung đổi; lưu cạnh WAV trong screen/
   pma screen name "<tên máy đọc>" "<tên đúng>"   sửa tên OCR đọc sai/mất dấu cho cuộc họp này (các biến thể gần giống cũng theo)
   pma guide [dich]               quy trình họp của bản pma đang cài (kỹ năng hop chỉ trỏ tới đây); dich: phần cho agent dịch nền
@@ -533,7 +533,7 @@ async function main() {
       const open = s.session && !s.session.ended && dir;
       if (action === 'start') {
         if (!open) { out({ error: 'NO_ACTIVE_SESSION', hint: 'pma screen start chạy cho cuộc họp đang mở' }); process.exitCode = 1; return; }
-        return out(startWatcher(ROOT, dir, s.session.id, flags.interval));
+        return out(startWatcher(ROOT, dir, s.session.id, flags.interval, flags.mode));
       }
       // After the meeting (live 21/11 the watcher outlived `pma stop`): stop/status/name work on --session or the latest meeting's audio.
       let target: string | undefined = open && !flags.session ? dir : undefined;
