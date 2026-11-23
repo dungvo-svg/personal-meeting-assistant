@@ -17,6 +17,7 @@ import { applyParticipants } from './participants.js';
 import { setMicState } from './mic.js';
 import { validateDraft, type DraftKind } from './drafts.js';
 import { CAPABILITIES, PROTOCOL } from './protocol.js';
+import { explainDraft, explainInput } from './messages.js';
 
 // From package.json (21/11: a hard-coded '0.12.1' kept saying 0.12.1 on 0.12.5 hosts, so nobody could tell an old host from a new one).
 export const VERSION: string = (() => { try { return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8')).version; } catch { return 'unknown'; } })();
@@ -41,13 +42,16 @@ const sid = z.string().uuid();
 const ids = z.array(z.number().int().positive());
 // The open meeting, unless an ID is given. With neither, say so in words (zod's "expected string, received undefined" did not).
 const current = (sessionId?: string) => { const id = sessionId ?? runtime.session?.id; if (id === undefined) throw new Error('NO_OPEN_SESSION: không có cuộc họp nào đang mở; thêm --session <id> (pma history)'); return sid.parse(id); };
+// Drafts the background translator and the picture may still save for a short while after `pma stop` (runtime.graceMs): the open meeting,
+// else the latest one that ended within the grace period; only then the NO_OPEN_SESSION above.
+const recent = (sessionId?: string) => { const id = sessionId ?? runtime.recentSessionId(); if (id === undefined || id === null) throw new Error('NO_OPEN_SESSION: không có cuộc họp nào đang mở và không có cuộc họp nào vừa kết thúc trong ' + Math.round(runtime.graceMs / 60000) + ' phút; thêm --session <id> (pma history)'); return sid.parse(id); };
 // Work done after the meeting (report, summary, tasks): the open meeting, else the latest one. After `pma stop` the host leaves and
 // the next command starts a new host with no open meeting (03/11: `pma summary` without --session failed).
 const afterwards = (sessionId?: string) => sid.parse(sessionId ?? runtime.session?.id ?? runtime.latestSessionId());
 const languages = z.array(z.enum(['vi', 'lo', 'th'])).min(1).max(3).default(['vi', 'lo', 'th']);
 // An id given by a command must belong to the meeting it acts on (fencing): a job, question, decision or action of another meeting is refused.
 // The pma-draft/1 schema of a draft (drafts.ts), once more after zod, and its content hash for the idempotency key and receipt.
-const draft = (kind: DraftKind, content: unknown) => { const v = validateDraft(kind, content); if (!v.ok) throw new Error(`INVALID_DRAFT: ${kind} ${v.code} ${v.path}`); return v; };
+const draft = (kind: DraftKind, content: unknown) => { const v = validateDraft(kind, content); if (!v.ok) throw new Error(`INVALID_DRAFT: ${kind} ${v.code} ${v.path} — ${explainDraft(kind, v.code, v.path)}`); return v; };
 const key = z.string().regex(/^[A-Za-z0-9_.:-]{1,80}$/).optional();
 const receipt = z.string().regex(/^rcpt-[a-f0-9]{16}$/).optional();
 // Compare-and-set on the revision the writer started from (0 for the first one): required for the central drafts (Codex review of 9124eb3).
@@ -181,14 +185,14 @@ const methods: Record<string, (input: any) => any> = {
   },
   picture: input => {
     const a = z.object({ sessionId: sid.optional(), text: z.string().min(1).max(PICTURE_MAX_CHARS).optional(), sourceIds: ids.min(1).max(50).optional(), expectedRevision: z.number().int().nonnegative().optional(), receipt, idempotencyKey: key }).parse(input);
-    const id = current(a.sessionId);
+    const id = a.text ? recent(a.sessionId) : current(a.sessionId);
     if (a.text) { if (!a.sourceIds) throw new Error('PICTURE_NEEDS_SOURCES: --sources <id,…> của các đoạn đã đọc'); if (a.expectedRevision === undefined) throw new Error(BASE_REQUIRED('picture')); const v = draft('picture', { text: a.text, sourceIds: a.sourceIds }); const sourceIds = a.sourceIds; return runtime.draftOnce(id, 'picture', a.idempotencyKey, v.contentHash, () => runtime.savePicture(id, a.text!, sourceIds, { expectedRevision: a.expectedRevision, central: true, receipt: a.receipt })); }
     return runtime.picture(id);
   },
   mic: input => setMicState(runtime, z.object({ state: z.enum(['on', 'off', 'auto']) }).parse(input).state),
   fixture: input => { if (!runtime.testMode) throw new Error('FIXTURE_DISABLED'); const a = z.object({ text: z.string().min(1).max(8000), language: z.enum(['vi', 'lo', 'th']).optional() }).parse(input); return { id: runtime.ingest(a.text, 'synthetic_fixture', 0, 0, '', '', a.language) }; },
   // Vietnamese lines for Lao segments, written by the Claude session following the meeting.
-  translate: input => { const a = z.object({ sessionId: sid.optional(), items: z.array(z.object({ sourceId: z.number().int().positive(), text: z.string().min(1).max(2000) })).min(1).max(100), idempotencyKey: key }).parse(input); const s = current(a.sessionId); const v = draft('translations', { items: a.items }); return runtime.draftOnce(s, 'translations', a.idempotencyKey, v.contentHash, () => runtime.translate(s, a.items)); },
+  translate: input => { const a = z.object({ sessionId: sid.optional(), items: z.array(z.object({ sourceId: z.number().int().positive(), text: z.string().min(1).max(2000) })).min(1).max(100), idempotencyKey: key }).parse(input); const s = recent(a.sessionId); const v = draft('translations', { items: a.items }); return runtime.draftOnce(s, 'translations', a.idempotencyKey, v.contentHash, () => runtime.translate(s, a.items)); },
   shutdown: () => { setTimeout(() => void shutdown(), 50); return { stopping: true }; },
 };
 
@@ -207,7 +211,7 @@ const http = createServer(async (request, response) => {
       const { method, args } = await body(request, 256000);
       if (typeof method !== 'string' || !Object.hasOwn(methods, method)) return json(response, 404, { ok: false, error: 'UNKNOWN_METHOD' });
       try { return json(response, 200, { ok: true, result: await methods[method](args ?? {}) }); }
-      catch (error: any) { return json(response, 200, { ok: false, error: error instanceof z.ZodError ? 'INVALID_INPUT: ' + error.issues.map(i => `${i.path.join('.')} ${i.message}`).join('; ') : String(error?.message ?? error) }); }
+      catch (error: any) { return json(response, 200, { ok: false, error: error instanceof z.ZodError ? explainInput(error) : String(error?.message ?? error) }); }
     }
     // /rpc is the only door (0.12): no page, no cookie, no /api/*, no event stream.
     return json(response, 404, { error: 'NOT_FOUND' });

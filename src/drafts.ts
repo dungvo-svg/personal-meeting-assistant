@@ -117,6 +117,9 @@ function str(value: unknown, path: string, min: number, max: number): string {
   return text;
 }
 const optStr = (value: unknown, path: string, max: number) => (value === undefined ? undefined : str(value, path, 1, max));
+// An optional text that is empty or only blanks is absent (23/11: participants with "role": "" was refused as BAD_LENGTH). A non-string, or a
+// text that is too long, is still refused.
+const optBlank = (value: unknown, path: string, max: number) => (typeof value === 'string' && !value.normalize('NFC').trim() ? undefined : optStr(value, path, max));
 function id(value: unknown, path: string): string { if (typeof value !== 'string' || !ID_RE.test(value)) throw new Invalid('BAD_ID', path); return value; }
 function int(value: unknown, path: string, min: number): number { if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min) throw new Invalid('BAD_INTEGER', path); return value; }
 function oneOf<T extends string>(value: unknown, path: string, allowed: readonly string[]): T { if (typeof value !== 'string' || !allowed.includes(value)) throw new Invalid('BAD_VALUE', path); return value as T; }
@@ -151,7 +154,7 @@ function validateParticipants(value: unknown): ParticipantsContent {
     const name = str(item.name, p + '.name', 1, DRAFT_LIMITS.nameChars);
     if (seen.has(lower(name))) throw new Invalid('DUPLICATE_ENTRY', p + '.name'); seen.add(lower(name));
     const out: ParticipantItem = { name };
-    const role = optStr(item.role, p + '.role', DRAFT_LIMITS.roleChars); if (role) out.role = role;
+    const role = optBlank(item.role, p + '.role', DRAFT_LIMITS.roleChars); if (role) out.role = role;
     if (item.languages !== undefined) { const languages = [...new Set(arr(item.languages, p + '.languages', 0, LANGS.length).map((v, j) => oneOf<string>(v, p + '.languages[' + j + ']', LANGS)))].sort(); if (languages.length) out.languages = languages; }
     if (item.variants !== undefined) { const variants = [...new Set(arr(item.variants, p + '.variants', 0, DRAFT_LIMITS.variants).map((v, j) => str(v, p + '.variants[' + j + ']', 1, DRAFT_LIMITS.variantChars)))].sort(byText); if (variants.length) out.variants = variants; }
     if (item.basis !== undefined) out.basis = oneOf<ParticipantBasis>(item.basis, p + '.basis', PARTICIPANT_BASES);
@@ -171,8 +174,8 @@ function validateTasks(value: unknown): TasksContent {
     const task = str(item.task, p + '.task', 1, DRAFT_LIMITS.taskChars);
     if (seen.has(lower(task))) throw new Invalid('DUPLICATE_ENTRY', p + '.task'); seen.add(lower(task));
     const out: TaskItem = { task, sourceIds: sourceIds(item.sourceIds, p + '.sourceIds', DRAFT_LIMITS.taskSources) };
-    const owner = optStr(item.owner, p + '.owner', DRAFT_LIMITS.ownerChars); if (owner) out.owner = owner;
-    const due = optStr(item.due, p + '.due', DRAFT_LIMITS.dueChars); if (due) out.due = due;
+    const owner = optBlank(item.owner, p + '.owner', DRAFT_LIMITS.ownerChars); if (owner) out.owner = owner;
+    const due = optBlank(item.due, p + '.due', DRAFT_LIMITS.dueChars); if (due) out.due = due;
     if (item.ownerBasis !== undefined) out.ownerBasis = oneOf<TaskBasis>(item.ownerBasis, p + '.ownerBasis', TASK_BASES);
     if (item.certainty !== undefined) out.certainty = oneOf<TaskCertainty>(item.certainty, p + '.certainty', ['firm', 'tentative'] as const);
     return out;

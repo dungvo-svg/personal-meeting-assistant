@@ -274,7 +274,9 @@ test('translations: saved for Lao segments, replaced on retry, rejected for othe
     assert.ok(raw.includes('  → (Claude dịch) Xin chào mọi người.') && !raw.includes('Xin chào.\n'));
     await r.finish(id);
     r.prepare('Họp khác'); const other = r.session.id; const foreign = r.ingest('ລາວ', 'local_asr_unverified', 0, 1, '', 'cap', 'lo');
-    assert.throws(() => r.translate(id, [{ sourceId: foreign, text: 'x' }]), /SESSION_NOT_ACTIVE/);
+    // 0.13.0: a meeting that ended within the grace period still takes translations (the translator's last batch), so a source of another meeting is the refusal; past it, the meeting is closed.
+    assert.throws(() => r.translate(id, [{ sourceId: foreign, text: 'x' }]), /SOURCE_OUTSIDE_SESSION/); r.now = () => Date.now() + 11 * 60000;
+    assert.throws(() => r.translate(id, [{ sourceId: foreign, text: 'x' }]), /SESSION_NOT_ACTIVE/); r.now = () => Date.now();
     assert.throws(() => r.translate(other, [{ sourceId: lo, text: 'x' }]), /SOURCE_OUTSIDE_SESSION/);
   });
 });

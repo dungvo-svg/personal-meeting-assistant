@@ -20,6 +20,8 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    lưu cần --receipt rcpt-… mà pma brief --as chinh in ra (đọc lại khi context đổi); --base N: bản đã đọc (lần đầu 0), BẮT BUỘC cho picture/summary/tasks; có bản mới hơn thì báo xung đột;
                                    --key K (picture, translate, participants, summary, tasks): gửi lại cùng khoá + cùng nội dung trả kết quả cũ, khác nội dung thì từ chối
                                    Nội dung nháp (picture, translate, participants, summary, tasks, job done) chỉ gửi cho host ĐANG chạy, không tự mở host
+                                   Mọi lệnh lưu in biên nhận ("ĐÃ LƯU …: bản N, X ký tự, nguồn #…") hoặc lỗi tiếng Việt nói rõ cần sửa gì; không bao giờ im lặng.
+                                   translate và picture còn lưu được tới 10 phút sau pma stop (bản dịch lô cuối của agent nền); sau đó báo NO_OPEN_SESSION
   pma transcribe <file…> [--out f.md] [--languages vi,lo,th]   file ghi âm (WhatsApp .opus/.ogg, .m4a, .mp3, .wav) thành chữ, chạy trên máy;
                                    không mở cuộc họp; câu bịa bị bỏ và đếm; mặc định ghi <file>-chu.md cạnh file đầu
   pma hardware [--json] [--languages vi,lo] bảng phần cứng + bậc của máy này (day-du / tieng-viet / khong-du), ngôn ngữ họp dùng được;
@@ -116,6 +118,44 @@ function hardwareVerdict(languages: string[]): any | null {
 // the host through a pipe, so it writes no draft file of its own anywhere; the host stores them as before.
 const input = (file?: string) => { if (!file) throw new Error('--file <đường dẫn> hoặc --file - (đọc từ stdin)'); return file === '-' ? readFileSync(0, 'utf8') : readFileSync(file, 'utf8'); };
 const out = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
+
+// ---- Save commands never stay silent (0.13.0, item 5) ----
+// 23/11: `pma picture --base 26` printed nothing and the picture stayed at revision 26; a missing --sources only said "Too small". Every
+// save (picture, translate, participants, summary, tasks, job done) now ends in a receipt line (what was saved: revision, characters,
+// sources) or in a Vietnamese refusal that says what to fix. Nothing here changes what the host stores.
+const SAVE_ONLY_FLAGS = ['base', 'expect-revision', 'sources', 'receipt', 'key'];
+// --sources 120,121 or #120,#121: every item must be a real #id. A flag with no value, or an item that is not a number, is an error here
+// (the old list() dropped such items silently and the host then answered "Too small").
+function sourcesOf(flags: Record<string, string>, what: string, required = true): number[] {
+  const raw = flags.sources;
+  const tokens = raw === undefined || raw === 'true' ? [] : raw.split(',').map(t => t.trim().replace(/^#/, '')).filter(Boolean);
+  const bad = tokens.filter(t => !/^[1-9]\d*$/.test(t));
+  if (bad.length) throw new Error(`SOURCES_INVALID: ${what}: --sources có giá trị không phải #id: ${bad.join(', ')}. Dùng số đoạn như pma follow / pma read in ra, ví dụ --sources 120,121`);
+  if (!tokens.length && required) throw new Error(`SOURCES_REQUIRED: ${what} cần --sources <id,…>: ít nhất một #id có chữ thật (ví dụ --sources 120,121; #id lấy từ pma follow / pma read). Chưa lưu gì`);
+  return tokens.map(Number);
+}
+// Text for a save: stdin that is empty (a heredoc that never arrived) must not look like a save of nothing.
+function contentOf(file: string | undefined, what: string): string {
+  const text = input(file);
+  if (!text.trim()) throw new Error(`CONTENT_EMPTY: ${what}: nội dung đọc từ ${file === '-' ? 'stdin' : file} đang rỗng. Chưa lưu gì`);
+  return text;
+}
+function jsonOf(file: string | undefined, what: string): any {
+  try { return JSON.parse(contentOf(file, what)); }
+  catch (error: any) { if (String(error?.message).startsWith('CONTENT_EMPTY')) throw error; throw new Error(`JSON_INVALID: ${what}: nội dung không phải JSON hợp lệ (${String(error?.message ?? error).slice(0, 120)}). Chưa lưu gì`); }
+}
+const ids = (list: number[]) => list.length ? '#' + [...new Set(list)].sort((a, b) => a - b).join(', #') : 'không có';
+// The host's answer turned into the receipt. A reply that does not say it saved is an error, never a quiet success.
+function saved(what: string, result: any, detail: { chars?: number; sourceIds?: number[]; label?: string }) {
+  const chars = result?.chars ?? detail.chars; const sources = result?.sourceIds ?? detail.sourceIds ?? [];
+  const confirmed = result?.saved === true || (typeof result?.saved === 'number' && result.saved > 0) || result?.participants !== undefined;
+  if (result?.saved === false && result?.job) return out({ ...result, line: `${what}: việc #${result.job.id} đã có kết quả giống hệt, không ghi lại` });
+  if (!confirmed) throw new Error(`SAVE_NOT_CONFIRMED: ${what}: host không xác nhận đã lưu (${JSON.stringify(result)?.slice(0, 160)}). Coi như CHƯA lưu; kiểm pma status rồi lưu lại`);
+  const revision = result.revision !== undefined ? `bản ${result.revision}` : '';
+  const body = [revision, chars !== undefined ? `${chars} ký tự` : '', sources.length ? 'nguồn ' + ids(sources) : ''].filter(Boolean).join(', ');
+  const verb = result.duplicate ? `GIỐNG HỆT bản đã có, không tạo bản mới: ${what}` : `ĐÃ LƯU ${what}`;
+  return out({ ...result, line: `${verb}${body ? ' (' + body + ')' : ''}${result.path ? ' → ' + result.path : ''}` });
+}
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour12: false });
 const FLAG_LABELS: Record<string, string> = { LAO_MODEL_MISSING: 'thiếu mô hình Lào: chữ Thái phiên âm, nghĩa chưa tin', LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được' };
 const MAIN = 'chinh';
@@ -315,7 +355,7 @@ async function main() {
   switch (command) {
     case 'start': {
       // The participants file is read first: a bad file stops here, before any session exists.
-      const listed = flags.participants ? JSON.parse(input(flags.participants)) : undefined;
+      const listed = flags.participants ? jsonOf(flags.participants, 'danh sách người dự') : undefined;
       // The machine must serve the meeting (owner 21/11, tools/hardware.py): not enough hardware, or Lao wanted where the Lao model
       // cannot run or is not installed, refuses here, before any session or recording exists.
       const hw = hardwareVerdict(languagesOf(flags) ?? ['vi', 'lo', 'th']);
@@ -339,7 +379,8 @@ async function main() {
     }
     case 'participants': {
       if (!flags.file) throw new Error('pma participants --file p.json');
-      return out(await attach('participants', { participants: JSON.parse(input(flags.file)), ...(flags.key ? { idempotencyKey: flags.key } : {}) }));
+      const people = jsonOf(flags.file, 'danh sách người dự');
+      return saved('danh sách người dự', await attach('participants', { participants: people, ...(flags.key ? { idempotencyKey: flags.key } : {}) }), { label: 'participants' });
     }
     // The meeting procedure belongs to the tool and its version; the hop skill of any project only points here (owner 10/11).
     case 'guide': return process.stdout.write(guide(positional[0]));
@@ -369,7 +410,13 @@ async function main() {
     case 'brief': { const r = await call('brief', { ...session, ...(flags.as ? { as: flags.as } : {}) }); return process.stdout.write(r.markdown); }
     // The running picture of the whole meeting (synthesis session): read it, or save a new version from a file.
     case 'picture': {
-      if (flags.file) return out(await attach('picture', { ...session, text: input(flags.file), sourceIds: list(flags.sources), ...draftFlags(flags) }));
+      if (!flags.file) {
+        const stray = SAVE_ONLY_FLAGS.filter(key => flags[key] !== undefined);
+        if (stray.length) throw new Error(`SAVE_NEEDS_FILE: ${stray.map(key => '--' + key).join(' ')} chỉ dùng khi LƯU bức tranh, mà thiếu --file <f.md> hoặc --file - (đọc stdin). Chưa lưu gì; bản hiện tại giữ nguyên. Muốn đọc bức tranh thì chạy pma picture không kèm cờ nào`);
+      } else {
+        const text = contentOf(flags.file, 'bức tranh'); const sourceIds = sourcesOf(flags, 'bức tranh');
+        return saved('bức tranh', await attach('picture', { ...session, text, sourceIds, ...draftFlags(flags) }), { chars: text.length, sourceIds });
+      }
       const p = await call('picture', session);
       return console.log(p ? `# Bức tranh cuộc họp (bản ${p.revision}, ${clock(p.savedAt)})\n\n${p.text}` : 'Chưa có bức tranh cuộc họp (pma picture --file f.md --sources <id,…>)');
     }
@@ -395,7 +442,13 @@ async function main() {
     case 'job': {
       const action = positional[0];
       if (action === 'start') return out(await call('job', { ...session, action, title: positional.slice(1).join(' ') || flags.title, kind: flags.kind || 'analysis' }));
-      if (action === 'done') return out(await attach('job', { ...session, action, id: Number(positional[1]), result: flags.file ? input(flags.file) : flags.text, sourceIds: list(flags.sources), ...(flags.token ? { token: flags.token } : {}) }));
+      if (action === 'done') {
+        const id = Number(positional[1]); if (!Number.isInteger(id) || id < 1) throw new Error('JOB_NEEDS_ID: pma job done <id> --file kq.md --sources 1,2 --token job-…');
+        const result = flags.file ? contentOf(flags.file, 'kết quả việc nền') : flags.text && flags.text !== 'true' ? flags.text : undefined;
+        if (!result) throw new Error('JOB_NEEDS_RESULT: pma job done <id> cần kết quả: --file kq.md (hoặc --file -) hoặc --text "…". Chưa lưu gì');
+        const sourceIds = sourcesOf(flags, 'kết quả việc nền', false);
+        return saved(`kết quả việc nền #${id}`, await attach('job', { ...session, action, id: Number(positional[1]), result, sourceIds, ...(flags.token ? { token: flags.token } : {}) }), { chars: result.length, sourceIds });
+      }
       if (action === 'fail') return out(await call('job', { ...session, action, id: Number(positional[1]), note: positional.slice(2).join(' ') || flags.note, ...(flags.token ? { token: flags.token } : {}) }));
       if (action === 'list' || !action) return out(await call('job', { ...session, action: 'list', ...(flags.status ? { status: flags.status } : {}) }));
       throw new Error('pma job start|done|fail|list');
@@ -433,8 +486,15 @@ async function main() {
     }
     case 'say': return out(await call('manual', { ...session, text: flags.text === 'true' ? undefined : flags.text ?? (positional.join(' ') || undefined) }));
     case 'translate': {
-      const items = flags.file ? JSON.parse(input(flags.file)) : [{ sourceId: Number(flags.source), text: flags.text }];
-      return out(await attach('translate', { ...session, items, ...(flags.key ? { idempotencyKey: flags.key } : {}) }));
+      let items: any;
+      if (flags.file) items = jsonOf(flags.file, 'bản dịch');
+      else {
+        if (!flags.source || !/^#?[1-9]\d*$/.test(flags.source)) throw new Error('TRANSLATE_NEEDS_SOURCE: pma translate --source <#id đoạn Lào/Thái> --text "tiếng Việt" (hoặc --file t.json). Chưa lưu gì');
+        if (!flags.text || flags.text === 'true') throw new Error('TRANSLATE_NEEDS_TEXT: pma translate --source <#id> --text "tiếng Việt" (bản dịch đang rỗng). Chưa lưu gì');
+        items = [{ sourceId: Number(flags.source.replace(/^#/, '')), text: flags.text }];
+      }
+      const lines: any[] = Array.isArray(items) ? items : [];
+      return saved('bản dịch', await attach('translate', { ...session, items, ...(flags.key ? { idempotencyKey: flags.key } : {}) }), { chars: lines.reduce((n, item) => n + String(item?.text ?? '').length, 0), sourceIds: lines.map(item => item?.sourceId).filter(Number.isInteger) });
     }
     case 'status': return out(await inspect());
     case 'screen': {
@@ -508,8 +568,17 @@ async function main() {
       return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}${flags.as ? ' --as ' + flags.as : ''}`);
     }
     case 'note': return out(await call('note', { ...session, key: flags.key || 'note-' + Date.now(), revision: Number(flags.revision || 1), kind: flags.kind || 'observation', text: flags.text, sourceIds: list(flags.sources) }));
-    case 'summary': return out(await attach('summary', { ...session, markdown: input(flags.file), sourceIds: list(flags.sources), ...draftFlags(flags) }));
-    case 'tasks': return out(await attach('tasks', { ...session, tasks: JSON.parse(input(flags.file)), ...draftFlags(flags) }));
+    case 'summary': {
+      const markdown = contentOf(flags.file, 'SUMMARY'); const sourceIds = sourcesOf(flags, 'SUMMARY');
+      return saved('SUMMARY', await attach('summary', { ...session, markdown, sourceIds, ...draftFlags(flags) }), { chars: markdown.length, sourceIds });
+    }
+    case 'tasks': {
+      const tasks = jsonOf(flags.file, 'TASKS');
+      if (!Array.isArray(tasks)) throw new Error('TASKS_NOT_A_LIST: tasks.json phải là danh sách [{"task","owner?","due?","sourceIds":[…]}]. Chưa lưu gì');
+      const sourceIds = tasks.flatMap((t: any) => Array.isArray(t?.sourceIds) ? t.sourceIds.filter(Number.isInteger) : []);
+      const r = await attach('tasks', { ...session, tasks, ...draftFlags(flags) });
+      return saved(`TASKS (${tasks.length} việc)`, r, { chars: JSON.stringify(tasks).length, sourceIds });
+    }
     case 'raw': return out(await call('raw', session));
     case 'history': return out(await call('history'));
     case 'glossary': {

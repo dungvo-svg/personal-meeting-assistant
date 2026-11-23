@@ -270,7 +270,8 @@ test('G2: the picture is not saved twice for the same text and sources; sources 
     for (const bad of [[a, 999999], [Number(foreign)], [a, b, Number(foreign)], [a, 1.5], [a, -1]]) assert.throws(() => r.savePicture(id, '- Đã chốt: thứ Hai', bad), /SOURCE_OUTSIDE_SESSION/);
     assert.throws(() => r.savePicture(id, 'chữ khác', [a, 999999]), /SOURCE_OUTSIDE_SESSION/); assert.equal(notes(), before); assert.equal(r.picture(id).revision, 4);
     assert.throws(() => r.savePicture(id, '', [a]), /INVALID_NOTE/); assert.throws(() => r.savePicture(id, 'x', []), /INVALID_NOTE/);
-    await r.finish(id); assert.throws(() => r.savePicture(id, 'sau họp', [a]), /SESSION_NOT_ACTIVE/);
+    await r.finish(id); assert.equal(r.savePicture(id, 'sau họp', [a]).saved, true, '0.13.0: inside the grace period after stop the picture still saves');
+    r.now = () => Date.now() + 11 * 60000; assert.throws(() => r.savePicture(id, 'quá muộn', [a]), /SESSION_NOT_ACTIVE/);
   });
 });
 

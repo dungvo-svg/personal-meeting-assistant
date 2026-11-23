@@ -365,6 +365,23 @@ export class MeetingRuntime extends EventEmitter {
     this.ping(); return this.snapshot();
   }
   // allowClosing: the text the ASR worker still delivers while the host drains it on its way out is kept.
+  // How long after `pma stop` the background translator and the picture may still save (ENG-51; 23/11: the translator's last batch got
+  // NO_OPEN_SESSION after stop and 14 rows stayed untranslated). Timings are the clock's (`now`), so tests need no real waiting.
+  graceMs = 10 * 60000;
+  // Like requireSession, but a session that ENDED within the grace period still counts. Anything else keeps its own refusal.
+  requireRecentSession(id: string) {
+    try { this.requireSession(id); } catch (error) {
+      const row: any = this.db.prepare('SELECT ended FROM sessions WHERE id=?').get(id);
+      if (row?.ended && !this.closing && this.now() - Date.parse(row.ended) <= this.graceMs) return;
+      throw error;
+    }
+  }
+  // The meeting a draft save without --session goes to: the open one, else the latest one that ended within the grace period.
+  recentSessionId(): string | null {
+    if (this.session && !this.session.ended) return this.session.id;
+    const row: any = this.db.prepare('SELECT id,ended FROM sessions WHERE ended IS NOT NULL ORDER BY ended DESC LIMIT 1').get();
+    return row && this.now() - Date.parse(row.ended) <= this.graceMs ? row.id : null;
+  }
   requireSession(id: string, allowClosing = false) {
     if (!this.session || this.session.id !== id || this.session.ended || (this.closing && !allowClosing)) throw new Error('SESSION_NOT_ACTIVE');
   }
@@ -459,7 +476,7 @@ export class MeetingRuntime extends EventEmitter {
   // `expectedRevision` (the revision the writer started from): a newer one saved meanwhile is a conflict, not overwritten. `central`
   // (the host RPC): the picture is the central session's, so it needs the receipt of a chinh read of the current context.
   savePicture(id: string, text: string, sourceIds: number[], opts: { expectedRevision?: number; central?: boolean; receipt?: string } = {}) {
-    this.requireSession(id);
+    this.requireRecentSession(id);
     const ids = this.sessionSourceIds(id, sourceIds).sort((a, b) => a - b); const latest = this.picture(id);
     if (latest && latest.text === text && latest.sourceIds.length === ids.length && [...latest.sourceIds].sort((a, b) => a - b).every((v, i) => v === ids[i])) return { saved: true, revision: latest.revision, duplicate: true };
     if (opts.expectedRevision !== undefined && opts.expectedRevision !== (latest?.revision ?? 0)) throw new Error(`PICTURE_REVISION_CONFLICT: đang sửa từ bản ${opts.expectedRevision}, đã có bản ${latest?.revision ?? 0}; đọc pma picture, gộp rồi lưu lại`);
@@ -468,7 +485,7 @@ export class MeetingRuntime extends EventEmitter {
     // How far this picture covers the meeting: its highest cited source, but never past what chinh had been handed when it was saved
     // (citing a row chinh has not been handed yet covers nothing).
     const coversUpTo = Math.min(Math.max(...ids), this.followers[MAIN_FOLLOWER]?.cursor ?? 0);
-    this.publishNote(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS, { coversUpTo }); return { saved: true, revision };
+    this.publishNote(id, PICTURE_KEY, revision, 'observation', text, ids, PICTURE_MAX_CHARS, { coversUpTo }, true); return { saved: true, revision };
   }
   // Distinct IDs, each a source of this session.
   private sessionSourceIds(id: string, sourceIds: number[]) {
@@ -482,8 +499,8 @@ export class MeetingRuntime extends EventEmitter {
     if (key === PICTURE_KEY) throw new Error('PICTURE_KEY_RESERVED: bức tranh chỉ lưu bằng pma picture (--receipt, --base)');
     return this.publishNote(id, key, revision, kind, text, sourceIds);
   }
-  private publishNote(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], maxChars = 8000, extra: Record<string, unknown> = {}) {
-    this.requireSession(id);
+  private publishNote(id: string, key: string, revision: number, kind: string, text: string, sourceIds: number[], maxChars = 8000, extra: Record<string, unknown> = {}, recent = false) {
+    if (recent) this.requireRecentSession(id); else this.requireSession(id);
     if (!/^[\w-]{1,80}$/.test(key) || !Number.isSafeInteger(revision) || revision < 1 || text.length < 1 || text.length > maxChars || !['observation', 'decision', 'action', 'question', 'correction'].includes(kind) || !sourceIds.length || sourceIds.length > 50) throw new Error('INVALID_NOTE');
     const ids = this.sessionSourceIds(id, sourceIds);
     const payload = JSON.stringify({ text, sourceIds: ids, author: 'assistant', semanticStatus: 'UNVERIFIED_AGENT_NOTE', ...extra });
@@ -1636,7 +1653,7 @@ export class MeetingRuntime extends EventEmitter {
   // A second call for the same segment replaces the first; the text it replaces is kept in translation_history (0.12.1: a retry
   // must not erase where a translation came from). The same text again changes nothing. All-or-nothing, so a bad line saves none.
   translate(id: string, items: { sourceId: number; text: string }[]) {
-    this.requireSession(id);
+    this.requireRecentSession(id);
     if (!Array.isArray(items) || !items.length || items.length > 100) throw new Error('INVALID_TRANSLATIONS');
     const checked = items.map(item => {
       const text = String(item?.text ?? '').trim();
