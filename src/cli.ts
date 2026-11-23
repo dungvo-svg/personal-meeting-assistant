@@ -237,7 +237,7 @@ async function follow(flags: Record<string, string>) {
     if (!laoWarned && batch.some(item => item.boundary?.includes('LAO_MODEL_MISSING'))) { laoWarned = true; console.log('CẢNH BÁO TIẾNG LÀO: máy chưa có mô hình Lào, lời Lào đang ra chữ Thái PHIÊN ÂM, nghĩa, số và tên không đáng tin. Báo người dùng; sau họp dựng mô hình (pma doctor chỉ cách) rồi pma recheck các dòng này.'); }
     for (const text of lines(batch)) for (const part of wrapLine(text)) console.log(part);
     // The synthesis session keeps the whole meeting in view: after each batch it rewrites the picture, not a batch summary.
-    if (name === MAIN && flags['no-notes'] !== 'true') console.log(`CẬP NHẬT BỨC TRANH: viết lại bức tranh CẢ cuộc họp tới #${batch.at(-1).id} (đang bàn · đã chốt · việc–người–hạn · câu hỏi mở · chỗ chưa nghe rõ), lưu: pma picture --file <f.md> --sources <id lô này>; trả lời người dùng chỉ phần mới.`);
+    if (name === MAIN && flags['no-notes'] !== 'true') console.log(`CẬP NHẬT BỨC TRANH tới #${batch.at(-1).id}: chỉ gửi phần mới/sửa (đã chốt · việc–người–hạn · số liệu · câu hỏi; sửa thì ghi cũ → mới, có nguồn) và thay phần đang bàn: pma picture update --file - --base <bản hiện tại> --receipt <biên nhận brief>; trả lời người dùng chỉ phần mới.`);
     batch = [];
   };
   // Gives the role back before the process ends (and before BẬT LẠI is printed, so the next process finds it free). Errors do not matter.
@@ -303,7 +303,7 @@ async function follow(flags: Record<string, string>) {
     if (typeof stalled === 'number') console.log(`BỘ NGHE ĐỨNG: ${stalled} giây chưa ra kết quả nào (con số trễ đang hiện là số cũ). Âm thanh vẫn được ghi. Kiểm việc nặng khác đang dùng GPU, nhất là một host PMA thứ hai; pma pause/listen không giúp khi GPU đầy.`);
     else if (typeof lag === 'number' && lag > LAG_WARN_SECONDS) console.log(`CẢNH BÁO TRỄ: chữ đang ra chậm ${Math.round(lag)} giây so với lời nói. Dừng việc nặng đang chạy trên máy.`);
     const since = Math.max(Date.parse(s.lastNoteAt ?? '') || 0, Date.parse(s.captureInfo?.listeningSince ?? '') || 0);
-    if (flags['no-notes'] !== 'true' && since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút bức tranh cuộc họp chưa được cập nhật. Cập nhật ngay: pma picture --file <file> --sources <id,...>`); }
+    if (flags['no-notes'] !== 'true' && since && Date.now() - since > NOTE_EVERY_MS && Date.now() - lastReminder > NOTE_EVERY_MS) { lastReminder = Date.now(); console.log(`NHẮC GHI CHÚ: đã hơn 10 phút bức tranh cuộc họp chưa được cập nhật. Cập nhật ngay: pma picture update --file - --base <bản hiện tại> --receipt <biên nhận brief>`); }
   };
   const ended = async () => { flush(); await leave(); console.log('KẾT THÚC: phiên đã đóng'); };
   const claimed = await acquire(true).catch(error => { console.log(`DỪNG: không gọi được runtime (${error})`); process.exitCode = 1; return 'failed' as const; });

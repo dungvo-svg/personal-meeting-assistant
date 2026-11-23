@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.1 — 23/11/2026 (việc 10: bức tranh cuộc họp cộng dồn)
+
+Họp OTC 23/11: bản 12 của bức tranh có doanh số từng người, tới bản 26 chỉ còn số tổng; phần thưởng năm 08:49–08:53 không vào bức tranh vì lần lưu cuối thất bại. Chưa nghiệm thu ở họp thật.
+
+- **Host giữ bức tranh thành các mục có nguồn** (quyết định D, việc T, số liệu N, câu hỏi Q, ghi nhận F) trong bảng chỉ-thêm `picture_events` (không sửa, không xoá) và tự dựng Markdown: Mục đích họp · Đang bàn · Đã chốt · Việc–người–hạn · Số liệu · Câu hỏi mở / đã trả lời · Ghi nhận khác.
+- **`pma picture update --file - --base N --receipt R [--key K]`**: mỗi lô phiên trung tâm chỉ gửi `add` (mục mới), `fix` (sửa có `expectedOld`, lý do, nguồn; hiện "đã sửa: cũ → mới", mục cũ vẫn giữ) và `dangBan` (thay theo lô). Một giao dịch cho cả mục, bản chụp và số bản; base cũ thì báo xung đột; gửi lại cùng `--key` trả biên nhận cũ. Mục trùng được bỏ qua và báo lại.
+- Giới hạn theo từng mục/lần gửi, không theo cả bức tranh; bức tranh lớn đọc theo trang (`--page`), `--json` cho các mục kèm lịch sử sửa. Không bao giờ cắt hay bỏ mục.
+- `pma picture --file` (viết lại cả bức tranh) vẫn chạy cho cuộc họp chưa có mục; có mục rồi thì bị từ chối. Nhắc của `follow` và `guide/hop.md` (bức tranh, SUMMARY) chuyển sang lệnh mới. Capability `picture-items/1`.
+
 ## 0.13.0 — 23/11/2026 (đợt 1 kế hoạch cải tiến: gỡ lỗi vận hành sau ba buổi họp 23/11)
 
 Kế hoạch: `docs/KE-HOACH-CAI-TIEN-2311.md`, việc 4, 5, 6, 7, 11. Chưa nghiệm thu ở họp thật.

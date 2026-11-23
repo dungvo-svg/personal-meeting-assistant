@@ -140,6 +140,10 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-51 | 0.13.0: `translate` và `savePicture` nhận phiên vừa đóng trong 10 phút (đồng hồ chèn được); các lệnh nháp khác giữ nguyên | Bộ dịch nền mất lô cuối (#6338–#6394) vì `NO_OPEN_SESSION` sau `stop` |
 | ENG-52 | 0.13.0: lệnh lưu in biên nhận (`line`) hoặc lỗi tiếng Việt (`messages.ts`; `SAVE_NEEDS_FILE`, `SOURCES_REQUIRED`, `CONTENT_EMPTY`, `JSON_INVALID`, `SAVE_NOT_CONFIRMED`); role/owner/due rỗng là không có | `pma picture --base 26` không in gì; "Too small"; participants BAD_LENGTH |
 | ENG-53 | 0.13.0: mục đích họp (`purpose.ts`) lưu trong context của phiên và context pack (đổi thì phiên bản đổi, các vai đọc lại); dòng đầu của `pma brief`; capability `meeting-purpose/1`. Họp thông báo/hướng dẫn: việc làm mẫu không vào TASKS | Họp 14:00 23/11 đưa nhầm việc làm mẫu vào TASKS (owner 23/11) |
+| ENG-54 | 0.13.1: bức tranh cộng dồn là các mục có cấu trúc, có nguồn, trong bảng chỉ-thêm `picture_events` (trigger chặn UPDATE/DELETE); host dựng Markdown; không so sánh Markdown | Nguyên tắc 3 của kế hoạch 23/11 (owner); tham khảo Codex 23/11 |
+| ENG-55 | 0.13.1: sửa là mục mới có `supersedes`, cần `expectedOld`, lý do và nguồn; đóng việc/trả lời câu hỏi là sửa có `status`; bất biến không-mất-mục `assertNoLoss` (tương tự CONFIRMED_OVERRIDE) | OTC 23/11: số từng người mất giữa bản 12 và 26 |
+| ENG-56 | 0.13.1: `pma picture update` nguyên tử (mục + bản chụp + số bản trong một giao dịch); base cũ là xung đột; cùng khoá cùng nội dung trả biên nhận cũ; giới hạn theo mục/lần gửi; đọc theo trang, không cắt | Lần lưu cuối buổi OTC thất bại mất phần thưởng năm |
+| ENG-57 | 0.13.1: `pma picture --file` giữ làm bản chụp cũ (`legacy`), bị từ chối khi đã có mục; `committed` của `chinh` vẫn là min(nguồn trích, nguồn đã giao); capability `picture-items/1` | Không phá cuộc họp đang dở và host cũ |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 
