@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
-export type ScreenEvent = { at: string; utc: string; type: string; name?: string; by?: string | null; file?: string; tab?: string; window?: string; message?: string; note?: string; diff?: number };
+export type ScreenEvent = { at: string; utc: string; type: string; name?: string; by?: string | null; file?: string; tab?: string; window?: string; message?: string; note?: string; diff?: number; self?: boolean; reason?: string; panel?: boolean; app?: string; mode?: string; title?: string };
 
 // An outline older than this names nobody (Zoom outlines only while it hears someone).
 const STALE_MS = 30000;
@@ -130,8 +130,12 @@ export function speakersOf(items: any[], events: ScreenEvent[], isMic: (item: an
 export function screenLine(event: ScreenEvent, audioDir: string): string | null {
   const when = `MÀN HÌNH ${event.at}`;
   switch (event.type) {
-    case 'share_start': return `${when}: ${event.by ?? '(không đọc được tên)'} bắt đầu chia sẻ màn hình`;
-    case 'share_stop': return `${when}: ${event.by ?? 'người đang chia sẻ'} dừng chia sẻ màn hình`;
+    case 'share_start': return `${when}: ${event.self ? 'Tôi (chủ máy)' : event.by ?? '(không đọc được tên)'} bắt đầu chia sẻ màn hình${event.self ? ' — Meet chỉ hiện khung giữ chỗ, không chụp ảnh màn hình của chính mình' : ''}`;
+    case 'share_stop': return `${when}: ${event.self ? 'Tôi (chủ máy)' : event.by ?? 'người đang chia sẻ'} dừng chia sẻ màn hình`;
+    // Meet: the presentation area is blank or covered (e.g. the People panel). No image is saved while it lasts.
+    case 'screen_hidden': return `MÀN HÌNH ẨN ${event.at}: vùng trình bày${event.by ? ' của ' + event.by : ''} đang trống hoặc bị che (${event.panel ? 'khung bên phải như "Mọi người" đang mở — đóng khung đó' : 'không thấy nội dung'}); chưa chụp được ảnh — nhờ người chia sẻ/anh xem trực tiếp`;
+    case 'screen_visible': return `${when}: vùng trình bày${event.by ? ' của ' + event.by : ''} đã hiện lại`;
+    case 'meet_window': return event.window === 'visible' ? null : `${when}: cửa sổ Google Meet ${event.window === 'minimized' ? 'đang thu nhỏ — không chụp được, mở lại cửa sổ' : 'không thấy (cần tab "Meet - …" đang hiện của Chrome/Edge)'}`;
     case 'frame': return `${when}: ảnh màn hình chia sẻ${event.by ? ' của ' + event.by : ''}: ${screenDir(audioDir)}/${event.file}`;
     case 'frame_unreadable': return `${when}: không chụp được nội dung chia sẻ (ảnh đen) — xem trực tiếp trên Zoom`;
     case 'zoom': return event.window === 'visible' ? null : `${when}: cửa sổ họp Zoom ${event.window === 'minimized' ? 'đang thu nhỏ — không chụp được, mở lại cửa sổ Zoom' : 'không thấy'}`;
@@ -152,14 +156,22 @@ export function watcher(audioDir: string): (PidFile & { running: boolean }) | nu
   if (!existsSync(file)) return null;
   try { const p = JSON.parse(readFileSync(file, 'utf8')) as PidFile; return { ...p, running: commandLine(p.pid).includes('meeting_screen.ps1') }; } catch { return null; }
 }
-export function startWatcher(root: string, audioDir: string, session: string, interval?: string) {
+// Which meeting app the watcher looks at: auto = whichever window is open (Zoom first when both), or forced with --mode.
+export type WatchMode = 'auto' | 'zoom' | 'meet';
+export function watchMode(mode?: string): WatchMode {
+  if (mode === undefined || mode === '' || mode === 'auto') return 'auto';
+  if (mode === 'zoom' || mode === 'meet') return mode;
+  throw new Error('pma screen start --mode auto|zoom|meet');
+}
+export function startWatcher(root: string, audioDir: string, session: string, interval?: string, mode?: string) {
+  const watch = watchMode(mode);
   const current = watcher(audioDir);
   if (current?.running) return { started: false, already: true, pid: current.pid, dir: screenDir(audioDir) };
   mkdirSync(screenDir(audioDir), { recursive: true });
   // Live 21/11: a Node `detached` child gets no console and PowerShell dies before its first line. Start-Process gives the watcher its
   // own hidden console and outlives this command.
   const q = (text: string) => `'${text.replace(/'/g, "''")}'`;
-  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `"${root}/tools/meeting_screen.ps1"`, '-OutDir', `"${screenDir(audioDir)}"`, ...(interval && /^\d+(\.\d+)?$/.test(interval) ? ['-Interval', interval] : [])];
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `"${root}/tools/meeting_screen.ps1"`, '-OutDir', `"${screenDir(audioDir)}"`, ...(interval && /^\d+(\.\d+)?$/.test(interval) ? ['-Interval', interval] : []), ...(watch !== 'auto' ? ['-Mode', watch] : [])];
   const r = spawnSync('powershell', ['-NoProfile', '-Command', `(Start-Process powershell -WindowStyle Hidden -PassThru -ArgumentList ${q(args.join(' '))}).Id`], { encoding: 'utf8', windowsHide: true });
   const pid = Number((r.stdout ?? '').trim());
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`SCREEN_START_FAILED: ${(r.stderr ?? '').trim() || 'không lấy được pid'}`);
@@ -177,12 +189,17 @@ export function screenStatus(audioDir: string) {
   const events = screenEvents(audioDir);
   const last = (type: string) => [...events].reverse().find(e => e.type === type);
   const share = [...events].reverse().find(e => e.type === 'share_start' || e.type === 'share_stop');
+  const cover = [...events].reverse().find(e => e.type === 'screen_hidden' || e.type === 'screen_visible' || e.type === 'share_start' || e.type === 'share_stop');
+  const app = events.some(e => e.type === 'meet_window' || (e.type === 'share_start' && e.app === 'meet')) ? 'meet' : events.some(e => e.type === 'zoom') ? 'zoom' : null;
   const w = watcher(audioDir);
   return {
     watcher: w ? { pid: w.pid, running: w.running, since: w.startedAt } : null,
     dir: screenDir(audioDir),
     events: events.length,
-    sharing: share?.type === 'share_start' ? { by: share.by ?? null, since: share.at } : false,
+    app,
+    sharing: share?.type === 'share_start' ? { by: share.by ?? null, self: !!share.self, since: share.at } : false,
+    // Meet: true while the presentation area is blank or covered (MÀN HÌNH ẨN), no frames are saved then
+    hidden: cover?.type === 'screen_hidden',
     speaker: last('speaker') ? { name: nameResolver(events, loadNames(audioDir))(last('speaker')!.name ?? ''), read: last('speaker')!.name, at: last('speaker')!.at } : null,
     names: [...new Set(events.filter(e => e.type === 'speaker' && e.name).map(e => nameResolver(events, loadNames(audioDir))(e.name!)))],
     frames: events.filter(e => e.type === 'frame').length,
