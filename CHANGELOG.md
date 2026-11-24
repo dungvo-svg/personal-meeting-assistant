@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.4 — 25/11/2026 (cài trên máy người khác: không ghi cứng đường dẫn)
+
+Owner 25/11: máy mỗi người một khác, không ghi cứng đường dẫn; Claude của người dùng tự kiểm máy và đề xuất chỗ cài. Chưa ai cài thử trên máy khác.
+
+- **`pma connect [--project <thư mục>]`**: nối một thư mục họp vào bản pma đang cài. Chép kỹ năng `hop` với đường dẫn đầy đủ của máy đó, thêm Stop hook bằng node của máy đó (không cần `node` trên PATH). Chạy lại không đổi gì; Stop hook đang trỏ tới bản pma khác được trỏ lại, không thành hai; các hook và khoá khác giữ nguyên; `settings.local.json` hỏng thì từ chối, không ghi gì.
+- **Kỹ năng `hop` trong repo không còn đường dẫn máy Dũng**: dùng `"./pma" guide` (trong thư mục PMA); bản ở thư mục họp khác do `pma connect` tạo.
+- **`pma doctor --project`** kiểm kỹ năng và Stop hook trỏ đúng bản pma này (báo "trỏ tới bản pma khác" nếu không), cách sửa là lệnh `pma connect` cụ thể.
+- **`docs/CAI-DAT.md` viết lại**: câu mồi người dùng dán vào Claude Code; Claude tự kiểm máy (Git/Node/Python/gh, GPU, RAM, ổ đĩa), đề xuất chỗ cài (ổ không phải hệ thống, ≥ 15 GB trống, đường dẫn không dấu, không nằm trong OneDrive/Drive vì WAV chỉ ở trên máy) và chờ người dùng duyệt; repo riêng nên clone bằng `gh`, lỗi 404 là chưa được mời.
+- Bỏ `Hoan-tat-cai-Claude.cmd` (gọi `tools/install_claude.py` đã xoá từ khi bỏ MCP, ghi cứng node và thư mục cấu hình của máy Dũng). `docs/RUNBOOK_AGENT_CONTROL.md` không còn ghi cứng node của máy Dũng.
+
 ## 0.13.3 — 23/11/2026 (việc 1a, 1b, 8, 9: hai cách nghe Việt/Lào, bảng tên theo context, độ trễ)
 
 Họp OTC 23/11: lời Lào bị ghi thành chữ Việt vô nghĩa, mất ba con số % theo kênh; ba buổi 23/11 nghe sai tên ("Dũng" → "dùng", Claude, Mittaphab, OKR, Vimart). Chưa nghiệm thu ở họp thật.

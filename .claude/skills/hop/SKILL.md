@@ -8,9 +8,11 @@ description: Trợ lý họp chạy trên máy. Claude dùng bộ công cụ `pm
 Quy trình họp nằm trong công cụ và đi cùng phiên bản của nó; kỹ năng này chỉ chỉ đường. Việc đầu tiên, mỗi lần dùng (và khi vào giữa một cuộc họp):
 
 ```bash
-"D:/WORK/Agent/Agent-first/personal-meeting-assistant/pma" guide
+"./pma" guide
 ```
 
-Đọc hết và làm đúng theo đó; mọi lệnh trong hướng dẫn đã ghi đường dẫn đầy đủ nên chạy được từ thư mục nào. Phần cho agent dịch nền: `"D:/WORK/Agent/Agent-first/personal-meeting-assistant/pma" guide dich`.
+(`"./pma"` là trong thư mục PMA. Thư mục họp khác dùng bản kỹ năng do `pma connect` chép, đã ghi sẵn đường dẫn đầy đủ của máy đó.)
+
+Đọc hết và làm đúng theo đó; mọi lệnh trong hướng dẫn đã ghi đường dẫn đầy đủ nên chạy được từ thư mục nào. Phần cho agent dịch nền: `"./pma" guide dich`.
 
 Lệnh trên lỗi (không có công cụ, không có file hướng dẫn): báo người dùng đúng lỗi, không làm theo trí nhớ.

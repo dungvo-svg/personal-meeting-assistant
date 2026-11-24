@@ -3,10 +3,10 @@
 Dành cho phiên Claude điều khiển bộ họp, không phải lệnh chủ phải nhớ. Chạy được từ bất kỳ thư mục nào (vd. dự án BidOps), bằng đường dẫn tuyệt đối của bản đang dùng:
 
 ```
-"D:\APP\NodeJS\node.exe" "<thư mục PMA>\dist\cli.js" <lệnh>
+"<node của máy>" "<thư mục PMA>/dist/cli.js" <lệnh>
 ```
 
-`D:\APP\NodeJS\node.exe` là Node trên máy Dũng (AdminPC). Đừng giả định `node` hay `pma` trần đã có trên PATH: `pma` trần chỉ chạy được trong thư mục PMA, chưa có cài đặt dùng chung (global).
+`<node của máy>` là đường dẫn đầy đủ của node trên máy đó (`where node`; Stop hook do `pma connect` ghi cũng dùng đúng node này). Máy mỗi người một khác: không ghi cứng đường dẫn của máy nào. Đừng giả định `node` hay `pma` trần đã có trên PATH: `pma` trần chỉ chạy được trong thư mục PMA, chưa có cài đặt dùng chung (global).
 
 ## 1. Luôn xem trước: `status`
 

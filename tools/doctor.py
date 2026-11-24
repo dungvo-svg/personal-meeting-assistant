@@ -131,14 +131,21 @@ try:
 except (OSError, ValueError):
     check('khoá máy', True, 'trống', required=False)
 
-# The project a meeting session runs in: the hop skill (a pointer to `pma guide`) and the Stop hook
+# The project a meeting session runs in: the hop skill (a pointer to `pma guide` of THIS pma) and the Stop hook.
+# `pma connect --project <folder>` writes both with this machine's paths (owner 25/11: nothing hard-coded).
 project = args.project.resolve()
 skill = project / '.claude/skills/hop/SKILL.md'
 text = skill.read_text(encoding='utf-8') if skill.is_file() else ''
-check('kỹ năng hop', 'pma" guide' in text, f'{project.as_posix()}: ' + ('trỏ tới pma guide' if 'pma" guide' in text else 'bản cũ chép cả quy trình' if text else 'chưa có'),
-      f'chép {(root / ".claude/skills/hop/SKILL.md").as_posix()} vào {skill.as_posix()}', required=False)
-hook = any('meeting_stop_hook' in (project / '.claude' / name).read_text(encoding='utf-8') for name in ('settings.json', 'settings.local.json') if (project / '.claude' / name).is_file())
-check('Stop hook', hook, project.as_posix(), f'thêm Stop hook "node {(root / "tools/meeting_stop_hook.mjs").as_posix()}" vào {(project / ".claude/settings.local.json").as_posix()}', required=False)
+norm = lambda value: value.replace('\\', '/').lower()
+here = norm(root.resolve().as_posix())
+is_root = norm(project.as_posix()) == here
+points_here = f'"{here}/pma" guide' in norm(text) or (is_root and '"./pma" guide' in text)
+connect_fix = f'"{root.as_posix()}/pma" connect --project "{project.as_posix()}"'
+check('kỹ năng hop', points_here, f'{project.as_posix()}: ' + ('trỏ tới pma guide của bản này' if points_here else 'trỏ tới bản pma khác' if 'pma" guide' in text else 'bản cũ chép cả quy trình' if text else 'chưa có'),
+      connect_fix, required=False)
+settings_text = ''.join((project / '.claude' / name).read_text(encoding='utf-8') for name in ('settings.json', 'settings.local.json') if (project / '.claude' / name).is_file())
+hook = f'{here}/tools/meeting_stop_hook.mjs' in norm(settings_text).replace('//', '/')
+check('Stop hook', hook, project.as_posix() + ('' if hook else ' (trỏ tới bản pma khác)' if 'meeting_stop_hook' in settings_text else ''), connect_fix, required=False)
 
 failed = [c for c in checks if c['required'] and not c['ok']]
 if args.json:

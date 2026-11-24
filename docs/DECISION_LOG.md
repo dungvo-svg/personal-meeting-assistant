@@ -152,6 +152,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-63 | 0.13.3: bảng tên có `kind` nằm ở `context.names`; `context.participants` chỉ giữ người dự; sửa theo ngữ cảnh chỉ cho `weakVariants` (liền sau là động từ giao việc, có cờ); biệt danh không sửa trong chữ | Không tự thay tên khi chưa chắc; "Ta", "dùng" cũng là từ thường |
 | ENG-64 | 0.13.3: hotwords tắt mặc định, bật bằng `pma start --hotwords`; khi bật thì theo ngôn ngữ qua `hotwords.json` của phiên, đọc lại mỗi mẩu, mô hình Lào chỉ nhận tên chữ Lào | A/B offline 23/11: 16/77 mẩu bịa tên, 62/77 mẩu đổi chữ |
 | ENG-65 | 0.13.3: giữ lô 60 giây cho phiên trung tâm; `--batch 20` khi chiếu cửa sổ Claude cho cả phòng; độ trễ đo lại ở họp tới | Owner 23/11: 35–45 giây chấp nhận được, ưu tiên đúng |
+| ENG-66 | 0.13.4: repo không ghi đường dẫn của máy nào; `pma connect` ghi đường dẫn pma + node của máy đang cài vào kỹ năng `hop` và Stop hook của thư mục họp; doctor kiểm trỏ đúng bản này; CAI-DAT.md để Claude tự kiểm máy và đề xuất chỗ cài cho người dùng duyệt | Owner 25/11: máy họ khác máy tôi, đừng hardcode; Claude tự kiểm môi trường, đề xuất hợp lý |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

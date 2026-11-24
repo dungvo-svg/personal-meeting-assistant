@@ -8,6 +8,7 @@ import { pieces, RECHECK_PIECE_SECONDS } from './ranges.js';
 import { randomBytes } from 'node:crypto';
 import { attach, call, inspect, reach } from './client.js';
 import { pagesOf } from './picture.js';
+import { connect } from './connect.js';
 import { ackOf, foldRuns, isHallucination, micLabel, readingLines, wrapLine } from './text.js';
 import { loadNames, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
 
@@ -37,7 +38,9 @@ const USAGE = `pma — trợ lý họp chạy trên máy
                                    không mở cuộc họp; câu bịa bị bỏ và đếm; mặc định ghi <file>-chu.md cạnh file đầu
   pma hardware [--json] [--languages vi,lo] bảng phần cứng + bậc của máy này (day-du / tieng-viet / khong-du), ngôn ngữ họp dùng được;
                                    pma start từ chối khi máy không đủ hoặc họp có tiếng Lào mà máy không chạy được mô hình Lào
-  pma doctor [--json]             máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng); chỉ đọc
+  pma doctor [--json]             máy này có gì cho công cụ họp (Node, .venv, GPU, mô hình, nguồn âm, kỹ năng hop + Stop hook của thư mục đang đứng hoặc --project); chỉ đọc
+  pma connect [--project <thư mục>]   nối một thư mục họp vào bản pma này: chép kỹ năng hop (đường dẫn đầy đủ của máy này) + thêm Stop hook;
+                                   mặc định thư mục đang đứng; chạy lại không đổi gì; thư mục đang trỏ tới bản pma khác thì trỏ lại về bản này
   pma screen start|stop|status     canh cửa sổ Zoom hoặc Google Meet (tự nhận; --mode auto|zoom|meet để ép; chỉ đọc, chạy trên máy): ai chia sẻ màn hình và lúc nào, ai Zoom đánh dấu đang nói
                                    (tên vào dòng chữ: [Tên]), ảnh màn hình chia sẻ khi nội dung đổi; lưu cạnh WAV trong screen/
   pma screen name "<tên máy đọc>" "<tên đúng>"   sửa tên OCR đọc sai/mất dấu cho cuộc họp này (các biến thể gần giống cũng theo)
@@ -423,6 +426,13 @@ async function main() {
       const done = spawnSync(python, ['-I', `${ROOT}/tools/doctor.py`, '--project', flags.project || process.cwd(), ...(flags.json ? ['--json'] : [])], { stdio: 'inherit' });
       if (done.error) { console.log(`THIẾU python: không chạy được ${python} (${done.error.message}) → tạo .venv theo README`); process.exitCode = 1; return; }
       process.exitCode = done.status ?? 1; return;
+    }
+    // Hook a meeting folder up to this installed pma (src/connect.ts): no path of any one machine is written in the repo.
+    case 'connect': {
+      const project = flags.project && flags.project !== 'true' ? flags.project : process.cwd();
+      for (const line of connect(project, ROOT, process.execPath)) console.log(line);
+      console.log(`Kiểm: "${ROOT}/pma" doctor --project "${resolve(project).split('\\').join('/')}"`);
+      return;
     }
     case 'purpose': {
       const value = positional.join(' ') || (flags.purpose && flags.purpose !== 'true' ? flags.purpose : '');
