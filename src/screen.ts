@@ -162,7 +162,7 @@ export function parseMeetCaptions(records: { utc: string; texts: { text: string;
       const self = isName(before) ? SELF_NAMES.has(before.toLowerCase()) : !!from?.self;
       // The same line rewritten while the person speaks: same speaker, same first words, seen in the last 30 s.
       const head = firstWords(text);
-      const same = [...lines].reverse().find(line => line.speaker === speaker && t - line.last <= 30000 && head.length > 0 && (firstWords(line.text) === head || line.text.startsWith(text) || text.startsWith(line.text)));
+      const same = lines.slice(-40).reverse().find(line => line.speaker === speaker && t - line.last <= 30000 && head.length > 0 && (firstWords(line.text) === head || line.text.startsWith(text) || text.startsWith(line.text)));
       if (same) { if (text.length >= same.text.length || !same.text.startsWith(text)) same.text = text; same.last = t; byText.set(text, same); continue; }
       const line: CaptionLine = { first: t, last: t, speaker, self, text, ...(opening ? { early: true } : {}) }; lines.push(line); byText.set(text, line);
     }
