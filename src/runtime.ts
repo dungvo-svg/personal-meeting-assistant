@@ -335,15 +335,21 @@ export class MeetingRuntime extends EventEmitter {
     return this.glossary;
   }
   // What is shown: loops folded, wrong spellings of names that the sentence itself shows to be names corrected (names.ts, flagged), then the glossary.
-  shown(text: string, sessionId?: string) { return applyGlossary(applyWeakNames(collapseLoops(text), this.weakRules(sessionId)), this.glossary); }
-  private weakCache: { id: string; context: unknown; rules: ReturnType<typeof weakNameRules> } | null = null;
-  private weakRules(sessionId?: string) {
-    const id = sessionId ?? this.session?.id; if (!id) return [];
+  // A glossary short form ("Trang" of "Hoàng Thị Thu Trang") is expanded only for people of this meeting (text.ts isShortFormOf, 25/11).
+  shown(text: string, sessionId?: string) { const names = this.meetingNames(sessionId); return applyGlossary(applyWeakNames(collapseLoops(text), names.rules), this.glossary, names.present); }
+  private weakCache: { id: string; context: unknown; rules: ReturnType<typeof weakNameRules>; present: Set<string> } | null = null;
+  private weakRules(sessionId?: string) { return this.meetingNames(sessionId).rules; }
+  private meetingNames(sessionId?: string): { rules: ReturnType<typeof weakNameRules>; present?: Set<string> } {
+    const id = sessionId ?? this.session?.id; if (!id) return { rules: [] };
     let context: any = this.session?.id === id ? this.session.context : undefined;
-    if (!context) { try { const row: any = this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id); context = row ? JSON.parse(row.context) : undefined; } catch { return []; } }
-    const cached = this.weakCache; if (cached && cached.id === id && cached.context === context) return cached.rules;
-    const rules = weakNameRules([...(context?.participants ?? []), ...(context?.names ?? [])]);
-    this.weakCache = { id, context, rules }; return rules;
+    if (!context) { try { const row: any = this.db.prepare('SELECT context FROM sessions WHERE id=?').get(id); context = row ? JSON.parse(row.context) : undefined; } catch { return { rules: [] }; } }
+    const cached = this.weakCache; if (cached && cached.id === id && cached.context === context) return cached;
+    const entries: any[] = [...(context?.participants ?? []), ...(context?.names ?? [])];
+    const rules = weakNameRules(entries);
+    // Names of this meeting: each entry's name, and for a nickname the person it stands for.
+    const present = new Set<string>();
+    for (const e of entries) for (const n of [e?.name, e?.of]) if (typeof n === 'string' && n.trim()) present.add(n.trim().toLowerCase());
+    this.weakCache = { id, context, rules, present }; return this.weakCache;
   }
   // The name table of a session as hotwords for the ASR worker (tools/audio_worker.py reads <audio dir>/hotwords.json for every chunk): this
   // meeting's attendees, mentioned people, nicknames and system names, the glossary, and names of earlier meetings on this machine.

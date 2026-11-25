@@ -37,11 +37,29 @@ export const ackOf = (batch: { id: number }[], after: number) => batch.length ? 
 
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// A one-word variant that is itself a word of a longer name ("Linh" of "Hoàng Khánh Linh") is only the given name: many people share it,
+// and it is an everyday word too. Real meeting 25/11 (Vimart training): the machine-wide glossary turned "Trang" (Trang Hoàng, an attendee)
+// into "Hoàng Thị Thu Trang", "Quốc" (heard for "Cowork") into "Hoàng Nam Quốc" and "Linh" into "Hoàng Khánh Linh" — people of other meetings.
+export const isShortFormOf = (variant: string, name: string) => {
+  const v = variant.trim().toLowerCase(); const words = name.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  return !/\s/.test(v) && words.length > 1 && words.includes(v);
+};
+// Is this glossary name one of the people/names of the meeting being shown? `present` holds the meeting's context names, lower case.
+const inMeeting = (name: string, present: Set<string>) => {
+  const key = name.trim().toLowerCase();
+  if (present.has(key)) return true;
+  const inner = /\(([^)]+)\)/.exec(key)?.[1]?.trim();  // "Hoàng Văn Quân (Khounkham)" is present when "Khounkham" is
+  return !!inner && present.has(inner);
+};
+
 // "Nam Phủ" heard by ASR becomes "Namfon (nghe: Nam Phủ)", so a wrong guess stays visible.
-export function applyGlossary(text: string, glossary: GlossaryEntry[]) {
+// `present`: the names in this meeting's context (lower case). When given, a short form (see isShortFormOf) is expanded only for a
+// glossary name that is in this meeting; without it (no meeting known) the old behaviour stays.
+export function applyGlossary(text: string, glossary: GlossaryEntry[], present?: Set<string>) {
   for (const entry of glossary) {
     for (const variant of [...entry.variants].sort((a, b) => b.length - a.length)) {
       if (!variant.trim() || variant.toLowerCase() === entry.name.toLowerCase()) continue;
+      if (present && isShortFormOf(variant, entry.name) && !inMeeting(entry.name, present)) continue;
       // A one-word variant is often an everyday word too ("Quân" of a person, "quân" in "quân y"; also Duy, Linh, Đức: BidOps
       // 10/11). It is taken only as written (a capital stays a capital); a variant of several words still matches any case.
       const oneWord = !/\s/.test(variant.trim());

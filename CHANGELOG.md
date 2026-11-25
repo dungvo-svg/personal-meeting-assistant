@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.9 — 25/11/2026 (bảng tên không đổi tên gọi một chữ thành người của buổi khác)
+
+Họp thật 25/11 (Đào tạo Claude Vimart): bảng tên chung của máy đổi "Trang" (chị Trang Hoàng, người dự) thành "Hoàng Thị Thu Trang", "Quốc" (máy nghe "Cowork") thành "Hoàng Nam Quốc", "Linh" thành "Hoàng Khánh Linh" — người của các buổi khác.
+
+- `src/text.ts`: biến thể một chữ là chính một chữ trong họ tên ("Linh" của "Hoàng Khánh Linh") chỉ là tên gọi; chỉ mở thành họ tên khi người đó có trong context của buổi đang xem (người dự, người được nhắc, biệt danh trỏ tới người đó). Biến thể nghe sai khác (Cloudy → Claude, Nam Phủ → Namfon) giữ nguyên. Không có buổi họp thì giữ cách cũ.
+- `src/runtime.ts`: `shown()` đưa tên của buổi họp (cùng bộ đệm với luật tên yếu) vào bảng tên.
+- Test: `tests/no_self_stop.test.mjs` dựng lại đúng các dòng sai của buổi 25/11.
+
 ## 0.13.8 — 25/11/2026 (người nói ở Google Meet; transcript chung là bản tổng hợp)
 
 Owner 25/11: phải bắt đúng người đang nói; thường một người nói chính, lúc bàn nhiều thì một đoạn gom 2–3 người. Tab Transcript là phần đã tổng hợp, không phải dòng thô.
