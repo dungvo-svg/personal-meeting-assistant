@@ -50,7 +50,7 @@
     "tests/daemon.test.mjs": "a99128fe02de75fdee8dec15e290e9d3f46d11c088914c789dd511d79b6aa053",
     "tests/follow.test.mjs": "9357e59e2c395f83ee7241767035efb749564dcfd38c8031db1880798fe1308f",
     "tests/no_mic_lifecycle.test.mjs": "dc1322476c2acf5229e40cd1d96949fa0c2a86f13f13343b9ba814cc21be24cc",
-    "tests/no_self_stop.test.mjs": "fe11baf273c0cded14edb8550979c88663c10467e43da8e170dc44538791f4fe",
+    "tests/no_self_stop.test.mjs": "38cdc1d2f3746f2ce05f64d48058c118009faa1aa306e7c506c736b5adc4476c",
     "tests/runtime.test.mjs": "a751de10ce544bdb1169e4bef618610e5c900e64108cbfff899b5ccdfe7ad748",
     "tests/share.test.mjs": "1743e0ac76b413dc962994c5f40448b45e5f4608b974952445adec519391cc38",
     "tests/test_audio_worker.py": "bd398057af86b1e30264ad9a927e509b37d67d0aa3bd252069d7fd1ca0b10fbe",
