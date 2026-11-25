@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.13.8 — 25/11/2026 (người nói ở Google Meet; transcript chung là bản tổng hợp)
+
+Owner 25/11: phải bắt đúng người đang nói; thường một người nói chính, lúc bàn nhiều thì một đoạn gom 2–3 người. Tab Transcript là phần đã tổng hợp, không phải dòng thô.
+
+- `tools/meeting_screen.ps1` (chế độ Meet): mỗi nhịp ghi chữ **mới** trên trang Meet vào `screen/meet_text.jsonl` (phụ đề Meet có tên người nói khi người dùng bật CC, dòng chat khi khung chat mở, thông báo vào/ra); tên ô, nút, menu giống nhịp trước thì không ghi lại. Ảnh cả trang mỗi `-TileSeconds` (mặc định 3 giây, JPEG ≤ 1280 px, khoảng 20 KB) vào `screen/frames/meet/HHmmss.jpg`. Tất cả chỉ ở trên máy. Hàm tách chữ mới là hàm thuần, có test; đã chạy thử trên một trang giả tiêu đề "Meet - …" trong Edge; **chưa kiểm ở họp Meet thật** (chưa biết Meet đưa phụ đề vào cây trợ năng thế nào).
+- `guide/hop.md`: tab Transcript là transcript **đã biên tập** theo lượt nói (`HH:MM Người: lời`, gom mẩu liền nhau, 2–3 người khi bàn sôi nổi, sửa chữ nghe sai theo ngữ cảnh, giữ đủ ý và số, Lào dịch sang Việt, `[chưa nghe rõ]` chỗ không chắc); bản thô vẫn là RAW trên máy. Mục mới "Người nói ở Google Meet": nhắc bật phụ đề, mỗi lô đọc `meet_text.jsonl` trong khoảng giờ của lô, không có thì xem ảnh `frames/meet/`.
+
 ## 0.13.7 — 25/11/2026 (tab Transcript trên biên bản chung)
 
 Owner 25/11: transcript ở máy cập nhật tới đâu thì biên bản chung có tới đó, ở một tab riêng; mọi người theo dõi ở đó. Chỉ đổi hướng dẫn.

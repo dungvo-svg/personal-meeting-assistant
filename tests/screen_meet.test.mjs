@@ -181,3 +181,16 @@ test('watch mode: auto by default, zoom/meet forced, anything else refused', () 
 test('the script library loads without touching windows', T, () => {
   assert.equal(ps('(Get-Command Step-MeetState, Select-MeetingWindow, Test-MeetTitle).Count | ConvertTo-Json -Compress', null), 3);
 });
+
+// 0.13.8 (owner 25/11: catch who is speaking): page text new since the last tick goes to meet_text.jsonl. Synthetic UI Automation
+// names: tile names and buttons stay the same tick to tick, captions and chat lines come and go.
+test('Meet text log: only strings new since the last tick, each with the string before it (the caption speaker), blanks dropped, long ones cut, at most max', T, () => {
+  // The caption speaker is also a tile name, so it is never new itself: it comes back as "before" of the caption words.
+  const tick1 = ['Khounkham Souvannalath', 'Ms Tar', 'Turn off microphone', '', '  ', 'x'];
+  const tick2 = ['Khounkham Souvannalath', 'Ms Tar', 'Turn off microphone', 'Captions', 'Ms Tar', 'em khảo sát mặt bằng tuần này', 'Huyền Nguyễn: Tar: khảo sát – hạn 28/11', 'em khảo sát mặt bằng tuần này'];
+  const got = ps(`$a = Get-NewMeetTexts $d.t1 $null; $b = Get-NewMeetTexts $d.t2 $a.seen; $c = Get-NewMeetTexts $d.t2 $b.seen; $e = Get-NewMeetTexts @(('a' * 500), 'bb', 'cc', 'dd') $null 2 10; @{ a = @($a.new); b = @($b.new); c = @($c.new); e = @($e.new) } | ConvertTo-Json -Compress -Depth 4`, { t1: tick1, t2: tick2 });
+  assert.deepEqual(got.a, [{ text: 'Khounkham Souvannalath', before: null }, { text: 'Ms Tar', before: 'Khounkham Souvannalath' }, { text: 'Turn off microphone', before: 'Ms Tar' }]);
+  assert.deepEqual(got.b, [{ text: 'Captions', before: 'Turn off microphone' }, { text: 'em khảo sát mặt bằng tuần này', before: 'Ms Tar' }, { text: 'Huyền Nguyễn: Tar: khảo sát – hạn 28/11', before: 'em khảo sát mặt bằng tuần này' }]);
+  assert.deepEqual(got.c ?? [], []);
+  assert.deepEqual(got.e, [{ text: 'a'.repeat(10), before: null }, { text: 'bb', before: 'a'.repeat(10) }]);
+});

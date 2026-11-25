@@ -5,6 +5,9 @@
   -Mode auto|zoom|meet picks the app (auto: whichever window is open, Zoom first). Meet: window titled "Meet - ..."; the
   presenter comes from UI Automation names ("<name> is presenting", Vietnamese, Lao); frames are the presentation area only;
   when that area stays blank or covered, a screen_hidden event (MAN HINH AN) is written instead of blank images.
+  Meet, for who is speaking (0.13.8): page text that is new since the last tick (captions with the speaker's name when the owner
+  turns captions on, chat messages, join notices) goes to <OutDir>/meet_text.jsonl, and a JPEG of the page every -TileSeconds
+  goes to <OutDir>/frames/meet/HHmmss.jpg. Both stay on this machine.
 
 .DESCRIPTION
   Nothing is clicked or opened in Zoom. Every -Interval seconds:
@@ -26,6 +29,7 @@ param(
   [int]$IdleExitMinutes = 15,  # no meeting window this long = the meeting is over: exit
   [ValidateSet('auto', 'zoom', 'meet')][string]$Mode = 'auto',  # which meeting window to watch; auto = whichever is open (Zoom first when both)
   [int]$HiddenTicks = 3,    # Meet: this many flat presentation areas in a row = MAN HINH AN (screen_hidden)
+  [double]$TileSeconds = 3, # Meet: a picture of the whole page (tiles, captions) every this many seconds, for who is speaking; 0 = off
   [switch]$Library          # define the pure decision functions and return (tests dot-source the script with this)
 )
 $ErrorActionPreference = 'Stop'
@@ -172,6 +176,32 @@ function Step-MeetState($state, $obs, [int]$frameDiff = 12, [int]$hiddenTicks = 
   return @{ state = $s; events = @($events) }
 }
 
+# Meet text log (0.13.8, owner 25/11: catch who is speaking). Meet does not mark the speaker in a way read so far, but with the
+# owner's captions on, each caption shows the speaker's name above the words; chat messages and "X joined" notices also appear as
+# page text. Each tick keeps only the strings that were not on the page the tick before (tile names, buttons and menus stay the
+# same, so they are logged once). Each new string carries the string just before it on the page ("before"): for a caption that is
+# the speaker's name, which is on the page all the time as a tile name and so never new itself (smoke run 25/11 lost Ms Tar that
+# way). $prev: the previous tick's strings (array or $null). Returns @{ new = @{ text; before } in page order; seen = this tick's
+# strings }. Blank strings are dropped, long ones cut to $maxLen, at most $max per tick.
+function Get-NewMeetTexts($names, $prev, [int]$max = 80, [int]$maxLen = 300) {
+  $seenSet = New-Object 'System.Collections.Generic.HashSet[string]'
+  $prevSet = New-Object 'System.Collections.Generic.HashSet[string]'
+  foreach ($p in @($prev)) { if ($p) { [void]$prevSet.Add([string]$p) } }
+  $new = New-Object System.Collections.ArrayList
+  $cut = { param($s) if ($s.Length -gt $maxLen) { $s.Substring(0, $maxLen) } else { $s } }
+  $last = $null
+  foreach ($n in @($names)) {
+    if (-not $n) { continue }
+    $t = ([string]$n).Trim()
+    if ($t.Length -lt 2) { continue }
+    if ($seenSet.Add($t) -and -not $prevSet.Contains($t) -and $new.Count -lt $max) {
+      [void]$new.Add([ordered]@{ text = (& $cut $t); before = $(if ($last) { & $cut $last } else { $null }) })
+    }
+    $last = $t
+  }
+  return @{ new = @($new); seen = @($seenSet) }
+}
+
 if ($Library) { return }
 if (-not $OutDir) { throw 'OutDir is required' }
 Add-Type -AssemblyName System.Drawing, UIAutomationClient, UIAutomationTypes, System.Runtime.WindowsRuntime
@@ -305,16 +335,50 @@ function Get-MeetPage($hwnd) {
     return @{ x = [int]($r.X - $w[0]); y = [int]($r.Y - $w[1]); w = [int]$r.Width; h = [int]$r.Height }
   } catch { return $null }
 }
-$meet = New-MeetState; $meetWindow = $null
+$meet = New-MeetState; $meetWindow = $null; $meetPrevTexts = $null; $tileAt = [datetime]::MinValue
+$meetTextLog = Join-Path $OutDir 'meet_text.jsonl'
+New-Item -ItemType Directory -Force (Join-Path $OutDir 'frames\meet') | Out-Null
+# JPEG encoder for the page pictures (small files: one every few seconds for the whole meeting)
+$jpegCodec = [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+$jpegParams = New-Object System.Drawing.Imaging.EncoderParameters 1
+$jpegParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter ([System.Drawing.Imaging.Encoder]::Quality), ([long]70)
+function Save-MeetTile($bmp, $hwnd) {
+  # The web page only (no browser bars), scaled to at most 1280 px wide; named by local time so it lines up with the transcript.
+  $page = Get-MeetPage $hwnd
+  $r = if ($page) { New-Object System.Drawing.Rectangle $page.x, $page.y, $page.w, $page.h } else { New-Object System.Drawing.Rectangle 0, 0, $bmp.Width, $bmp.Height }
+  $crop = [MeetingScreen]::Crop($bmp, $r)
+  if (-not $crop) { return }
+  try {
+    $scale = [Math]::Min(1.0, 1280.0 / $crop.Width)
+    $small = New-Object System.Drawing.Bitmap ([int]($crop.Width * $scale)), ([int]($crop.Height * $scale))
+    $g = [System.Drawing.Graphics]::FromImage($small); $g.InterpolationMode = 'HighQualityBicubic'; $g.DrawImage($crop, 0, 0, $small.Width, $small.Height); $g.Dispose()
+    $small.Save((Join-Path $OutDir ("frames\meet\" + (Get-Date -Format 'HHmmss') + '.jpg')), $jpegCodec, $jpegParams); $small.Dispose()
+  } finally { $crop.Dispose() }
+}
 function Invoke-MeetTick($pick) {
   $label = if ($pick.minimized) { 'minimized' } else { 'visible' }
   if ($label -ne $script:meetWindow) { Emit @{ type = 'meet_window'; window = $label; title = $pick.title }; $script:meetWindow = $label }
   if ($pick.minimized) { return }   # a minimized window cannot be captured; the UI tree is not trusted either
-  $obs = Get-MeetObservation (Get-MeetNames $pick.hwnd)
+  $names = Get-MeetNames $pick.hwnd
+  # New page text (captions with the speaker's name, chat, join notices) goes to meet_text.jsonl, not to screen.jsonl: it is
+  # read by the central session for names, it does not become a line of its own in the transcript.
+  $texts = Get-NewMeetTexts $names $script:meetPrevTexts
+  $script:meetPrevTexts = $texts.seen
+  if ($texts.new.Count -gt 0) {
+    $now = Get-Date
+    $o = [ordered]@{ at = $now.ToString('HH:mm:ss'); utc = $now.ToUniversalTime().ToString('o'); texts = @($texts.new) }
+    Add-Content -Encoding utf8 $meetTextLog ($o | ConvertTo-Json -Compress)
+  }
+  $obs = Get-MeetObservation $names
   $bmp = $null; $rect = $null
   try {
-    if ($obs.presenting -and -not $obs.self) {
+    if ($TileSeconds -gt 0 -and ((Get-Date) - $script:tileAt).TotalSeconds -ge $TileSeconds) {
+      $script:tileAt = Get-Date
       $bmp = [MeetingScreen]::Capture($pick.hwnd)
+      if ($bmp) { try { Save-MeetTile $bmp $pick.hwnd } catch { Emit @{ type = 'error'; message = 'meet tile: ' + $_.Exception.Message } } }
+    }
+    if ($obs.presenting -and -not $obs.self) {
+      if (-not $bmp) { $bmp = [MeetingScreen]::Capture($pick.hwnd) }
       if ($bmp) {
         $a = Get-PresentationArea (Get-MeetPage $pick.hwnd) $bmp.Width $bmp.Height $obs.panel
         if ($a) {
