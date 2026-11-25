@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.7 — 25/11/2026 (tab Transcript trên biên bản chung)
+
+Owner 25/11: transcript ở máy cập nhật tới đâu thì biên bản chung có tới đó, ở một tab riêng; mọi người theo dõi ở đó. Chỉ đổi hướng dẫn.
+
+- `guide/hop.md`: biên bản chung có tab **Transcript**. Mỗi lô, cùng lần ghi biên bản, chèn các dòng `follow` vừa in (`HH:MM:SS Người: lời`; dòng Lào/Thái ghi bản dịch tiếng Việt kèm `[Lào]`; bỏ câu ảo, tiếng loa lọt mic, đoạn lặp ghi một lần; nghe lại thì thêm dòng `(nghe lại)`, không sửa dòng cũ). Tab chỉ chèn thêm, không viết lại.
+
 ## 0.13.6 — 25/11/2026 (biên bản chung ghi đủ dữ liệu; nội dung họp không lên git)
 
 Owner 25/11: giá vốn, công nợ, lương, danh sách khách hàng và lời lúc tắt mic đưa lên biên bản chung bình thường, chỉ không đưa lên git. Chỉ đổi hướng dẫn.
