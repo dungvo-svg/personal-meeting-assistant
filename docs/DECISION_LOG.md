@@ -153,6 +153,7 @@ U10 là lựa chọn nguồn cho phiên hiện tại, không mặc định mọi
 | ENG-64 | 0.13.3: hotwords tắt mặc định, bật bằng `pma start --hotwords`; khi bật thì theo ngôn ngữ qua `hotwords.json` của phiên, đọc lại mỗi mẩu, mô hình Lào chỉ nhận tên chữ Lào | A/B offline 23/11: 16/77 mẩu bịa tên, 62/77 mẩu đổi chữ |
 | ENG-65 | 0.13.3: giữ lô 60 giây cho phiên trung tâm; `--batch 20` khi chiếu cửa sổ Claude cho cả phòng; độ trễ đo lại ở họp tới | Owner 23/11: 35–45 giây chấp nhận được, ưu tiên đúng |
 | ENG-66 | 0.13.4: repo không ghi đường dẫn của máy nào; `pma connect` ghi đường dẫn pma + node của máy đang cài vào kỹ năng `hop` và Stop hook của thư mục họp; doctor kiểm trỏ đúng bản này; CAI-DAT.md để Claude tự kiểm máy và đề xuất chỗ cài cho người dùng duyệt | Owner 25/11: máy họ khác máy tôi, đừng hardcode; Claude tự kiểm môi trường, đề xuất hợp lý |
+| ENG-67 | 0.13.5: biên bản chung là một Claude Doc người dùng đưa link và tự chia sẻ; phiên tổng hợp đẩy phần vừa lưu của mỗi lô `picture update` vào tài liệu, chỉ cộng dồn, giữ bản người dự sửa; không đưa dữ liệu nhạy cảm; không dùng bot họp Claude song song | Owner 25/11: bot họp Claude trùng công cụ; một link cả phòng theo dõi; chọn loại tài liệu Claude sửa được thời gian thực (Google Docs qua kết nối Drive không sửa được nội dung) |
 
 Các cap/timeout cụ thể cho pilot được ghi ở [runbook](history/PILOT_RUNTIME_20261026.md), chưa là ngưỡng nghiệm thu sản phẩm chung. Nguồn ASR/metadata thực không đưa vào Git.
 

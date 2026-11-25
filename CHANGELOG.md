@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.13.5 — 25/11/2026 (biên bản chung trên Claude Doc)
+
+Owner 25/11: bot họp Claude trùng công cụ với trợ lý họp; cả phòng theo dõi một link biên bản do phiên tổng hợp cập nhật trong lúc họp. Chỉ đổi hướng dẫn, không đổi mã. Đã thử ghi cộng dồn trên một Claude Doc nháp (thêm tab, chèn dòng, sửa đúng một cụm, thêm hàng bảng, đọc phần đổi); chưa dùng ở họp thật.
+
+- `guide/hop.md` có mục **"Biên bản chung cho người dự (Claude Doc)"**: chỉ làm khi người dùng đưa link và bảo dùng; mỗi lô, sau `picture update`, đẩy đúng phần vừa lưu vào tài liệu (việc theo mẫu `Tên: việc – hạn dd/mm`, quyết định Chốt/Tạm, câu hỏi mở, số liệu, bảng tiếng Lào có cột Chấm, Đang bàn, Diễn tiến); chỉ ghi cộng dồn, giữ chỗ người dự đã sửa; không đưa giá vốn, công nợ, lương, danh sách khách hàng, lời mic tắt; dòng chat Meet người dùng dán vào đi qua `pma say` để có `#id`.
+- Sau họp: ô Tóm tắt lấy từ SUMMARY, "Việc được giao" đối chiếu với TASKS; câu trả lời cuối có link biên bản.
+- Quy tắc "không gửi gì cho người khác" có một ngoại lệ: biên bản chung người dùng đã đưa link.
+
 ## 0.13.4 — 25/11/2026 (cài trên máy người khác: không ghi cứng đường dẫn)
 
 Owner 25/11: máy mỗi người một khác, không ghi cứng đường dẫn; Claude của người dùng tự kiểm máy và đề xuất chỗ cài. Chưa ai cài thử trên máy khác.
