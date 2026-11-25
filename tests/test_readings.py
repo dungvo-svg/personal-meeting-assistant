@@ -68,8 +68,22 @@ class PickTests(unittest.TestCase):
 
     def test_an_invented_vietnamese_reading_does_not_compete(self):
         self.assertEqual(self.pick(-0.1, -0.3, vi_status='invented'), ('lo', True))
-        self.assertEqual(self.pick(-0.1, -0.9, vi_status='invented'), ('lo', False))  # Lao is all there is, but it is weak: undecided
+        self.assertEqual(self.pick(-0.1, -0.6, vi_status='invented'), ('lo', False))  # Lao is all there is, weak but not too weak: undecided
+        # 0.13.10 (real meeting 25/11, no Lao speaker): under an invented Vietnamese sentence a Lao reading below -0.68 is not the line either; the row
+        # keeps the invented reading (hidden as a ghost, the Lao reading printed beside it).
+        self.assertEqual(self.pick(-0.1, -0.9, vi_status='invented'), ('vi', False))
+        self.assertEqual(self.pick(-0.1, -0.69, vi_status='invented'), ('vi', False))
+        self.assertEqual(self.pick(-0.1, -0.9, vi_status='empty'), ('lo', False))  # an empty Vietnamese reading is not an invented one
         self.assertEqual(self.pick(-0.1, -0.3, vi_status='empty'), ('lo', True))
+
+    def test_a_clean_vietnamese_reading_needs_a_wider_lao_lead(self):
+        # A Vietnamese-only participant's short reply read as Lao at +0.179 (real meeting 25/11): a reading that is Vietnamese syllables throughout
+        # keeps the line unless Lao is ahead by 0.20.
+        clean = dict(reading('vi', 'dạ vâng em gửi bảng giá chiều nay', -0.661), viSyllableShare=1.0, viSyllables=8)
+        self.assertEqual(audio_worker.pick_reading(clean, reading('lo', 'l', -0.482)), ('vi', False))
+        self.assertEqual(audio_worker.pick_reading(clean, reading('lo', 'l', -0.45)), ('lo', False))  # +0.211
+        short = dict(clean, viSyllables=3)  # too few syllables to call it clean: the old margin
+        self.assertEqual(audio_worker.pick_reading(short, reading('lo', 'l', -0.482)), ('lo', False))
 
     def test_a_lao_reading_that_is_empty_or_invented_leaves_vietnamese(self):
         self.assertEqual(self.pick(-0.4, -0.3, lo_status='invented'), ('vi', True))
@@ -248,6 +262,32 @@ class RecheckReadingsTests(unittest.TestCase):
         self.assertEqual((by['vi']['model'], by['lo']['model']), ('turbo', 'buzz'))
         self.assertEqual((by['vi']['viSyllables'], by['vi']['viTokens']), (10, 10))
         self.assertEqual(by['lo']['viSyllables'], 0)
+
+    def test_a_looping_reading_never_becomes_the_text_however_confident(self):
+        # 25/11: a Thai reading that was one word repeated 16 times scored -0.198 and became the text over a clean Vietnamese reading at
+        # -0.368. Its loop share is measured on the text before repeats are folded into "[×16]", and a loop does not compete.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        session = FakeSession(tmp.name)
+        session.segment(1, 'speaker', 0.0, [(5, 0.2)])
+        session.end(5.0)
+
+        def transcribe(model, waveform16, langs, lao_model=None, vi_model=None, pick=None, beam=None):
+            if langs == ['th']:
+                return [segment('ทดสอบคำ ' * 16, -0.198)], 'th', None
+            if langs == ['lo']:
+                return [segment('ສະບາຍດີ ທຸກຄົນ', -0.7)], 'lo', None
+            if langs == ['vi']:
+                return [segment('dạ vâng em gửi bảng giá chiều nay', -0.368)], 'vi', None
+            return [segment('ทดสอบคำ ' * 16, -0.198)], 'th', None  # the detector picked the loop too
+        with mock.patch.object(audio_worker, 'transcribe_chunk', transcribe):
+            result = audio_worker.recheck_window(object(), None, None, tmp.name, session.iso(0.0), session.iso(4.0), 'speaker', ('vi', 'lo', 'th'), 8)
+        by = {a['language']: a for a in result['alternatives']}
+        self.assertGreaterEqual(by['th']['loopPenalty'], audio_worker.RECHECK_LOOP_MAX)
+        self.assertIn('[×16]', by['th']['text'])
+        self.assertEqual(result['language'], 'vi')
+        self.assertEqual(result['text'], 'dạ vâng em gửi bảng giá chiều nay')
+        self.assertEqual((by['vi']['picked'], by['th']['picked']), (True, False))
 
 
 if __name__ == '__main__':

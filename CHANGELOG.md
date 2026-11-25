@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.10 — 25/11/2026 (phụ đề Google Meet thành cách nghe thứ hai có tên người nói; chọn tiếng Việt/Lào đúng hơn)
+
+Họp thật 25/11 (không ai nói tiếng Lào): 9/43 đoạn có hai cách nghe bị xếp vào tiếng Lào, cả 9 sai; RAW không có tên người nói; phụ đề Meet nghe được câu ASR làm mất và có tên người nói, nhưng phiên tổng hợp phải tự lục file, và biên bản chung ghi nhầm người nói của một câu trả lời.
+
+- `src/screen.ts`: tách `screen/meet_text.jsonl` thành câu phụ đề `{first, last, speaker, text}`: bỏ chữ giao diện Meet (Việt, Anh), tên người lấy từ ô video, câu bị viết lại giữ giờ đầu và chữ mới nhất, câu đã có trên trang lúc bắt đầu ghi đánh dấu `early`. Người nói của mỗi dòng ASR = người có phụ đề trong lúc đó (`A→B` khi đổi người); phụ đề của chính chủ máy không gán cho dòng kênh loa.
+- `src/cli.ts`: `follow` gắn `[Tên]` từ phụ đề và in `PHỤ ĐỀ MEET HH:MM:SS–HH:MM:SS [Tên]: …` sau mỗi lô (câu đã thôi viết lại 4 giây, mỗi câu một lần); `read` in phụ đề cùng khoảng giờ; `read --session` của buổi đã đóng tìm thư mục âm thanh dưới thư mục dữ liệu.
+- `src/speakers.ts`: dòng bị xếp vào tiếng Lào mà người nói (theo phụ đề, hoặc chủ máy ở micro) chỉ nói tiếng Việt theo danh sách người dự thì in cách nghe tiếng Việt, ghi rõ "chọn tiếng Việt theo người nói".
+- `src/runtime.ts`: RAW có "người nói: …" trên từng dòng, phụ đề Meet chen theo giờ, dòng chọn lại theo người nói; dòng câu bịa còn cách nghe khác ở lại trong phần chính kèm cách nghe đó (trước đây xuống phụ lục mất chữ Lào).
+- `tools/audio_worker.py`: (1) dưới câu tiếng Việt bịa ("Hãy subscribe…"), cách nghe tiếng Lào dưới −0,68 không thành dòng chính (buổi họp đó 8/8 đúng; FLEURS Lào đủ dài 40/40 như cũ, 3/120 đoạn cắt 1,5–2 giây đổi); (2) cách nghe tiếng Việt sạch (≥ 90% âm tiết Việt, ≥ 4 âm tiết) chỉ thua tiếng Lào khi Lào hơn 0,20 (trước 0,15); (3) `recheck`: điểm lặp đo trước khi gộp "[×16]", cách nghe chủ yếu là vòng lặp không được chọn (25/11 một câu Thái lặp 16 lần thắng câu Việt sạch).
+- `guide/hop.md`: cách đọc dòng `PHỤ ĐỀ MEET` cùng dòng ASR, dòng chọn lại theo người nói, ghi `languages` cho từng người dự; cuối buổi sửa dòng đầu biên bản theo giờ và người dự thật.
+- Test: `tests/captions.test.mjs` (dữ liệu tự đặt, không có nội dung họp), thêm ca ở `tests/follow.test.mjs`, `tests/test_readings.py`.
+
 ## 0.13.9 — 25/11/2026 (bảng tên không đổi tên gọi một chữ thành người của buổi khác)
 
 Họp thật 25/11 (Đào tạo Claude Vimart): bảng tên chung của máy đổi "Trang" (chị Trang Hoàng, người dự) thành "Hoàng Thị Thu Trang", "Quốc" (máy nghe "Cowork") thành "Hoàng Nam Quốc", "Linh" thành "Hoàng Khánh Linh" — người của các buổi khác.

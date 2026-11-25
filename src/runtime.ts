@@ -7,6 +7,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { applyGlossary, collapseLoops, foldRuns, hasReadings, isHallucination, micLabel, readingFacts, readingLines, riskyVariants, segmentTimesProblem, shareable, type GlossaryEntry, type Reading } from './text.js';
 import { canonicalOwner } from './participants.js';
+import { captionSpeakersOf, lineTimes, loadNames, meetCaptions, screenEvents, speakersOf } from './screen.js';
+import { lineSpeakers, repickBySpeaker } from './speakers.js';
 import { applyWeakNames, historyNames, nameTable, weakNameRules, writeHotwordsFile, HOTWORDS_FILE } from './names.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
@@ -1639,23 +1641,49 @@ export class MeetingRuntime extends EventEmitter {
     if (rows.some(row => row.translation)) lines.push('> Dòng "→ (Claude dịch)" là bản dịch tiếng Việt do Claude viết cho đoạn tiếng Lào, chưa ai kiểm; chữ Lào ở trên mới là nguồn.', '');
     const label = (row: any) => `${origin[row.origin] || row.origin}${row.language ? ' · ' + row.language : ''}${row.boundary.includes('LAO_MODEL_MISSING') ? ' · chưa có mô hình Lào: chữ Thái phiên âm, nghĩa chưa đáng tin' : row.boundary.includes('LAO_WRITTEN_IN_THAI_SCRIPT') ? ' · viết bằng chữ Thái, nội dung không đáng tin' : ''}${row.boundary.includes('LANG_UNSURE') ? ' · ngôn ngữ không chắc' : ''}${row.boundary.includes('READINGS_UNDECIDED') ? ' · hai cách nghe (Việt, Lào) chưa phân định' : ''}${row.boundary.includes('LAO_LOW_CONFIDENCE') ? ' · tiếng Lào nhận dạng kém' : ''}${row.boundary.includes('REPETITION') ? ' · lặp từ' : ''}${(mic => mic ? ' · ' + mic : '')(micLabel(row.boundary, session.context?.me))}`;
     // Câu ảo Whisper sinh ra khi im lặng ("subscribe…", "cảm ơn đã theo dõi") chuyển xuống phụ lục; số đoạn vẫn giữ.
-    const ghosts = rows.filter(isHallucination);
+    // A ghost whose other reading has words (0.13.10: an invented Vietnamese sentence over a weak Lao reading) stays in the flow with
+    // that reading, the way `follow` prints it; only a ghost with nothing else goes to the appendix.
+    const spared = (row: any) => parseAlternatives(row.alternatives).some((a: any) => a.rv !== undefined && !a.picked && a.status === 'ok');
+    const ghosts = rows.filter(row => isHallucination(row) && !spared(row));
     const when = (row: any) => localTime(row.wall || row.created);
     // What Claude heard again from the WAV (`pma recheck`): the latest answer per source, and the ranges without a source.
     const heardAgain: any[] = this.db.prepare('SELECT source_id,from_wall,to_wall,text,language,alternatives,silent FROM rechecks WHERE session_id=? ORDER BY id').all(id);
     const phrase = (r: any) => { const others = (JSON.parse(r.alternatives) as any[]).map(a => `[${a.language}] ${a.text}${a.rv === undefined ? '' : ' (' + readingFacts(a) + ')'}`).join('; '); return `${r.silent ? 'không thấy tiếng nói' : `${r.language ? '[' + r.language + '] ' : ''}${r.text}`}${others ? ' — phương án khác: ' + others : ''}`; };
     const again = new Map<number, any>(); for (const r of heardAgain) if (r.source_id !== null) again.set(r.source_id, r);
+    // Who spoke (Zoom outline or Meet captions, from the screen watcher's files) and the Meet captions themselves, in time order
+    // between the lines (0.13.10, real meeting 25/11: the RAW had no names, and captions held lines the ASR lost).
+    const audio = audioDir(this.dataDir, id); const me = session.context?.me;
+    const items = rows.map(row => ({ ...row, alternatives: parseAlternatives(row.alternatives) }));
+    const isMic = (row: any) => !!micLabel(row.boundary);
+    const captions = meetCaptions(audio).lines;
+    const byCaption = captionSpeakersOf(items, captions, isMic, me);
+    const speakers = new Map([...byCaption, ...speakersOf(items, screenEvents(audio), isMic, loadNames(audio))]);
+    const times = lineTimes(items); const pending = [...captions].sort((a, b) => a.first - b.first);
+    const flushCaptions = (until: number) => { while (pending.length && pending[0].first <= until) { const c = pending.shift()!; lines.push(`[${c.early ? "trước " : ""}${localTime(new Date(c.first).toISOString())}] (phụ đề Meet · ${c.self ? me || 'Tôi' : c.speaker}) ${c.text}`); } };
+    if (captions.length) lines.push('> Dòng "(phụ đề Meet · Tên)" là phụ đề Google Meet hiện trên máy chủ cuộc họp: Google nghe, có tên người nói, không phải ASR của máy này; giờ là lúc phụ đề hiện (trễ vài giây). "người nói: …" trên một dòng ASR lấy từ phụ đề Meet hoặc khung Zoom cùng lúc. Dòng ASR "chọn tiếng Việt theo người nói" là dòng máy xếp vào tiếng Lào nhưng người nói (theo phụ đề) chỉ nói tiếng Việt theo danh sách người dự.', '');
     let capture: string | null = null;
-    for (const group of foldRuns(rows.filter(row => !isHallucination(row)))) {
+    for (const group of foldRuns(rows.filter(row => !isHallucination(row) || spared(row)))) {
       const row = group.first;
+      if (isHallucination(row)) {
+        const at = times.get(row.id); if (at) flushCaptions(at.from);
+        const who = speakers.get(row.id);
+        lines.push(`[${when(row)}] #${row.id} (${origin[row.origin] || row.origin}${who ? ' · người nói: ' + who : ''}) [bỏ: nghi câu ảo ở dòng chính; còn cách nghe khác]`, ...readingLines(parseAlternatives(row.alternatives)));
+        continue;
+      }
       if (row.capture_id !== capture) { capture = row.capture_id; lines.push('', `— ${capture ? 'Lượt nghe ' + capture.slice(0, 8) : 'Không qua bộ tai'} —`, ''); }
-      lines.push(group.count > 1
-        ? `[${when(row)}] #${row.id}–#${group.last.id} (${label(row)} · lặp ${group.count} đoạn liền) ${this.shown(row.text, id)} [×${group.count}]`
-        : `[${when(row)}] #${row.id} (${label(row)}) ${this.shown(row.text, id)}`);
+      const at = times.get(row.id); if (at) flushCaptions(at.from);
+      const who = speakers.get(row.id); const named = who ? ` · người nói: ${who}` : '';
+      const repick = repickBySpeaker({ language: row.language, alternatives: parseAlternatives(row.alternatives) }, lineSpeakers(row, byCaption.get(row.id), me), session.context?.participants);
+      lines.push(repick
+        ? `[${when(row)}] #${row.id} (${origin[row.origin] || row.origin} · vi · chọn tiếng Việt theo người nói: ${repick.who} không nói tiếng Lào${named}) ${repick.invented ? '[không rõ lời: cách nghe Việt là câu bịa; xem phụ đề Meet cùng giờ]' : this.shown(repick.text, id)}`
+        : group.count > 1
+        ? `[${when(row)}] #${row.id}–#${group.last.id} (${label(row)}${named} · lặp ${group.count} đoạn liền) ${this.shown(row.text, id)} [×${group.count}]`
+        : `[${when(row)}] #${row.id} (${label(row)}${named}) ${this.shown(row.text, id)}`);
       lines.push(...readingLines(parseAlternatives(row.alternatives)));
       const rechecked = again.get(row.id); if (rechecked) lines.push(`  (đã nghe lại: ${phrase(rechecked).replace(/\r?\n/g, ' ')})`);
       const translation = row.translation ?? group.last.translation; if (translation) lines.push(`  → (Claude dịch) ${translation.replace(/\r?\n/g, ' ')}`);
     }
+    flushCaptions(Number.POSITIVE_INFINITY);
     if (!rows.length) lines.push('_Chưa có đoạn nào được ghi nhận._');
     const ranges = heardAgain.filter(r => r.source_id === null);
     if (ranges.length) lines.push('', '## Nghe lại theo khoảng thời gian (từ bản ghi âm)', '', ...ranges.map(r => `[${localTime(r.from_wall)}–${localTime(r.to_wall)}] (đã nghe lại: ${phrase(r).replace(/\r?\n/g, ' ')})`));

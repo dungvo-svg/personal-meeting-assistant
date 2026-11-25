@@ -126,6 +126,84 @@ export function speakersOf(items: any[], events: ScreenEvent[], isMic: (item: an
   }
   return names;
 }
+// ---- Google Meet captions (0.13.10). tools/meeting_screen.ps1 logs the page text that is new each tick to screen/meet_text.jsonl, each
+// string with the one before it on the page. With the owner's captions on, a caption is the speaker's tile name followed by the words,
+// and the words grow and are rewritten while the person speaks. Real meeting 25/11: Meet's captions caught a line the ASR lost and
+// named the speaker of each, while the RAW had no names and the shared minutes put one participant's answer in another's mouth.
+// Here the log becomes caption lines {first, last, speaker, text}: page chrome (buttons, menus,
+// tile tools) is dropped, a rewritten line keeps its first time and takes its newest words.
+// `early`: already on the page when the log began (its first time is when the watcher started, not when it was said).
+export type CaptionLine = { first: number; last: number; speaker: string; self: boolean; text: string; early?: boolean };
+// Meet's own strings, Vietnamese and English UI (owner 25/11 uses Vietnamese; guests may use English). A string that is not a caption
+// but slips through still needs a speaker before it to count, and repeats of the same string are dropped below.
+// Long labels by their start; short ones ("Đóng", "Mọi người") only as the whole string, since a caption may begin with the same words
+// ("Mọi người cùng xem…").
+const MEET_UI = /^(Ghim video của|Bỏ ghim video|Tắt tiếng micrô|Bật tiếng micrô|Tu[ỳỷ] chọn khác cho|Bạn không thể bật|Hiển thị trong ô|Chế độ cài đặt âm|Micrô: |Loa: |Máy ảnh: |Gửi biểu tượng cảm xúc|Biểu tượng cảm xúc khác|Trò chuyện với mọi người|Bộ điều khiển của người tổ chức|Mở Gemini trong|Ghi chú bằng Gemini|Ảnh hồ sơ của|Vào chế độ toàn màn hình|Thoát chế độ toàn màn hình|Người tham gia bên ngoài|Meet - |Cuộc gọi này dành cho|Use the new |Có quyền truy cập|Pin .+ to your main screen|Unpin |Mute .+['’]s microphone|More options for|You can't (unmute|remotely)|Leave call$|Chat with everyone|Host controls|Turn (on|off) (camera|microphone|captions)|Send a reaction|Take notes with Gemini|Open Gemini|Profile picture|Remove this tile|External participants|Micrô của bạn đang tắt|Your microphone is off)/i;
+const MEET_UI_EXACT = new Set(['nền và hiệu ứng', 'kiểm soát cuộc gọi', 'chia sẻ màn hình', 'rời khỏi cuộc gọi', 'công cụ cuộc họp', 'thẻ mới', 'hỏi gemini', 'xóa ô này', 'chi tiết về cuộc họp', 'ngôn ngữ trong cuộc họp', 'loại phụ đề', 'phụ đề trực tiếp', 'cỡ chữ', 'màu phông chữ', 'bật máy ảnh', 'tắt máy ảnh', 'bật micrô', 'tắt micrô', 'giơ tay', 'hạ tay', 'mọi người', 'thu nhỏ', 'khôi phục', 'đóng', 'quay lại', 'chuyển tiếp', 'tải lại', 'thanh địa chỉ và tìm kiếm', 'cài đặt google meet', 'đánh dấu thẻ này', 'tiện ích', 'công việc', 'chrome', 'add claude', 'tự động', 'backgrounds and effects', 'meeting tools', 'raise hand', 'lower hand', 'present now', 'captions', 'meeting details', 'audio settings', 'reactions', 'call controls', 'settings', 'people', 'chat', 'close', 'minimize', 'restore', 'back', 'forward', 'reload', 'extensions', 'bảng điều khiển bên trái', 'bảng điều khiển bên phải', 'đang lắng nghe…', 'đang lắng nghe...', 'không có bản dịch', 'listening…', 'listening...', 'no translation', 'thao tác khác', 'more actions']);
+const SELF_NAMES = new Set(['bạn', 'you']);
+// Tile names, from the tile tools Meet puts on the page for each person ("Ghim video của <tên> vào màn hình chính").
+const ROSTER = [/^Ghim video của (.+?) vào màn hình chính$/i, /^Tắt tiếng micrô của (.+)$/i, /^Tu[ỳỷ] chọn khác cho (.+)$/i, /^Pin (.+?) to your main screen$/i, /^Mute (.+?)['’]s microphone$/i, /^More options for (.+)$/i];
+const firstWords = (text: string, n = 3) => text.normalize('NFC').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean).slice(0, n).join(' ');
+export function parseMeetCaptions(records: { utc: string; texts: { text: string; before: string | null }[] }[]): { lines: CaptionLine[]; roster: string[] } {
+  const roster = new Set<string>(); const lines: CaptionLine[] = []; const byText = new Map<string, CaptionLine>(); const seen = new Map<string, number>();
+  for (const record of records) for (const { text } of record.texts ?? []) for (const pattern of ROSTER) { const m = pattern.exec(String(text ?? '').trim()); if (m) roster.add(m[1].trim()); }
+  const isName = (s: string) => roster.has(s) || SELF_NAMES.has(s.toLowerCase());
+  let opening = true;
+  for (const record of records) {
+    const t = Date.parse(record.utc); if (!Number.isFinite(t)) continue;
+    for (const item of record.texts ?? []) {
+      const text = String(item.text ?? '').trim(); const before = String(item.before ?? '').trim();
+      if (!text || MEET_UI.test(text) || MEET_UI_EXACT.has(text.toLowerCase()) || isName(text) || /^\d{1,2}:\d{2}$/.test(text) || ![...text].some(c => /\p{L}/u.test(c))) continue;
+      const count = (seen.get(text) ?? 0) + 1; seen.set(text, count); if (count > 2) continue;  // a string back again and again is page chrome
+      // Who says it: the tile name just before it, or the caption line it continues.
+      const from = byText.get(before);
+      const speaker = isName(before) ? before : from?.speaker;
+      if (speaker === undefined) continue;
+      const self = isName(before) ? SELF_NAMES.has(before.toLowerCase()) : !!from?.self;
+      // The same line rewritten while the person speaks: same speaker, same first words, seen in the last 30 s.
+      const head = firstWords(text);
+      const same = [...lines].reverse().find(line => line.speaker === speaker && t - line.last <= 30000 && head.length > 0 && (firstWords(line.text) === head || line.text.startsWith(text) || text.startsWith(line.text)));
+      if (same) { if (text.length >= same.text.length || !same.text.startsWith(text)) same.text = text; same.last = t; byText.set(text, same); continue; }
+      const line: CaptionLine = { first: t, last: t, speaker, self, text, ...(opening ? { early: true } : {}) }; lines.push(line); byText.set(text, line);
+    }
+    opening = false;
+  }
+  return { lines, roster: [...roster] };
+}
+let captionCache: { file: string; mtime: number; size: number; result: { lines: CaptionLine[]; roster: string[] } } | null = null;
+export function meetCaptions(audioDir?: string): { lines: CaptionLine[]; roster: string[] } {
+  const empty = { lines: [], roster: [] };
+  if (!audioDir) return empty;
+  const file = `${screenDir(audioDir)}/meet_text.jsonl`;
+  if (!existsSync(file)) return empty;
+  const { mtimeMs, size } = statSync(file);
+  if (captionCache && captionCache.file === file && captionCache.mtime === mtimeMs && captionCache.size === size) return captionCache.result;
+  const records = readFileSync(file, 'utf8').replace(/^﻿/, '').split(/\r?\n/).flatMap(line => { try { return line.trim() ? [JSON.parse(line.replace(/^﻿/, ''))] : []; } catch { return []; } });
+  const result = parseMeetCaptions(records);
+  captionCache = { file, mtime: mtimeMs, size, result };
+  return result;
+}
+// A caption is on screen a second or two after the words are said: a line covers [first - LEAD, last].
+const CAPTION_LEAD_MS = 2500; const CAPTION_TAIL_MS = 1000;
+// The speaker of each transcript line from the Meet captions shown while it was said ("A→B" when the captions change hands inside it).
+// Microphone lines are the owner's. No caption during the line gives no name (never a guess).
+export function captionSpeakersOf(items: any[], captions: CaptionLine[], isMic: (item: any) => boolean, _me?: string): Map<number, string> {
+  const names = new Map<number, string>(); if (!captions.length) return names;
+  const times = lineTimes(items);
+  for (const item of items) {
+    const time = times.get(item.id); if (!time || isMic(item)) continue;
+    const who: string[] = [];
+    // The owner's own captions never name a speaker-channel line: the owner's voice is on the microphone, not in what the speakers play.
+    for (const line of captions) if (!line.early && !line.self && line.first - CAPTION_LEAD_MS <= time.to && line.last + CAPTION_TAIL_MS >= time.from && !who.includes(line.speaker)) who.push(line.speaker);
+    if (who.length) names.set(item.id, who.join('→'));
+  }
+  return names;
+}
+const hhmmss = (ms: number) => new Date(ms).toLocaleTimeString('vi-VN', { hour12: false });
+export function captionLine(line: CaptionLine, me?: string): string {
+  return `PHỤ ĐỀ MEET ${line.early ? 'trước ' : ''}${hhmmss(line.first)}${line.last - line.first >= 1000 ? '–' + hhmmss(line.last) : ''} [${line.self ? (me || 'Tôi') : line.speaker}]: ${line.text}`;
+}
+
 // Share events and frames as lines for `follow` (frames as full paths, so Claude can open the image).
 export function screenLine(event: ScreenEvent, audioDir: string): string | null {
   const when = `MÀN HÌNH ${event.at}`;

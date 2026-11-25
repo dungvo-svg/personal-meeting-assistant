@@ -2,15 +2,16 @@
 // `follow` and `read`, which print transcript lines for Claude to read.
 import { existsSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pieces, RECHECK_PIECE_SECONDS } from './ranges.js';
 import { randomBytes } from 'node:crypto';
-import { attach, call, inspect, reach } from './client.js';
+import { attach, call, dataDir, inspect, reach } from './client.js';
 import { pagesOf } from './picture.js';
 import { connect } from './connect.js';
 import { ackOf, foldRuns, isHallucination, micLabel, readingLines, wrapLine } from './text.js';
-import { loadNames, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher } from './screen.js';
+import { captionLine, captionSpeakersOf, lineTimes, loadNames, meetCaptions, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher, type CaptionLine } from './screen.js';
+import { lineSpeakers, repickBySpeaker, type ParticipantLike } from './speakers.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
   pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--purpose thong-bao|huong-dan|giao-viec|ban-quyet-dinh] [--hotwords] [--participants p.json]
@@ -174,6 +175,8 @@ const clock = (iso: string) => new Date(iso).toLocaleTimeString('vi-VN', { hour1
 const FLAG_LABELS: Record<string, string> = { LAO_MODEL_MISSING: 'thiếu mô hình Lào: chữ Thái phiên âm, nghĩa chưa tin', LAO_WRITTEN_IN_THAI_SCRIPT: 'chữ Thái', REPETITION: 'lặp', LANG_UNSURE: 'ngôn ngữ không chắc', LAO_LOW_CONFIDENCE: 'Lào kém', TIMESTAMP_INVALID: 'giờ không tin được', READINGS_UNDECIDED: 'hai cách nghe chưa phân định' };
 const MAIN = 'chinh';
 const NOTE_EVERY_MS = 10 * 60000; const LAG_WARN_SECONDS = 10;
+// A caption line is printed once Meet has stopped rewriting it for this long.
+const CAPTION_SETTLE_MS = 4000;
 const micWhy = (by?: string) => !by ? '' : by.startsWith('meeting_app:') ? `micro ${by.slice(12)} đang dùng` : ({ windows_default: 'micro mặc định của Windows', selected: 'micro đã chọn', NO_MICROPHONE_FOUND: 'không thấy micro nào' } as Record<string, string>)[by] ?? by;
 const megabytes = (bytes: number) => Math.round(bytes / 1048576);
 const GLOSSARY_HELP = `pma glossary                      xem bảng tên
@@ -185,6 +188,24 @@ Bảng chỉ đổi cách hiển thị ("MISA (nghe: mì da)"), không sửa ch�
 // The meeting's audio folder (its screen/ watcher output gives speaker names) and the names for the lines being printed.
 let AUDIO_DIR: string | undefined;
 let SPEAKERS = new Map<number, string>();
+// Names from the Meet captions only (they drive the language pick); the participants and the owner's name of the meeting being read.
+let CAPTION_SPEAKERS = new Map<number, string>();
+let PARTICIPANTS: ParticipantLike[] | undefined; let ME: string | undefined;
+function setSpeakers(items: any[]) {
+  const isMic = (item: any) => !!micLabel(item.boundary);
+  const zoom = speakersOf(items, screenEvents(AUDIO_DIR), isMic, loadNames(AUDIO_DIR));
+  CAPTION_SPEAKERS = captionSpeakersOf(items, meetCaptions(AUDIO_DIR).lines, isMic, ME);
+  SPEAKERS = new Map([...CAPTION_SPEAKERS, ...zoom]);
+}
+// The participants list and the owner's name, from the host (best effort: without them names still print, the language is not re-picked).
+async function loadMeetingPeople() {
+  const r = await call('context').catch(() => null);
+  PARTICIPANTS = Array.isArray(r?.agenda?.participants) ? r.agenda.participants : undefined; ME = r?.agenda?.me ?? undefined;
+}
+// Caption lines between two times, for `read` (the lines a page of transcript covers, give or take 5 s).
+function captionsBetween(from: number, to: number): CaptionLine[] {
+  return meetCaptions(AUDIO_DIR).lines.filter(line => line.last >= from - 5000 && line.first <= to + 5000);
+}
 function line(item: any) {
   if (item.origin === 'system_gap') return `#${item.id} [KHOẢNG TRỐNG] ${item.text}`;
   // Câu ảo khi im lặng chỉ để lại số đoạn, không đưa chữ vào để Claude không đọc nhầm thành nội dung.
@@ -197,6 +218,14 @@ function line(item: any) {
   const flags = Object.entries(FLAG_LABELS).filter(([code]) => item.boundary?.includes(code)).map(([, label]) => label);
   // Microphone: the owner. Otherwise the tile Zoom outlined as speaking (tools/meeting_screen.ps1), in brackets.
   const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : SPEAKERS.has(item.id) ? ` [${SPEAKERS.get(item.id)}]` : '';
+  // Shown as Lao but said by someone who speaks Vietnamese and not Lao (Meet captions + participants, 0.13.10): the Vietnamese reading.
+  const repick = repickBySpeaker(item, lineSpeakers(item, CAPTION_SPEAKERS.get(item.id), ME), PARTICIPANTS);
+  if (repick) {
+    const readings = (item.alternatives ?? []).length ? '\n' + readingLines(item.alternatives).join('\n') : '';
+    return repick.invented
+      ? `#${item.id} ${clock(item.wall || item.createdAt)}${who} vi: [máy nghe không rõ lời ${repick.who}: cách nghe Việt là câu bịa, cách nghe Lào bỏ vì người này không nói tiếng Lào; đọc PHỤ ĐỀ MEET cùng giờ]${readings}`
+      : `#${item.id} ${clock(item.wall || item.createdAt)}${who} vi⚠chọn tiếng Việt theo người nói (${repick.who} không nói tiếng Lào): ${repick.text}${readings}`;
+  }
   // The other Lao/Thai reading of an unsure chunk, for the translation session to read both (owner 31/10).
   // Each reading with its language and signals (item 1a); an older alternative stays `↳ lang (…): text`.
   const others = (item.alternatives ?? []).length ? '\n' + readingLines(item.alternatives).join('\n') : '';
@@ -205,7 +234,7 @@ function line(item: any) {
 }
 // Ba đoạn ngắn giống nhau trở lên (vòng lặp ASR) in thành một dòng.
 // A group keeps the mic label (foldRuns never joins different ones): `#3–#5 Tôi (mic bật) lặp ×3: …`.
-const lines = (items: any[]) => (SPEAKERS = speakersOf(items, screenEvents(AUDIO_DIR), item => !!micLabel(item.boundary), loadNames(AUDIO_DIR)), foldRuns(items)).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id}${micLabel(g.first.boundary) ? ' ' + micLabel(g.first.boundary) : ''} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
+const lines = (items: any[]) => (setSpeakers(items), foldRuns(items)).map(g => g.count > 1 ? `#${g.first.id}–#${g.last.id}${micLabel(g.first.boundary) ? ' ' + micLabel(g.first.boundary) : ''} lặp ×${g.count}: ${g.first.shown ?? g.first.text}` : line(g.first));
 
 function agenda(flags: Record<string, string>) { return flags['agenda-file'] ? readFileSync(flags['agenda-file'], 'utf8') : flags.agenda; }
 function languagesOf(flags: Record<string, string>) { return flags.languages ? flags.languages.split(',').map(v => v.trim()) : undefined; }
@@ -224,7 +253,9 @@ async function follow(flags: Record<string, string>) {
   // This process follows this meeting only: every call names it, so once it ends and another one opens, the old follower never
   // reads, claims or acknowledges the new meeting (the host refuses an ID that is not the open session).
   const sessionId: string = status.session.id;
-  AUDIO_DIR = status.audio?.dir;
+  AUDIO_DIR = status.audio?.dir; await loadMeetingPeople();
+  // Captions are printed from two minutes before this follow started (a restarted follow does not replay the whole meeting).
+  const captionsFrom = Date.now() - 120000; const captionsPrinted = new Set<string>();
   const name = flags.as ?? 'chinh';
   if (!/^[a-z0-9-]{1,24}$/.test(name)) { out({ error: 'INVALID_FOLLOWER_NAME', hint: '--as chỉ gồm a-z, 0-9, dấu gạch ngang, tối đa 24 ký tự' }); process.exitCode = 1; return; }
   // One lease per process: it is what keeps two followers of the same role from printing the same lines twice.
@@ -248,6 +279,12 @@ async function follow(flags: Record<string, string>) {
     // Once per follow: Lao heard without the Lao model is a Thai-script transliteration (owner + Oanh 21/11).
     if (!laoWarned && batch.some(item => item.boundary?.includes('LAO_MODEL_MISSING'))) { laoWarned = true; console.log('CẢNH BÁO TIẾNG LÀO: máy chưa có mô hình Lào, lời Lào đang ra chữ Thái PHIÊN ÂM, nghĩa, số và tên không đáng tin. Báo người dùng; sau họp dựng mô hình (pma doctor chỉ cách) rồi pma recheck các dòng này.'); }
     for (const text of lines(batch)) for (const part of wrapLine(text)) console.log(part);
+    // Meet captions (who said what, Google's own hearing) that have settled since the last batch: the synthesis session reads both.
+    if (name === MAIN) for (const caption of meetCaptions(AUDIO_DIR).lines) {
+      const key = `${caption.first}|${caption.speaker}`;
+      if (caption.first < captionsFrom || captionsPrinted.has(key) || Date.now() - caption.last < CAPTION_SETTLE_MS) continue;
+      captionsPrinted.add(key); for (const part of wrapLine(captionLine(caption, ME))) console.log(part);
+    }
     // The synthesis session keeps the whole meeting in view: after each batch it rewrites the picture, not a batch summary.
     if (name === MAIN && flags['no-notes'] !== 'true') console.log(`CẬP NHẬT BỨC TRANH tới #${batch.at(-1).id}: chỉ gửi phần mới/sửa (đã chốt · việc–người–hạn · số liệu · câu hỏi; sửa thì ghi cũ → mới, có nguồn) và thay phần đang bàn: pma picture update --file - --base <bản hiện tại> --receipt <biên nhận brief>; trả lời người dùng chỉ phần mới.`);
     batch = [];
@@ -609,9 +646,15 @@ async function main() {
       const st = await call('status').catch(() => null);
       const dir: string | undefined = st?.audio?.dir;
       AUDIO_DIR = dir && flags.session && st?.session?.id !== flags.session ? dir.replace(/[^\\/]+$/, flags.session) : dir;
+      // A meeting read after its host closed (no open session, so no audio folder in status): its folder under the data directory.
+      if (!AUDIO_DIR && flags.session && /^[0-9a-f-]{36}$/.test(flags.session)) AUDIO_DIR = join(dataDir, 'audio', flags.session);
       const r = await call('read', { ...session, after: Number(flags.after || 0), limit: Number(flags.limit || 100), ...(flags.as ? { as: flags.as } : {}) });
       if (flags.json) return out(r);
+      await loadMeetingPeople();
       for (const text of lines(r.items)) console.log(text);
+      // The Meet captions of the same stretch (names and Google's own hearing), after the lines.
+      const times = [...lineTimes(r.items).values()];
+      if (times.length) for (const caption of captionsBetween(Math.min(...times.map(t => t.from)), Math.max(...times.map(t => t.to)))) console.log(captionLine(caption, ME));
       return console.log(r.done ? `HẾT (tới #${r.nextCursor})` : `CÒN TIẾP: pma read --after ${r.nextCursor}${flags.as ? ' --as ' + flags.as : ''}`);
     }
     case 'note': return out(await call('note', { ...session, key: flags.key || 'note-' + Date.now(), revision: Number(flags.revision || 1), kind: flags.kind || 'observation', text: flags.text, sourceIds: list(flags.sources) }));

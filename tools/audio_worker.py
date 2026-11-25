@@ -301,6 +301,19 @@ READINGS_LO_WINS_DIFF = 0.15  # the Lao reading becomes the row text from this d
 READINGS_VI_CLEAR_DIFF = 0.0  # at or below: Vietnamese is clearly the better reading
 READINGS_LO_CLEAR_DIFF = 0.25  # at or above: Lao is clearly the better reading; in between the pick is flagged READINGS_UNDECIDED
 READINGS_LO_USABLE = -0.55
+# 0.13.10, real meeting 25/11 (no one spoke Lao; 9 of 43 chunks with both readings were shown as Lao, all wrong) and FLEURS again
+# (scratch eval 25/11: Lao 120 short + 40 full clips, Vietnamese 62 short clips):
+# - Whisper invented its stock sentence ("Hãy subscribe…") over speech or noise and the Lao reading was weak (-0.689 to -0.836): 8 of the 9.
+#   Over an invented Vietnamese reading a Lao reading now needs READINGS_LO_OVER_INVENTED; below it the row keeps the (invented) Vietnamese
+#   reading, so it is hidden as a ghost and the Lao reading is printed as the other reading, not lost. FLEURS Lao: full clips 40/40 as before;
+#   3 of 120 short (1.5-2 s) clips go this way. The meeting: 8 of 8 right.
+# - A clean Vietnamese reading (READINGS_VI_CLEAN_SHARE of READINGS_VI_CLEAN_SYLLABLES or more Vietnamese syllables) lost to Lao at
+#   diff 0.179 (a Vietnamese-only participant's short reply, heard again from the WAV). Lao must now beat a clean Vietnamese reading by
+#   READINGS_LO_WINS_CLEAN_VI. FLEURS: Vietnamese 57/62 (was 55), Lao short one more clip lost, full clips unchanged.
+READINGS_LO_OVER_INVENTED = -0.68
+READINGS_LO_WINS_CLEAN_VI = 0.20
+READINGS_VI_CLEAN_SHARE = 0.9
+READINGS_VI_CLEAN_SYLLABLES = 4
 LOOP_UNIT_MAX = 6
 
 
@@ -311,7 +324,9 @@ def loop_penalty(text):
     covered = 0
     for match in re.finditer(r'(.{1,%d}?)\1{3,}' % LOOP_UNIT_MAX, text, flags=re.DOTALL):
         covered += len(match.group(0)) - len(match.group(1))
-    return round(min(1.0, covered / len(text)), 3) if text else 0.0
+    # A repeated word longer than LOOP_UNIT_MAX (a Thai word x16, 25/11) is a loop too: the share of characters that folding the repeats removes.
+    folded = len(text) - len(collapse_repeats(text)) if text else 0
+    return round(min(1.0, max(covered, folded) / len(text)), 3) if text else 0.0
 
 
 def segment_invented(segment, code):
@@ -347,9 +362,14 @@ def pick_reading(vi, lo):
         return 'vi', vi['status'] == 'ok'
     vi_score = vi['avgLogProb']
     if vi['status'] != 'ok' or vi_score is None:
+        # An invented Vietnamese sentence says nothing about Lao: a weak Lao reading is not taken as the line (0.13.10).
+        if vi['status'] == 'invented' and lo_score < READINGS_LO_OVER_INVENTED:
+            return 'vi', False
         return 'lo', lo_score >= READINGS_LO_USABLE
     diff = lo_score - vi_score
-    return ('lo' if diff >= READINGS_LO_WINS_DIFF else 'vi'), (diff <= READINGS_VI_CLEAR_DIFF or diff >= READINGS_LO_CLEAR_DIFF)
+    clean_vi = (vi.get('viSyllableShare') or 0) >= READINGS_VI_CLEAN_SHARE and (vi.get('viSyllables') or 0) >= READINGS_VI_CLEAN_SYLLABLES
+    wins = READINGS_LO_WINS_CLEAN_VI if clean_vi else READINGS_LO_WINS_DIFF
+    return ('lo' if diff >= wins else 'vi'), (diff <= READINGS_VI_CLEAR_DIFF or diff >= READINGS_LO_CLEAR_DIFF)
 
 
 def vi_share(text):
@@ -382,6 +402,7 @@ def transcribe_readings(model, waveform16, lao_model, vi_model=None, beam=None, 
     return result, code, None
 
 
+RECHECK_LOOP_MAX = 0.5  # a recheck reading with this share of its characters in a loop or more is not a candidate for the text
 RECHECK_PICK_MARGIN = 0.1  # mean log-probability by which a forced reading must beat the detector's language to replace it
 
 
@@ -1340,7 +1361,7 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
             return any(phrase in text.lower() for phrase in SILENCE_PHRASES) or whole in SILENCE_WHOLE or getattr(segment, 'no_speech_prob', 0.0) > 0.6 \
                 or (code == 'lo' and lao_stock_phrase(text, segment))
         kept = [segment.text.strip() for segment in segments if segment.text.strip() and not invented(segment)]
-        return collapse_repeats(' '.join(kept))
+        return ' '.join(kept)
 
     for code in languages:
         try:
@@ -1353,12 +1374,19 @@ def recheck_window(model, lao_model, vi_model, directory, start, end, channel='s
         if not text:
             continue  # nothing but invented phrases in that language: not a reading
         item = build_reading(code, (model_names or {}).get(code), segments)
-        item.update(text=text, **vi_share(text), loopPenalty=loop_penalty(text))  # the text of a recheck has its invented sentences dropped
+        # The text of a recheck has its invented sentences dropped. The loop share is measured before repeats are folded into "[×16]"
+        # (25/11: a Thai reading of one word x16 scored -0.198 and became the text over a clean Vietnamese reading at -0.368).
+        item.update(text=collapse_repeats(text), **vi_share(text), loopPenalty=loop_penalty(text))
         result['alternatives'].append(item)
-    best = max(result['alternatives'], key=lambda item: item['score'] if item['score'] is not None else float('-inf'), default=None)
+    # A reading that is mostly a loop does not compete for the text, however confident its decoder was.
+    competing = [item for item in result['alternatives'] if (item.get('loopPenalty') or 0) < RECHECK_LOOP_MAX]
+    best = max(competing, key=lambda item: item['score'] if item['score'] is not None else float('-inf'), default=None)
     try:
         segments, language, _ = transcribe_chunk(model, waveform, list(languages), lao_model, vi_model, beam=beam)
-        result.update(text=text_of(list(segments), language), language=language)
+        result.update(text=collapse_repeats(text_of(list(segments), language)), language=language)
+        looped = next((a for a in result['alternatives'] if a['language'] == language and (a.get('loopPenalty') or 0) >= RECHECK_LOOP_MAX), None)
+        if looped and best and best['language'] != language:
+            result.update(text=best['text'], language=best['language'], pickedBy='loop')
     except Exception:
         if best:
             result.update(text=best['text'], language=best['language'])

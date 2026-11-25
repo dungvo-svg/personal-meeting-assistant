@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer as createHttp } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -22,6 +22,7 @@ async function fakeHost(handler) {
   const server = createHttp(async (request, response) => {
     let body = ''; for await (const chunk of request) body += chunk; const { method, args } = JSON.parse(body); let out;
     if (method === 'ping') out = { ok: true, result: { ok: true, testMode: true } };   // a test client talks only to a test host
+    else if (method === 'context') out = { ok: true, result: { agenda: null } };   // 0.13.10: follow and read ask for the participants once (no list here)
     else { log.push({ method, args, at: Date.now() }); try { out = { ok: true, result: await handler(method, args, log) }; } catch (error) { out = { ok: false, error: String(error.message) }; } }
     response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify(out));
   });
@@ -301,4 +302,24 @@ test('a role comes back where its work is saved (committed), not where it had pr
     const { out } = await cli(host, ['follow', '--as', 'dich', '--no-notes']);
     assert.match(out, /FOLLOWING dich .* từ #6 /); assert.equal(host.calls('next')[0].after, 6); assert.equal(host.calls('next')[0].ack, 6);
   });
+});
+
+test('follow prints the Meet captions that have settled after each batch, each once, with the speaker; one still being rewritten waits (0.13.10)', async () => {
+  const audio = mkdtempSync(join(tmpdir(), 'pma-follow-captions-')); mkdirSync(join(audio, 'screen'));
+  const ago = s => new Date(Date.now() - s * 1000).toISOString();
+  const log = [
+    { at: '', utc: ago(300), texts: [{ text: 'Tuỳ chọn khác cho An Trần', before: null }, { text: 'An Trần', before: 'Tuỳ chọn khác cho An Trần' }, { text: 'câu từ lâu rồi', before: 'An Trần' }] },
+    { at: '', utc: ago(20), texts: [{ text: 'Kho số hai còn đủ hàng.', before: 'An Trần' }] },
+    { at: '', utc: ago(1), texts: [{ text: 'Còn câu này đang nói dở', before: 'An Trần' }] },
+  ];
+  writeFileSync(join(audio, 'screen', 'meet_text.jsonl'), log.map(x => JSON.stringify(x)).join('\n') + '\n');
+  let n = 0;
+  try {
+    await withHost((method, args) => method === 'status' ? status({ audio: { dir: audio } }) : method === 'release' ? { released: true } : args.limit === 1 ? reply([], args.after) : ++n === 1 ? reply([row(1, 'kho số hai còn đủ hàng')], 1) : reply([], 1, { ended: true }), async host => {
+      const { out } = await cli(host, ['follow', '--no-notes', '--batch', '1']);
+      assert.match(out, /#1 .*kho số hai còn đủ hàng\nPHỤ ĐỀ MEET \d\d:\d\d:\d\d \[An Trần\]: Kho số hai còn đủ hàng\.\n/);
+      assert.equal(out.split('PHỤ ĐỀ MEET').length - 1, 1, 'printed once; the old line (before this follow) and the line still being said are not printed');
+      assert.doesNotMatch(out, /Tuỳ chọn khác|câu từ lâu rồi|đang nói dở/);
+    });
+  } finally { rmSync(audio, { recursive: true, force: true }); }
 });
