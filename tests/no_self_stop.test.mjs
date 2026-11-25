@@ -95,18 +95,18 @@ test('C1: a one-word name variant is taken only as written: "quân y" stays, "Qu
 
 test('glossary short forms ("Trang" of "Hoàng Thị Thu Trang") expand only for people of this meeting (real meeting 25/11)', async () => {
   const { applyGlossary, isShortFormOf } = await import('../dist/text.js');
-  // The machine-wide glossary as it stood on 25/11 (names from other meetings), and the lines the Vimart training showed wrongly.
+  // A machine-wide glossary with names from other meetings (as on 25/11); the sentences are made up, the way the real ones went wrong.
   const glossary = [{ name: 'Hoàng Thị Thu Trang', variants: ['Trang'] }, { name: 'Hoàng Nam Quốc', variants: ['Quốc'] }, { name: 'Hoàng Khánh Linh', variants: ['Linh'] },
     { name: 'Hoàng Văn Quân (Khounkham)', variants: ['Quân'] }, { name: 'Claude', variants: ['Cloudy'] }, { name: 'Namfon', variants: ['Nam Phủ'] }];
-  const vimart = new Set(['dũng', 'khounkham', 'hoàng yến nguyễn', 'trang hoàng', 'quân', 'vimart']);  // its context, nickname "Quân" → of "Khounkham"
-  assert.equal(applyGlossary('Rồi Trang với Na sẽ nằm cùng nhau', glossary, vimart), 'Rồi Trang với Na sẽ nằm cùng nhau', 'another Trang is in the room');
-  assert.equal(applyGlossary('chị xài chat với cô Quốc là người khác cũng thấy', glossary, vimart), 'chị xài chat với cô Quốc là người khác cũng thấy');
-  assert.equal(applyGlossary('ở đây này, Linh con nó', glossary, vimart), 'ở đây này, Linh con nó');
+  const meeting = new Set(['dũng', 'khounkham', 'lan phạm', 'trang hoàng', 'quân']);  // a meeting's context, nickname "Quân" → of "Khounkham"
+  assert.equal(applyGlossary('chiều nay Trang gửi bảng giá', glossary, meeting), 'chiều nay Trang gửi bảng giá', 'another Trang is in the room');
+  assert.equal(applyGlossary('bên cô Quốc đã nhận hàng', glossary, meeting), 'bên cô Quốc đã nhận hàng');
+  assert.equal(applyGlossary('Linh xem giúp số này', glossary, meeting), 'Linh xem giúp số này');
   // A short form of someone who IS in this meeting is still expanded; "Hoàng Văn Quân (Khounkham)" is in it through "Khounkham".
-  assert.equal(applyGlossary('anh Quân nói', glossary, vimart), 'anh Hoàng Văn Quân (Khounkham) (nghe: Quân) nói');
+  assert.equal(applyGlossary('anh Quân nói', glossary, meeting), 'anh Hoàng Văn Quân (Khounkham) (nghe: Quân) nói');
   assert.equal(applyGlossary('chị Trang nói', glossary, new Set(['hoàng thị thu trang'])), 'chị Hoàng Thị Thu Trang (nghe: Trang) nói');
   // Misheard spellings that are not a word of the name are untouched by the rule.
-  assert.equal(applyGlossary('Cloudy làm, Nam Phủ duyệt', glossary, vimart), 'Claude (nghe: Cloudy) làm, Namfon (nghe: Nam Phủ) duyệt');
+  assert.equal(applyGlossary('Cloudy làm, Nam Phủ duyệt', glossary, meeting), 'Claude (nghe: Cloudy) làm, Namfon (nghe: Nam Phủ) duyệt');
   // Without a meeting (no `present`) the old behaviour stays.
   assert.equal(applyGlossary('chị Trang nói', glossary), 'chị Hoàng Thị Thu Trang (nghe: Trang) nói');
   assert.equal(isShortFormOf('Trang', 'Hoàng Thị Thu Trang'), true);
