@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.13.6 — 25/11/2026 (biên bản chung ghi đủ dữ liệu; nội dung họp không lên git)
+
+Owner 25/11: giá vốn, công nợ, lương, danh sách khách hàng và lời lúc tắt mic đưa lên biên bản chung bình thường, chỉ không đưa lên git. Chỉ đổi hướng dẫn.
+
+- `guide/hop.md`: mục "Dữ liệu trên biên bản chung" thay cho danh sách "Không đưa lên biên bản chung" của 0.13.5; lời mic tắt giữ nguyên nhãn `Tôi (mic tắt — nói riêng)`; biên bản chỉ chia sẻ trong tổ chức, không link công khai. Quy tắc mới: nội dung họp (RAW, SUMMARY, TASKS, WAV, ảnh màn hình, biên bản) không bao giờ đưa lên git. Bộ dịch nền vẫn không nhận lời mic tắt (OWN-030 giữ nguyên).
+
 ## 0.13.5 — 25/11/2026 (biên bản chung trên Claude Doc)
 
 Owner 25/11: bot họp Claude trùng công cụ với trợ lý họp; cả phòng theo dõi một link biên bản do phiên tổng hợp cập nhật trong lúc họp. Chỉ đổi hướng dẫn, không đổi mã. Đã thử ghi cộng dồn trên một Claude Doc nháp (thêm tab, chèn dòng, sửa đúng một cụm, thêm hàng bảng, đọc phần đổi); chưa dùng ở họp thật.
