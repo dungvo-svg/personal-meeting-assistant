@@ -7,7 +7,7 @@ import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { captionLine, captionSpeakersOf, parseMeetCaptions } from '../dist/screen.js';
-import { lineSpeakers, participantFor, repickBySpeaker } from '../dist/speakers.js';
+import { lineSpeakers, participantFor, repickByCaption, repickBySpeaker } from '../dist/speakers.js';
 import { MeetingRuntime } from '../dist/runtime.js';
 import { applyParticipants } from '../dist/participants.js';
 
@@ -62,7 +62,7 @@ test('a tile name stands for one participant by the given name; a line shown as 
   assert.equal(participantFor('Mai Đỗ', people), null);
   const reading = (language, more = {}) => ({ rv: 1, language, text: language === 'vi' ? 'dạ vâng em gửi bảng giá' : 'ຢ່າບ່ອງ', status: 'ok', picked: language === 'lo', ...more });
   const lao = { language: 'lo', alternatives: [reading('lo'), reading('vi')] };
-  assert.deepEqual(repickBySpeaker(lao, ['Lan Phạm'], people), { text: 'dạ vâng em gửi bảng giá', language: 'vi', invented: false, who: 'Lan Phạm' });
+  assert.deepEqual(repickBySpeaker(lao, ['Lan Phạm'], people), { text: 'dạ vâng em gửi bảng giá', language: 'vi', invented: false, who: 'Lan Phạm', basis: 'speaker' });
   assert.equal(repickBySpeaker(lao, ['Somchai KEOLA'], people), null, 'he speaks Lao: the pick stands');
   assert.equal(repickBySpeaker(lao, ['Lan Phạm', 'Somchai KEOLA'], people), null, 'every speaker of the line must be Vietnamese-only');
   assert.equal(repickBySpeaker(lao, ['Mai Đỗ'], people), null, 'unknown person: no guess');
@@ -96,4 +96,27 @@ test('RAW carries the speaker of each line and the Meet captions in time order, 
     assert.ok(raw.indexOf('(phụ đề Meet · An Trần)') < raw.indexOf('vi · chọn tiếng Việt theo người nói:'), 'captions sit between the lines by time');
     assert.doesNotMatch(raw, /Nền và hiệu ứng|Đang lắng nghe|Ghim video/);
   } finally { await r.close(); rmSync(directory, { recursive: true }); }
+});
+
+// 0.13.11, real meeting 26/11: tile badges and a side-panel label cut short were read as captions of the tile's person.
+test('Meet captions: tile badges and a label Meet cut short are page chrome, and so is what follows them', () => {
+  const { lines } = parseMeetCaptions([
+    rec(0, ['An Trần', null], ['Ghim video của An Trần vào màn hình chính', 'An Trần'], ['Người tổ chức cuộc họp', 'An Trần'], ['Bảng điều khiển bên', 'An Trần'],
+      ['Bình Lê', 'Bảng điều khiển bên'], ['Tắt tiếng micrô của Bình Lê', 'Bình Lê'], ['Huy hiệu khách truy cập', 'Bình Lê'], ['Cho phép Bình Lê', 'Huy hiệu khách truy cập']),
+    rec(2, ['Bảng điều khiển', 'An Trần'], ['Mình bắt đầu nhé.', 'An Trần']),
+  ]);
+  assert.deepEqual(lines.map(l => [l.speaker, l.text]), [['An Trần', 'Mình bắt đầu nhé.']]);  // any start of a label, 10 letters or more
+});
+
+// 0.13.11, real meeting 26/11: a person who speaks both languages said a Vietnamese sentence; the ASR showed Lao, its Vietnamese reading
+// was the first words of the caption of the same moment.
+test('language pick by the Meet captions of the same moment: the Vietnamese reading is what the caption says', () => {
+  const lao = (vi, status = 'ok') => ({ language: 'lo', alternatives: [{ rv: 1, language: 'lo', text: 'ສະບາຍດີ', picked: true, status: 'ok' }, { rv: 1, language: 'vi', text: vi, status }] });
+  const caption = [{ text: 'Để mình mời chị Mai vào phòng trước nhé.', speaker: 'An Trần' }];
+  assert.deepEqual(repickByCaption(lao('Để mình mời'), caption), { text: 'Để mình mời', language: 'vi', invented: false, who: 'An Trần', basis: 'caption' });
+  assert.equal(repickByCaption(lao('hoa hòm chút gọi bào với nhé'), caption), null);  // noise that shares a word or two
+  assert.equal(repickByCaption(lao('Để mình mời', 'invented'), caption), null);
+  assert.equal(repickByCaption(lao('mời'), caption), null);  // one syllable says nothing
+  assert.equal(repickByCaption({ ...lao('Để mình mời'), language: 'vi' }, caption), null);
+  assert.equal(repickByCaption(lao('Để mình mời'), undefined), null);
 });

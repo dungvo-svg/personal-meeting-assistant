@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.11 — 26/11/2026 (nhãn giao diện Meet không còn lọt vào phụ đề; chọn tiếng Việt theo phụ đề Meet cùng giờ)
+
+Họp thật 26/11: (1) nhãn ô video Meet ("Người tổ chức cuộc họp", "Huy hiệu khách truy cập") và nhãn bị cắt ("Bảng điều khiển bên") hiện thành `PHỤ ĐỀ MEET` của người trong ô; (2) một câu tiếng Việt của người nói cả hai thứ tiếng bị xếp vào tiếng Lào, trong khi phụ đề Meet cùng lúc ghi đúng câu tiếng Việt đó.
+
+- `src/screen.ts`: thêm nhãn ô video Meet (Việt, Anh); một chuỗi từ 10 chữ trở lên là phần đầu của một nhãn giao diện cũng là nhãn (Meet cắt chữ). Chữ đi sau một nhãn như vậy ("Cho phép …") cũng không còn được coi là câu tiếp theo. `captionsDuring`: các câu phụ đề hiện trong lúc nói mỗi dòng ASR.
+- `src/speakers.ts`: `repickByCaption`: dòng xếp vào tiếng Lào mà ≥ 60% âm tiết (ít nhất 2) của cách nghe tiếng Việt có trong phụ đề Meet cùng lúc thì in cách nghe tiếng Việt, ghi "chọn tiếng Việt theo phụ đề Meet cùng giờ". Cách nghe Việt là câu bịa thì không chọn.
+- `src/cli.ts`, `src/runtime.ts`: `follow`/`read` và RAW dùng luật này sau luật chọn theo người nói.
+- Dữ liệu 26/11: 3 nhãn bỏ; #8063 chọn lại tiếng Việt; #8064 vẫn là tiếng Lào (cách nghe Việt chỉ chung 2/12 âm tiết với phụ đề). Hai buổi 25/11: chỉ nhãn giao diện bị bỏ (10 dòng), không mất câu thật.
+
 ## 0.13.10 — 25/11/2026 (phụ đề Google Meet thành cách nghe thứ hai có tên người nói; chọn tiếng Việt/Lào đúng hơn)
 
 Họp thật 25/11 (không ai nói tiếng Lào): 9/43 đoạn có hai cách nghe bị xếp vào tiếng Lào, cả 9 sai; RAW không có tên người nói; phụ đề Meet nghe được câu ASR làm mất và có tên người nói, nhưng phiên tổng hợp phải tự lục file, và biên bản chung ghi nhầm người nói của một câu trả lời.

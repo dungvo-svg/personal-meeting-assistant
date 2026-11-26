@@ -7,8 +7,8 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { applyGlossary, collapseLoops, foldRuns, hasReadings, isHallucination, micLabel, readingFacts, readingLines, riskyVariants, segmentTimesProblem, shareable, type GlossaryEntry, type Reading } from './text.js';
 import { canonicalOwner } from './participants.js';
-import { captionSpeakersOf, lineTimes, loadNames, meetCaptions, screenEvents, speakersOf } from './screen.js';
-import { lineSpeakers, repickBySpeaker } from './speakers.js';
+import { captionSpeakersOf, captionsDuring, lineTimes, loadNames, meetCaptions, screenEvents, speakersOf } from './screen.js';
+import { lineSpeakers, repickByCaption, repickBySpeaker } from './speakers.js';
 import { applyWeakNames, historyNames, nameTable, weakNameRules, writeHotwordsFile, HOTWORDS_FILE } from './names.js';
 import { audioDir, audioInfo, listAudio, markAudioDir, purgeAudio, TIMELINE_FILE } from './audio.js';
 import { readTimeline, segmentsOf, soundRanges, soundWindows, uncovered, type Range, type Segment } from './timeline.js';
@@ -1656,7 +1656,7 @@ export class MeetingRuntime extends EventEmitter {
     const items = rows.map(row => ({ ...row, alternatives: parseAlternatives(row.alternatives) }));
     const isMic = (row: any) => !!micLabel(row.boundary);
     const captions = meetCaptions(audio).lines;
-    const byCaption = captionSpeakersOf(items, captions, isMic, me);
+    const byCaption = captionSpeakersOf(items, captions, isMic, me); const during = captionsDuring(items, captions, isMic);
     const speakers = new Map([...byCaption, ...speakersOf(items, screenEvents(audio), isMic, loadNames(audio))]);
     const times = lineTimes(items); const pending = [...captions].sort((a, b) => a.first - b.first);
     const flushCaptions = (until: number) => { while (pending.length && pending[0].first <= until) { const c = pending.shift()!; lines.push(`[${c.early ? "trước " : ""}${localTime(new Date(c.first).toISOString())}] (phụ đề Meet · ${c.self ? me || 'Tôi' : c.speaker}) ${c.text}`); } };
@@ -1673,9 +1673,10 @@ export class MeetingRuntime extends EventEmitter {
       if (row.capture_id !== capture) { capture = row.capture_id; lines.push('', `— ${capture ? 'Lượt nghe ' + capture.slice(0, 8) : 'Không qua bộ tai'} —`, ''); }
       const at = times.get(row.id); if (at) flushCaptions(at.from);
       const who = speakers.get(row.id); const named = who ? ` · người nói: ${who}` : '';
-      const repick = repickBySpeaker({ language: row.language, alternatives: parseAlternatives(row.alternatives) }, lineSpeakers(row, byCaption.get(row.id), me), session.context?.participants);
+      const asItem = { language: row.language, alternatives: parseAlternatives(row.alternatives) };
+      const repick = repickBySpeaker(asItem, lineSpeakers(row, byCaption.get(row.id), me), session.context?.participants) ?? repickByCaption(asItem, during.get(row.id));
       lines.push(repick
-        ? `[${when(row)}] #${row.id} (${origin[row.origin] || row.origin} · vi · chọn tiếng Việt theo người nói: ${repick.who} không nói tiếng Lào${named}) ${repick.invented ? '[không rõ lời: cách nghe Việt là câu bịa; xem phụ đề Meet cùng giờ]' : this.shown(repick.text, id)}`
+        ? `[${when(row)}] #${row.id} (${origin[row.origin] || row.origin} · vi · ${repick.basis === 'caption' ? `chọn tiếng Việt theo phụ đề Meet cùng giờ: phụ đề của ${repick.who} khớp cách nghe Việt` : `chọn tiếng Việt theo người nói: ${repick.who} không nói tiếng Lào`}${named}) ${repick.invented ? '[không rõ lời: cách nghe Việt là câu bịa; xem phụ đề Meet cùng giờ]' : this.shown(repick.text, id)}`
         : group.count > 1
         ? `[${when(row)}] #${row.id}–#${group.last.id} (${label(row)}${named} · lặp ${group.count} đoạn liền) ${this.shown(row.text, id)} [×${group.count}]`
         : `[${when(row)}] #${row.id} (${label(row)}${named}) ${this.shown(row.text, id)}`);

@@ -139,7 +139,9 @@ export type CaptionLine = { first: number; last: number; speaker: string; self: 
 // Long labels by their start; short ones ("Đóng", "Mọi người") only as the whole string, since a caption may begin with the same words
 // ("Mọi người cùng xem…").
 const MEET_UI = /^(Ghim video của|Bỏ ghim video|Tắt tiếng micrô|Bật tiếng micrô|Tu[ỳỷ] chọn khác cho|Bạn không thể bật|Hiển thị trong ô|Chế độ cài đặt âm|Micrô: |Loa: |Máy ảnh: |Gửi biểu tượng cảm xúc|Biểu tượng cảm xúc khác|Trò chuyện với mọi người|Bộ điều khiển của người tổ chức|Mở Gemini trong|Ghi chú bằng Gemini|Ảnh hồ sơ của|Vào chế độ toàn màn hình|Thoát chế độ toàn màn hình|Người tham gia bên ngoài|Meet - |Cuộc gọi này dành cho|Use the new |Có quyền truy cập|Pin .+ to your main screen|Unpin |Mute .+['’]s microphone|More options for|You can't (unmute|remotely)|Leave call$|Chat with everyone|Host controls|Turn (on|off) (camera|microphone|captions)|Send a reaction|Take notes with Gemini|Open Gemini|Profile picture|Remove this tile|External participants|Micrô của bạn đang tắt|Your microphone is off)/i;
-const MEET_UI_EXACT = new Set(['nền và hiệu ứng', 'kiểm soát cuộc gọi', 'chia sẻ màn hình', 'rời khỏi cuộc gọi', 'công cụ cuộc họp', 'thẻ mới', 'hỏi gemini', 'xóa ô này', 'chi tiết về cuộc họp', 'ngôn ngữ trong cuộc họp', 'loại phụ đề', 'phụ đề trực tiếp', 'cỡ chữ', 'màu phông chữ', 'bật máy ảnh', 'tắt máy ảnh', 'bật micrô', 'tắt micrô', 'giơ tay', 'hạ tay', 'mọi người', 'thu nhỏ', 'khôi phục', 'đóng', 'quay lại', 'chuyển tiếp', 'tải lại', 'thanh địa chỉ và tìm kiếm', 'cài đặt google meet', 'đánh dấu thẻ này', 'tiện ích', 'công việc', 'chrome', 'add claude', 'tự động', 'backgrounds and effects', 'meeting tools', 'raise hand', 'lower hand', 'present now', 'captions', 'meeting details', 'audio settings', 'reactions', 'call controls', 'settings', 'people', 'chat', 'close', 'minimize', 'restore', 'back', 'forward', 'reload', 'extensions', 'bảng điều khiển bên trái', 'bảng điều khiển bên phải', 'đang lắng nghe…', 'đang lắng nghe...', 'không có bản dịch', 'listening…', 'listening...', 'no translation', 'thao tác khác', 'more actions']);
+const MEET_UI_EXACT = new Set(['nền và hiệu ứng', 'kiểm soát cuộc gọi', 'chia sẻ màn hình', 'rời khỏi cuộc gọi', 'công cụ cuộc họp', 'thẻ mới', 'hỏi gemini', 'xóa ô này', 'chi tiết về cuộc họp', 'ngôn ngữ trong cuộc họp', 'loại phụ đề', 'phụ đề trực tiếp', 'cỡ chữ', 'màu phông chữ', 'bật máy ảnh', 'tắt máy ảnh', 'bật micrô', 'tắt micrô', 'giơ tay', 'hạ tay', 'mọi người', 'thu nhỏ', 'khôi phục', 'đóng', 'quay lại', 'chuyển tiếp', 'tải lại', 'thanh địa chỉ và tìm kiếm', 'cài đặt google meet', 'đánh dấu thẻ này', 'tiện ích', 'công việc', 'chrome', 'add claude', 'tự động', 'backgrounds and effects', 'meeting tools', 'raise hand', 'lower hand', 'present now', 'captions', 'meeting details', 'audio settings', 'reactions', 'call controls', 'settings', 'people', 'chat', 'close', 'minimize', 'restore', 'back', 'forward', 'reload', 'extensions', 'bảng điều khiển bên trái', 'bảng điều khiển bên phải', 'đang lắng nghe…', 'đang lắng nghe...', 'không có bản dịch', 'listening…', 'listening...', 'no translation', 'thao tác khác', 'more actions', 'người tổ chức cuộc họp', 'huy hiệu khách truy cập', 'meeting host', 'visitor badge']);
+// A label Meet cut short on the page ("Bảng điều khiển bên", real meeting 26/11) is still a label: the start of one, 10 letters or more.
+const isMeetUi = (text: string) => { const lower = text.toLowerCase(); return MEET_UI.test(text) || MEET_UI_EXACT.has(lower) || (lower.length >= 10 && [...MEET_UI_EXACT].some(label => label.startsWith(lower))); };
 const SELF_NAMES = new Set(['bạn', 'you']);
 // Tile names, from the tile tools Meet puts on the page for each person ("Ghim video của <tên> vào màn hình chính").
 const ROSTER = [/^Ghim video của (.+?) vào màn hình chính$/i, /^Tắt tiếng micrô của (.+)$/i, /^Tu[ỳỷ] chọn khác cho (.+)$/i, /^Pin (.+?) to your main screen$/i, /^Mute (.+?)['’]s microphone$/i, /^More options for (.+)$/i];
@@ -153,7 +155,7 @@ export function parseMeetCaptions(records: { utc: string; texts: { text: string;
     const t = Date.parse(record.utc); if (!Number.isFinite(t)) continue;
     for (const item of record.texts ?? []) {
       const text = String(item.text ?? '').trim(); const before = String(item.before ?? '').trim();
-      if (!text || MEET_UI.test(text) || MEET_UI_EXACT.has(text.toLowerCase()) || isName(text) || /^\d{1,2}:\d{2}$/.test(text) || ![...text].some(c => /\p{L}/u.test(c))) continue;
+      if (!text || isMeetUi(text) || isName(text) || /^\d{1,2}:\d{2}$/.test(text) || ![...text].some(c => /\p{L}/u.test(c))) continue;
       const count = (seen.get(text) ?? 0) + 1; seen.set(text, count); if (count > 2) continue;  // a string back again and again is page chrome
       // Who says it: the tile name just before it, or the caption line it continues.
       const from = byText.get(before);
@@ -188,16 +190,24 @@ const CAPTION_LEAD_MS = 2500; const CAPTION_TAIL_MS = 1000;
 // The speaker of each transcript line from the Meet captions shown while it was said ("A→B" when the captions change hands inside it).
 // Microphone lines are the owner's. No caption during the line gives no name (never a guess).
 export function captionSpeakersOf(items: any[], captions: CaptionLine[], isMic: (item: any) => boolean, _me?: string): Map<number, string> {
-  const names = new Map<number, string>(); if (!captions.length) return names;
+  const names = new Map<number, string>();
+  for (const [id, during] of captionsDuring(items, captions, isMic)) {
+    const who: string[] = []; for (const line of during) if (!who.includes(line.speaker)) who.push(line.speaker);
+    names.set(id, who.join('→'));
+  }
+  return names;
+}
+// The caption lines shown while each speaker-channel line was said. Lines already on the page when the log began have no time, and the
+// owner's own captions never belong to a speaker-channel line (the owner's voice is on the microphone, not in what the speakers play).
+export function captionsDuring(items: any[], captions: CaptionLine[], isMic: (item: any) => boolean): Map<number, CaptionLine[]> {
+  const during = new Map<number, CaptionLine[]>(); if (!captions.length) return during;
   const times = lineTimes(items);
   for (const item of items) {
     const time = times.get(item.id); if (!time || isMic(item)) continue;
-    const who: string[] = [];
-    // The owner's own captions never name a speaker-channel line: the owner's voice is on the microphone, not in what the speakers play.
-    for (const line of captions) if (!line.early && !line.self && line.first - CAPTION_LEAD_MS <= time.to && line.last + CAPTION_TAIL_MS >= time.from && !who.includes(line.speaker)) who.push(line.speaker);
-    if (who.length) names.set(item.id, who.join('→'));
+    const found = captions.filter(line => !line.early && !line.self && line.first - CAPTION_LEAD_MS <= time.to && line.last + CAPTION_TAIL_MS >= time.from);
+    if (found.length) during.set(item.id, found);
   }
-  return names;
+  return during;
 }
 const hhmmss = (ms: number) => new Date(ms).toLocaleTimeString('vi-VN', { hour12: false });
 export function captionLine(line: CaptionLine, me?: string): string {

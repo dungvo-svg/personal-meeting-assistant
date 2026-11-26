@@ -10,8 +10,8 @@ import { attach, call, dataDir, inspect, reach } from './client.js';
 import { pagesOf } from './picture.js';
 import { connect } from './connect.js';
 import { ackOf, foldRuns, isHallucination, micLabel, readingLines, wrapLine } from './text.js';
-import { captionLine, captionSpeakersOf, lineTimes, loadNames, meetCaptions, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher, type CaptionLine } from './screen.js';
-import { lineSpeakers, repickBySpeaker, type ParticipantLike } from './speakers.js';
+import { captionLine, captionSpeakersOf, captionsDuring, lineTimes, loadNames, meetCaptions, saveName, screenEvents, screenLine, screenStatus, speakersOf, startWatcher, stopWatcher, type CaptionLine } from './screen.js';
+import { lineSpeakers, repickByCaption, repickBySpeaker, type ParticipantLike } from './speakers.js';
 
 const USAGE = `pma — trợ lý họp chạy trên máy
   pma start [--title T] [--agenda TEXT | --agenda-file F] [--link ZOOM_HOẶC_MEET_URL] [--languages vi,lo,th] [--me "Tên tôi"] [--at HH:MM] [--purpose thong-bao|huong-dan|giao-viec|ban-quyet-dinh] [--hotwords] [--participants p.json]
@@ -189,12 +189,13 @@ Bảng chỉ đổi cách hiển thị ("MISA (nghe: mì da)"), không sửa ch�
 let AUDIO_DIR: string | undefined;
 let SPEAKERS = new Map<number, string>();
 // Names from the Meet captions only (they drive the language pick); the participants and the owner's name of the meeting being read.
-let CAPTION_SPEAKERS = new Map<number, string>();
+let CAPTION_SPEAKERS = new Map<number, string>(); let CAPTIONS_DURING = new Map<number, CaptionLine[]>();
 let PARTICIPANTS: ParticipantLike[] | undefined; let ME: string | undefined;
 function setSpeakers(items: any[]) {
   const isMic = (item: any) => !!micLabel(item.boundary);
   const zoom = speakersOf(items, screenEvents(AUDIO_DIR), isMic, loadNames(AUDIO_DIR));
-  CAPTION_SPEAKERS = captionSpeakersOf(items, meetCaptions(AUDIO_DIR).lines, isMic, ME);
+  const captions = meetCaptions(AUDIO_DIR).lines;
+  CAPTION_SPEAKERS = captionSpeakersOf(items, captions, isMic, ME); CAPTIONS_DURING = captionsDuring(items, captions, isMic);
   SPEAKERS = new Map([...CAPTION_SPEAKERS, ...zoom]);
 }
 // The participants list and the owner's name, from the host (best effort: without them names still print, the language is not re-picked).
@@ -219,11 +220,14 @@ function line(item: any) {
   // Microphone: the owner. Otherwise the tile Zoom outlined as speaking (tools/meeting_screen.ps1), in brackets.
   const who = micLabel(item.boundary) ? ' ' + micLabel(item.boundary) : SPEAKERS.has(item.id) ? ` [${SPEAKERS.get(item.id)}]` : '';
   // Shown as Lao but said by someone who speaks Vietnamese and not Lao (Meet captions + participants, 0.13.10): the Vietnamese reading.
-  const repick = repickBySpeaker(item, lineSpeakers(item, CAPTION_SPEAKERS.get(item.id), ME), PARTICIPANTS);
+  // Or (0.13.11) the Meet captions of the same moment say the words of its Vietnamese reading.
+  const repick = repickBySpeaker(item, lineSpeakers(item, CAPTION_SPEAKERS.get(item.id), ME), PARTICIPANTS) ?? repickByCaption(item, CAPTIONS_DURING.get(item.id));
   if (repick) {
     const readings = (item.alternatives ?? []).length ? '\n' + readingLines(item.alternatives).join('\n') : '';
     return repick.invented
       ? `#${item.id} ${clock(item.wall || item.createdAt)}${who} vi: [máy nghe không rõ lời ${repick.who}: cách nghe Việt là câu bịa, cách nghe Lào bỏ vì người này không nói tiếng Lào; đọc PHỤ ĐỀ MEET cùng giờ]${readings}`
+      : repick.basis === 'caption'
+      ? `#${item.id} ${clock(item.wall || item.createdAt)}${who} vi⚠chọn tiếng Việt theo phụ đề Meet cùng giờ (phụ đề của ${repick.who} khớp cách nghe Việt): ${repick.text}${readings}`
       : `#${item.id} ${clock(item.wall || item.createdAt)}${who} vi⚠chọn tiếng Việt theo người nói (${repick.who} không nói tiếng Lào): ${repick.text}${readings}`;
   }
   // The other Lao/Thai reading of an unsure chunk, for the translation session to read both (owner 31/10).
